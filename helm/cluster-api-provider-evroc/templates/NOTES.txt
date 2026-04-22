@@ -1,0 +1,29 @@
+cluster-api-provider-evroc has been installed.
+
+Namespace:  {{ .Release.Namespace }}
+Controller: {{ include "cluster-api-provider-evroc.fullname" . }}-controller-manager
+
+{{- if .Values.webhook.enabled }}
+Webhooks:   enabled (port {{ .Values.webhook.port }})
+{{- end }}
+
+To verify the controller is running:
+
+  kubectl get pods -n {{ .Release.Namespace }}
+
+To create a workload cluster, apply a cluster template:
+
+  # Using clusterctl (recommended)
+  clusterctl generate cluster my-cluster \
+    --infrastructure evroc \
+    --flavor rke2 \
+    --kubernetes-version v1.30.0+rke2r1 \
+    --control-plane-machine-count 3 \
+    --worker-machine-count 3 \
+    | kubectl apply -f -
+
+  # Or apply a template directly
+  kubectl apply -f https://github.com/evroc-oss/cluster-api-provider-evroc/releases/latest/download/cluster-template-rke2.yaml
+
+For documentation visit:
+  https://github.com/evroc-oss/cluster-api-provider-evroc

@@ -1,0 +1,261 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Terraform + CAPI Integration Example (BYOI - Bring Your Own Infrastructure)
+#
+# This example demonstrates how to use infrastructure created by Terraform
+# with CAPI-managed Kubernetes clusters. This is useful for:
+# - Multi-customer platforms (one Terraform project per customer)
+# - Shared infrastructure (security groups, IPs managed centrally)
+# - Compliance requirements (infrastructure must be declared in Terraform)
+#
+# Architecture:
+# - Terraform creates: Public IPs, Security Groups, Networks
+# - CAPI creates: VMs, Disks, Kubernetes clusters
+# - Resources are referenced by name (not managed by CAPI)
+
+---
+# Step 1: Create infrastructure with Terraform
+#
+# terraform/main.tf:
+#
+# resource "evroc_public_ip" "customer_cp_ip" {
+#   name    = "customer-123-control-plane-ip"
+#   project = var.evroc_project
+#   region  = "se-sto"
+#   zone    = "a"
+#
+#   labels = {
+#     customer = "customer-123"
+#     managed-by = "terraform"
+#   }
+# }
+#
+# resource "evroc_security_group" "customer_k8s_sg" {
+#   name    = "customer-123-k8s-sg"
+#   project = var.evroc_project
+#   region  = "se-sto"
+#
+#   rules {
+#     name        = "ssh"
+#     direction   = "Ingress"
+#     protocol    = "TCP"
+#     port        = 22
+#     remote_cidr = "0.0.0.0/0"
+#   }
+#
+#   rules {
+#     name        = "k8s-api"
+#     direction   = "Ingress"
+#     protocol    = "TCP"
+#     port        = 6443
+#     remote_cidr = "0.0.0.0/0"
+#   }
+#
+#   labels = {
+#     customer = "customer-123"
+#     managed-by = "terraform"
+#   }
+# }
+
+---
+# Step 2: Reference Terraform resources in CAPI cluster
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: customer-123-cluster
+  namespace: default
+  labels:
+    customer: customer-123
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.244.0.0/16"]
+    services:
+      cidrBlocks: ["10.96.0.0/12"]
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: customer-123-cluster
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: customer-123-cluster-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: customer-123-cluster
+  namespace: default
+spec:
+  project: ${EVROC_PROJECT}
+  region: se-sto
+  failureDomains:
+  - a
+  # Future: Reference Terraform-created VPC/network
+  # network:
+  #   existingVpcId: "terraform-vpc-id"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: customer-123-cluster-control-plane
+  namespace: default
+spec:
+  replicas: 1
+  version: v1.28.0
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: customer-123-cluster-control-plane
+  kubeadmConfigSpec:
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+---
+# Control Plane Machine Template - Uses Terraform-created resources
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: customer-123-cluster-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: se-sto
+      computeProfile: a1a.m
+      image: ubuntu-22.04
+      rootDiskSize: 50
+
+      # BYOI: Reference Terraform-created Public IP (NOT managed by CAPI)
+      existingPublicIpName: customer-123-control-plane-ip
+
+      # BYOI: Reference Terraform-created Security Group (NOT managed by CAPI)
+      existingSecurityGroupNames:
+      - customer-123-k8s-sg
+
+      # Alternative: Mix BYOI and CAPI-managed resources
+      # existingPublicIpName: customer-123-control-plane-ip  # Terraform
+      # networkingConfig.securityGroups.existingNames:       # CAPI-managed
+      # - name: my-cluster-sg
+---
+# Worker MachineDeployment
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: customer-123-cluster-workers
+  namespace: default
+spec:
+  clusterName: customer-123-cluster
+  replicas: 3
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: customer-123-cluster
+      version: v1.28.0
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: customer-123-cluster-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: customer-123-cluster-workers
+---
+# Worker Machine Template - Shares Terraform security group
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: customer-123-cluster-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: se-sto
+      computeProfile: a1a.m
+      image: ubuntu-22.04
+      rootDiskSize: 100
+
+      # Workers share the same Terraform-created security group
+      existingSecurityGroupNames:
+      - customer-123-k8s-sg
+
+      # Workers don't need public IPs (use NAT gateway or internal-only)
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: customer-123-cluster-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+
+---
+# Usage Instructions
+#
+# 1. Create infrastructure with Terraform:
+#    cd terraform
+#    terraform apply
+#
+# 2. Set environment variables:
+#    export EVROC_PROJECT="your-project-id"
+#
+# 3. Apply CAPI cluster (references Terraform resources):
+#    envsubst < terraform-byoi-integration.yaml | kubectl apply -f -
+#
+# 4. CAPI will:
+#    - Create VMs and attach to Terraform-created IP and security group
+#    - NOT create or delete the IP or security group
+#    - Use existing resources as if CAPI created them
+#
+# 5. When deleting the cluster:
+#    kubectl delete cluster customer-123-cluster
+#    # Terraform resources (IP, SG) remain intact
+#
+# 6. Cleanup Terraform resources separately:
+#    cd terraform
+#    terraform destroy
+
+---
+# Benefits of BYOI Pattern:
+#
+# 1. Centralized Infrastructure Management
+#    - All infrastructure in Terraform (compliance, GitOps)
+#    - CAPI only manages compute and Kubernetes
+#
+# 2. Multi-Customer Platforms
+#    - Create one Terraform project per customer
+#    - Each customer gets dedicated IPs and security groups
+#    - CAPI creates clusters referencing customer infrastructure
+#
+# 3. Shared Resources
+#    - Share security groups across multiple clusters
+#    - Reuse public IPs across cluster recreations
+#    - Centralized networking management
+#
+# 4. Cost Optimization
+#    - Reuse expensive resources (IPs, load balancers)
+#    - Delete clusters without losing static IPs
+#
+# 5. Compliance
+#    - Infrastructure declared in version-controlled Terraform
+#    - CAPI provides Kubernetes automation on top

@@ -1,0 +1,46 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+testbin/
+main
+/manager
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+cover.out
+
+# Kubernetes Generated files - skip generated CRD yamls unless needed
+# config/crd/bases
+
+# editor and IDE paraphernalia
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+*.tmp
+
+# Credentials - NEVER commit these!
+.env
+*.env
+.netrc
+/config.yaml
+credentials.yaml
+evroc-credentials.yaml
+test-evroc-config.yaml
+.clusterctl-test-config.yaml
+.clusterctl-test-providers/
+_artifacts/
+test/e2e/_artifacts/
+test/e2e/credentials.yaml
+test/e2e/config.yaml

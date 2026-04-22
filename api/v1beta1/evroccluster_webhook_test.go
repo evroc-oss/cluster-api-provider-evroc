@@ -1,0 +1,671 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 evroc
+
+package v1beta1
+
+import (
+	"context"
+	"testing"
+
+	. "github.com/onsi/gomega"
+	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+)
+
+func int32Ptr(i int32) *int32 { return &i }
+
+var (
+	clusterDefaulter = &EvrocClusterDefaulter{}
+	clusterValidator = &EvrocClusterValidator{}
+)
+
+func TestEvrocClusterDefault(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		name     string
+		cluster  *EvrocCluster
+		expected *EvrocCluster
+	}{
+		{
+			name: "sets default region and failure domains",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+				},
+			},
+			expected: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+						"c",
+					},
+				},
+			},
+		},
+		{
+			name: "preserves existing region",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+				},
+			},
+			expected: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+						"c",
+					},
+				},
+			},
+		},
+		{
+			name: "preserves existing failure domains",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+					},
+				},
+			},
+			expected: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+					},
+				},
+			},
+		},
+		{
+			name: "strips empty credentialsRef (template default)",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					CredentialsRef: &SecretReference{
+						Name:      "",
+						Namespace: "",
+					},
+				},
+			},
+			expected: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					CredentialsRef: nil,
+					FailureDomains: []string{"a", "b", "c"},
+				},
+			},
+		},
+		{
+			name: "defaults credentialsRef namespace to cluster namespace",
+			cluster: &EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "tenant-ns",
+				},
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					CredentialsRef: &SecretReference{
+						Name: "my-creds",
+					},
+				},
+			},
+			expected: &EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "tenant-ns",
+				},
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					CredentialsRef: &SecretReference{
+						Name:      "my-creds",
+						Namespace: "tenant-ns",
+					},
+					FailureDomains: []string{"a", "b", "c"},
+				},
+			},
+		},
+		{
+			name: "preserves explicit credentialsRef namespace",
+			cluster: &EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "tenant-ns",
+				},
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					CredentialsRef: &SecretReference{
+						Name:      "my-creds",
+						Namespace: "other-ns",
+					},
+				},
+			},
+			expected: &EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "tenant-ns",
+				},
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					CredentialsRef: &SecretReference{
+						Name:      "my-creds",
+						Namespace: "other-ns",
+					},
+					FailureDomains: []string{"a", "b", "c"},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := clusterDefaulter.Default(context.Background(), tt.cluster)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(tt.cluster.Spec).To(Equal(tt.expected.Spec))
+		})
+	}
+}
+
+func TestEvrocClusterValidateCreate(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		name            string
+		cluster         *EvrocCluster
+		expectError     bool
+		expectWarning   bool
+		warningContains string
+	}{
+		{
+			name: "valid cluster",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+						"c",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "missing project",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Region: "se-sto",
+					FailureDomains: []string{
+						"a",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "missing region",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					FailureDomains: []string{
+						"a",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "missing failure domains",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid region format",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "invalid",
+					FailureDomains: []string{
+						"invalid-a",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid failure domain format",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"invalid",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "failure domain not in region",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"d",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "duplicate failure domains",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"a",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "single failure domain (valid but warning)",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "ControlPlaneConfig.PublicIP both enabled and existingName",
+			cluster: func() *EvrocCluster {
+				existingName := "my-existing-ip"
+				return &EvrocCluster{
+					Spec: EvrocClusterSpec{
+						Project:        "test-project",
+						Region:         "se-sto",
+						FailureDomains: []string{"a", "b", "c"},
+						ControlPlaneConfig: &ControlPlaneConfig{
+							PublicIP: &PublicIPConfig{
+								Enabled:      true,
+								ExistingName: &existingName,
+							},
+						},
+					},
+				}
+			}(),
+			expectError: true,
+		},
+		{
+			name: "cluster with public IP enabled",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a", "b", "c"},
+					ControlPlaneConfig: &ControlPlaneConfig{
+						PublicIP: &PublicIPConfig{
+							Enabled: true,
+						},
+					},
+				},
+			},
+			expectError:     false,
+			expectWarning:   true,
+			warningContains: "replicas > 1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warnings, err := clusterValidator.ValidateCreate(context.Background(), tt.cluster)
+			if tt.expectError {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+			}
+			if tt.expectWarning {
+				g.Expect(warnings).ToNot(BeEmpty())
+				g.Expect(warnings[0]).To(ContainSubstring(tt.warningContains))
+			}
+		})
+	}
+}
+
+func TestEvrocClusterValidateUpdate(t *testing.T) {
+	g := NewWithT(t)
+
+	oldCluster := &EvrocCluster{
+		Spec: EvrocClusterSpec{
+			Project: "test-project",
+			Region:  "se-sto",
+			FailureDomains: []string{
+				"a",
+				"b",
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		newCluster  *EvrocCluster
+		expectError bool
+	}{
+		{
+			name: "no changes",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "change project (immutable)",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "different-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "change region (immutable)",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "eu-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "add failure domain (mutable)",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+					FailureDomains: []string{
+						"a",
+						"b",
+						"c",
+					},
+				},
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := clusterValidator.ValidateUpdate(context.Background(), oldCluster, tt.newCluster)
+			if tt.expectError {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+			}
+		})
+	}
+}
+
+func TestEvrocClusterConditions(t *testing.T) {
+	cluster := &EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+	}
+
+	conditions := clusterv1.Conditions{
+		{
+			Type:   clusterv1.ConditionType("Ready"),
+			Status: "True",
+		},
+	}
+
+	cluster.SetConditions(conditions)
+	result := cluster.GetConditions()
+
+	assert.NotNil(t, result)
+	assert.Len(t, result, 1)
+	assert.Equal(t, clusterv1.ConditionType("Ready"), result[0].Type)
+}
+
+func TestEvrocClusterValidateDelete(t *testing.T) {
+	cluster := &EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: EvrocClusterSpec{
+			Project:        "test-project",
+			Region:         "se-sto",
+			FailureDomains: []string{"a"},
+		},
+	}
+
+	warnings, err := clusterValidator.ValidateDelete(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Nil(t, warnings)
+}
+
+func TestValidateSecurityGroupRule(t *testing.T) {
+	tests := []struct {
+		name        string
+		rule        SecurityGroupRule
+		expectError bool
+	}{
+		{
+			name: "valid rule with CIDR",
+			rule: SecurityGroupRule{
+				Name:       "ssh",
+				Direction:  "Ingress",
+				Protocol:   "TCP",
+				Port:       int32Ptr(22),
+				RemoteCIDR: "0.0.0.0/0",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid rule with port range",
+			rule: SecurityGroupRule{
+				Name:       "nodeports",
+				Direction:  "Ingress",
+				Protocol:   "TCP",
+				Port:       int32Ptr(30000),
+				EndPort:    int32Ptr(32767),
+				RemoteCIDR: "0.0.0.0/0",
+			},
+			expectError: false,
+		},
+		{
+			name: "mutually exclusive CIDR and security group",
+			rule: SecurityGroupRule{
+				Name:                "bad-rule",
+				Direction:           "Ingress",
+				RemoteCIDR:          "10.0.0.0/8",
+				RemoteSecurityGroup: "other-sg",
+			},
+			expectError: true,
+		},
+		{
+			name: "port out of range (negative)",
+			rule: SecurityGroupRule{
+				Name:      "bad-port",
+				Direction: "Ingress",
+				Port:      int32Ptr(-1),
+			},
+			expectError: true,
+		},
+		{
+			name: "port out of range (too high)",
+			rule: SecurityGroupRule{
+				Name:      "bad-port",
+				Direction: "Ingress",
+				Port:      int32Ptr(70000),
+			},
+			expectError: true,
+		},
+		{
+			name: "endPort out of range",
+			rule: SecurityGroupRule{
+				Name:      "bad-endport",
+				Direction: "Ingress",
+				EndPort:   int32Ptr(70000),
+			},
+			expectError: true,
+		},
+		{
+			name: "endPort less than port",
+			rule: SecurityGroupRule{
+				Name:      "bad-range",
+				Direction: "Ingress",
+				Port:      int32Ptr(8080),
+				EndPort:   int32Ptr(80),
+			},
+			expectError: true,
+		},
+		{
+			name: "valid rule no port",
+			rule: SecurityGroupRule{
+				Name:       "allow-all",
+				Direction:  "Egress",
+				Protocol:   "All",
+				RemoteCIDR: "0.0.0.0/0",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := field.NewPath("spec", "rules")
+			errs := validateSecurityGroupRule(tt.rule, path)
+			if tt.expectError {
+				assert.NotEmpty(t, errs)
+			} else {
+				assert.Empty(t, errs)
+			}
+		})
+	}
+}
+
+func TestEvrocClusterValidateCreate_SecurityGroupRules(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("valid inline security group rules", func(t *testing.T) {
+		cluster := &EvrocCluster{
+			Spec: EvrocClusterSpec{
+				Project:        "test-project",
+				Region:         "se-sto",
+				FailureDomains: []string{"a", "b", "c"},
+				SecurityGroups: &ClusterSecurityGroupsConfig{
+					ControlPlane: &SecurityGroupsConfig{
+						InlineSecurityGroups: []InlineSecurityGroup{
+							{
+								Name: "cp-sg",
+								Rules: []SecurityGroupRule{
+									{
+										Name:       "ssh",
+										Direction:  "Ingress",
+										Protocol:   "TCP",
+										Port:       int32Ptr(22),
+										RemoteCIDR: "0.0.0.0/0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		_, err := clusterValidator.ValidateCreate(context.Background(), cluster)
+		g.Expect(err).ToNot(HaveOccurred())
+	})
+
+	t.Run("duplicate security group names across sections", func(t *testing.T) {
+		cluster := &EvrocCluster{
+			Spec: EvrocClusterSpec{
+				Project:        "test-project",
+				Region:         "se-sto",
+				FailureDomains: []string{"a", "b", "c"},
+				SecurityGroups: &ClusterSecurityGroupsConfig{
+					Common: &SecurityGroupsConfig{
+						InlineSecurityGroups: []InlineSecurityGroup{
+							{Name: "dup-sg", Rules: []SecurityGroupRule{}},
+						},
+					},
+					ControlPlane: &SecurityGroupsConfig{
+						InlineSecurityGroups: []InlineSecurityGroup{
+							{Name: "dup-sg", Rules: []SecurityGroupRule{}},
+						},
+					},
+				},
+			},
+		}
+		_, err := clusterValidator.ValidateCreate(context.Background(), cluster)
+		g.Expect(err).To(HaveOccurred())
+	})
+}
+
+func TestEvrocClusterDeepCopy(t *testing.T) {
+	original := &EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: EvrocClusterSpec{
+			Project: "test-project",
+			Region:  "se-sto",
+		},
+	}
+
+	copy := original.DeepCopy()
+	assert.NotNil(t, copy)
+	assert.Equal(t, original.Name, copy.Name)
+	assert.Equal(t, original.Spec.Project, copy.Spec.Project)
+
+	copy.Spec.Project = "modified"
+	assert.NotEqual(t, original.Spec.Project, copy.Spec.Project)
+}

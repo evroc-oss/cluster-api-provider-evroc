@@ -1,0 +1,80 @@
+/*
+Copyright 2026 evroc.
+
+SPDX-License-Identifier: MIT
+*/
+
+package cloud
+
+import (
+	"context"
+	"fmt"
+
+	networkingtypes "github.com/evroc-oss/evroc-api-go-client-sdk/types/networking"
+)
+
+// Create creates a new VPC
+func (vs *VPCService) Create(ctx context.Context, name string, cidr string) (*networkingtypes.VirtualPrivateCloud, error) {
+	request := BuildVPCCreateRequest(name, cidr)
+
+	created, err := vs.client.Networking().VirtualPrivateClouds().Create(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create VPC: %w", err)
+	}
+
+	return created, nil
+}
+
+// Get retrieves a VPC by name
+func (vs *VPCService) Get(ctx context.Context, name string) (*networkingtypes.VirtualPrivateCloud, error) {
+	vpc, err := vs.client.Networking().VirtualPrivateClouds().Get(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get VPC: %w", err)
+	}
+
+	return vpc, nil
+}
+
+// Delete deletes a VPC
+func (vs *VPCService) Delete(ctx context.Context, name string) error {
+	if err := vs.client.Networking().VirtualPrivateClouds().Delete(ctx, name); err != nil {
+		return fmt.Errorf("failed to delete VPC: %w", err)
+	}
+
+	return nil
+}
+
+// List lists all VPCs
+func (vs *VPCService) List(ctx context.Context) ([]networkingtypes.VirtualPrivateCloud, error) {
+	response, err := vs.client.Networking().VirtualPrivateClouds().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VPCs: %w", err)
+	}
+
+	return response.Items, nil
+}
+
+// Exists checks if a VPC exists
+func (vs *VPCService) Exists(ctx context.Context, name string) (bool, error) {
+	_, err := vs.Get(ctx, name)
+	if err != nil {
+		// TODO: Improve error handling to distinguish 404 from other errors
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// BuildVPCCreateRequest builds a VPC create request
+func BuildVPCCreateRequest(name string, cidr string) *networkingtypes.VirtualPrivateCloud {
+	return &networkingtypes.VirtualPrivateCloud{
+		ApiVersion: "networking/v1alpha2",
+		Kind:       "VirtualPrivateCloud",
+		Metadata: networkingtypes.RegionalMetadataRequest{
+			Name: &name,
+		},
+		Spec: map[string]interface{}{
+			"ipv4Cidr": cidr,
+		},
+	}
+}

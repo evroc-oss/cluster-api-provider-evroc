@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+{{ if .Values.webhook.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cluster-api-provider-evroc.fullname" . }}-webhook-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cluster-api-provider-evroc.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: 443
+    targetPort: webhook-server
+    protocol: TCP
+    name: https
+  selector:
+    {{- include "cluster-api-provider-evroc.selectorLabels" . | nindent 4 }}
+{{ end }}

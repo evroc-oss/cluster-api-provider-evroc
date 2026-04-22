@@ -1,0 +1,38 @@
+# Git files
+.git
+.gitignore
+.github
+
+# Build artifacts
+bin/
+*.test
+*.out
+cover.out
+
+# Documentation
+*.md
+docs/
+examples/
+
+# CI/CD
+.gitlab-ci.yml
+
+# IDE
+.vscode/
+.idea/
+
+# Kubernetes
+config/
+testbin/
+
+# Helm
+helm/
+
+# Temporary files
+tmp/
+*.swp
+*.swo
+*~
+
+# MacOS
+.DS_Store

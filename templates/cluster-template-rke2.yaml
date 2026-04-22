@@ -1,0 +1,289 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# RKE2 cluster template for evroc CAPI provider
+#
+# This is a quickstart template. RKE2 ships with Canal (Flannel+Calico) as
+# the default CNI, so no separate CNI installation is needed.
+#
+# Uses CAPRKE2 (bootstrap.cluster.x-k8s.io / controlplane.cluster.x-k8s.io)
+# for SUSE RKE2 - enterprise-hardened Kubernetes distribution.
+# Compatible with Rancher Turtles for auto-import into Rancher.
+#
+# Prerequisites:
+#   - CAPRKE2 v0.12.x+ installed (bootstrap + control-plane providers)
+#   - For Rancher Turtles: rancher-turtles operator installed on the management cluster
+#
+# Required environment variables:
+#   CLUSTER_NAME:               Name of the cluster
+#   EVROC_PROJECT:              evroc project ID
+#
+# Optional environment variables:
+#   EVROC_SSH_KEY:              SSH key name (as registered in the evroc portal)
+#   EVROC_REGION:               evroc region (default: se-sto)
+#   KUBERNETES_VERSION:         RKE2 Kubernetes version (default: v1.30.0+rke2r1)
+#   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
+#   WORKER_MACHINE_COUNT:        Number of worker nodes (default: 3)
+#   EVROC_CONTROL_PLANE_COMPUTE_PROFILE:  Control plane VM compute profile (default: a1a.m)
+#   EVROC_WORKER_COMPUTE_PROFILE:         Worker VM compute profile (default: a1a.m)
+#   EVROC_IMAGE:                 OS image (default: sl-micro.6-1.1)
+#   EVROC_CONTROL_PLANE_DISK_SIZE: Boot disk size GB (default: 100)
+#   EVROC_WORKER_DISK_SIZE:      Boot disk size GB (default: 100)
+#   EVROC_ALLOWED_CIDR:          Source CIDR for SSH and API access (default: 0.0.0.0/0)
+#   POD_CIDR:                    Pod CIDR (default: 10.42.0.0/16)
+#   SERVICE_CIDR:                Service CIDR (default: 10.43.0.0/16)
+#
+# Note: This template uses failureDomains [a, b, c] for multi-zone
+# distribution. Control plane machines receive zones via CAPI's
+# failureDomain assignment. Worker machines (MachineDeployment) do NOT
+# receive failureDomains from CAPI — the controller automatically assigns
+# a zone from the EvrocCluster's failureDomains list using deterministic
+# hashing of the machine name, ensuring even zone distribution.
+#
+# Region labels are set via agentConfig.nodeLabels, but zone labels are
+# NOT set because CAPI assigns zones dynamically via failureDomains.
+# Zone labels require an evroc Cloud Controller Manager (CCM). If your
+# CSI driver needs zone labels, use per-zone MachineDeployments
+# (see README.md "Topology Labels" section).
+
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+  labels:
+    # Rancher Turtles auto-import: set to "true" to have Turtles import this
+    # cluster into Rancher automatically once it becomes ready.
+    # cluster-api.cattle.io/rancher-auto-import: "true"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - ${POD_CIDR:=10.42.0.0/16}
+    services:
+      cidrBlocks:
+      - ${SERVICE_CIDR:=10.43.0.0/16}
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: ${CLUSTER_NAME}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: RKE2ControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+spec:
+  project: ${EVROC_PROJECT}
+  region: ${EVROC_REGION:=se-sto}
+  # Per-cluster credentials (recommended). Create a Secret with evroc API
+  # credentials and set the name here. When empty, falls back to the
+  # globally mounted config file.
+  credentialsRef:
+    name: "${EVROC_CREDENTIALS_SECRET:=}"
+    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+  failureDomains:
+  - a
+  - b
+  - c
+  controlPlaneConfig:
+    publicIP:
+      enabled: true
+  securityGroups:
+    common:
+      inlineSecurityGroups:
+      - name: rke2-common-sg
+        rules:
+        - name: ssh
+          direction: Ingress
+          protocol: TCP
+          port: 22
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+        # kubelet API — metrics-server, log streaming (cluster-internal only)
+        - name: kubelet
+          direction: Ingress
+          protocol: TCP
+          port: 10250
+          remoteCIDR: "10.0.0.0/8"
+        # Canal/Flannel VXLAN — pod-to-pod overlay networking (cluster-internal only)
+        - name: canal-vxlan
+          direction: Ingress
+          protocol: UDP
+          port: 8472
+          remoteCIDR: "10.0.0.0/8"
+        # Egress — allow all outbound traffic
+        - name: allow-all-egress
+          direction: Egress
+          protocol: All
+          remoteCIDR: "0.0.0.0/0"
+    controlPlane:
+      inlineSecurityGroups:
+      - name: rke2-cp-sg
+        rules:
+        # Kubernetes API server — kubectl, CAPI, Rancher access
+        - name: k8s-api
+          direction: Ingress
+          protocol: TCP
+          port: 6443
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+        # RKE2 supervisor — worker node registration (via public IP)
+        - name: rke2-supervisor
+          direction: Ingress
+          protocol: TCP
+          port: 9345
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+        # etcd client — API server to etcd communication (cluster-internal only)
+        - name: etcd-client
+          direction: Ingress
+          protocol: TCP
+          port: 2379
+          remoteCIDR: "10.0.0.0/8"
+        # etcd peer — etcd cluster replication (cluster-internal only)
+        - name: etcd-peer
+          direction: Ingress
+          protocol: TCP
+          port: 2380
+          remoteCIDR: "10.0.0.0/8"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: RKE2ControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT:=3}
+  version: ${KUBERNETES_VERSION:=v1.30.0+rke2r1}
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+  agentConfig:
+    nodeLabels:
+    - "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+  serverConfig:
+    cni: canal
+    cloudProviderName: external
+    tlsSan:
+    - ${CLUSTER_NAME}.${EVROC_REGION:=se-sto}.evroc.cloud
+  preRKE2Commands:
+  # Load kernel modules immediately
+  - modprobe overlay
+  - modprobe br_netfilter
+  # Persist kernel modules across reboots
+  - |
+    cat <<MODULES > /etc/modules-load.d/rke2.conf
+    overlay
+    br_netfilter
+    MODULES
+  # Configure sysctl (use 90- prefix for SUSE/Wicked compatibility)
+  - |
+    cat <<SYSCTL > /etc/sysctl.d/90-rke2.conf
+    net.bridge.bridge-nf-call-iptables = 1
+    net.bridge.bridge-nf-call-ip6tables = 1
+    net.ipv4.ip_forward = 1
+    net.ipv4.conf.all.forwarding = 1
+    SYSCTL
+  # Apply sysctl settings
+  - sysctl --system
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.m}
+      image: ${EVROC_IMAGE:=sl-micro.6-1.1}
+      rootDiskSize: ${EVROC_CONTROL_PLANE_DISK_SIZE:=100}
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT:=3}
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      version: ${KUBERNETES_VERSION:=v1.30.0+rke2r1}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: RKE2ConfigTemplate
+          name: ${CLUSTER_NAME}-md-0
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-md-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.m}
+      image: ${EVROC_IMAGE:=sl-micro.6-1.1}
+      rootDiskSize: ${EVROC_WORKER_DISK_SIZE:=100}
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: RKE2ConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      agentConfig:
+        nodeLabels:
+        - "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+      preRKE2Commands:
+      # Load kernel modules immediately
+      - modprobe overlay
+      - modprobe br_netfilter
+      # Persist kernel modules across reboots
+      - |
+        cat <<MODULES > /etc/modules-load.d/rke2.conf
+        overlay
+        br_netfilter
+        MODULES
+      # Configure sysctl (use 90- prefix for SUSE/Wicked compatibility)
+      - |
+        cat <<SYSCTL > /etc/sysctl.d/90-rke2.conf
+        net.bridge.bridge-nf-call-iptables = 1
+        net.bridge.bridge-nf-call-ip6tables = 1
+        net.ipv4.ip_forward = 1
+        net.ipv4.conf.all.forwarding = 1
+        SYSCTL
+      # Apply sysctl settings
+      - sysctl --system

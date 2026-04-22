@@ -1,0 +1,1700 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 evroc
+
+package controller
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"mime/multipart"
+	"net/textproto"
+	"regexp"
+	"strings"
+	"time"
+
+	evroc "github.com/evroc-oss/evroc-go-sdk"
+	"github.com/evroc-oss/evroc-go-sdk/compute"
+	"github.com/evroc-oss/evroc-go-sdk/metrics"
+	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/record"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/controller/helpers"
+)
+
+const (
+	machineFinalizer = "infrastructure.cluster.x-k8s.io/evrocmachine"
+
+	// Requeue intervals for various waiting scenarios
+	requeueImmediately = 1 * time.Second
+	requeueShort       = 10 * time.Second
+	requeueMedium      = 15 * time.Second
+	requeueLong        = 30 * time.Second
+)
+
+var (
+	// Compiled regexes for parsing quota error messages
+	requestedQuotaRegex = regexp.MustCompile(`Requested additional ([0-9]+) vCPUs? and ([0-9.]+[A-Z]*) memory`)
+	availableQuotaRegex = regexp.MustCompile(`Only ([0-9]+) vCPUs? \(out of ([0-9]+) in quota\) and ([0-9.]+[A-Z]*) memory \(out of ([0-9.]+[A-Z]*) in quota\)`)
+)
+
+// machineResourceLabels returns ownership labels for cloud resources created by this machine.
+// It merges cluster-level additionalLabels, machine-level additionalLabels, and ownership
+// labels. Machine labels override cluster labels; ownership labels always win.
+func machineResourceLabels(machine *infrav1.EvrocMachine, clusterUID string, clusterLabels map[string]string) map[string]string {
+	clusterName := machine.Labels[clusterv1.ClusterNameLabel]
+	if clusterName == "" {
+		clusterName = "unknown"
+	}
+	if clusterUID == "" {
+		clusterUID = "unknown"
+	}
+	return helpers.ResourceLabels(clusterName, clusterUID, clusterLabels, machine.Spec.AdditionalLabels)
+}
+
+// EvrocMachineReconciler reconciles a EvrocMachine object
+type EvrocMachineReconciler struct {
+	client.Client
+	Scheme      *runtime.Scheme
+	CloudClient cloud.ClientInterface
+	Recorder    record.EventRecorder
+	SDKMetrics  *metrics.Manager
+}
+
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocmachines,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocmachines/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocmachines/finalizers,verbs=update
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocmachinetemplates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+
+func (r *EvrocMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	// Fetch the EvrocMachine instance
+	machine := &infrav1.EvrocMachine{}
+	if err := r.Get(ctx, req.NamespacedName, machine); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Check for pause (CAPI contract): check both the annotation on this object
+	// and Spec.Paused on the owning Cluster. This must happen BEFORE deletion
+	// handling so that clusterctl move does not trigger infrastructure cleanup.
+	if helpers.IsPaused(ctx, r.Client, machine) {
+		log.Info("Reconciliation is paused for this object")
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("Reconciling EvrocMachine",
+		"name", machine.Name,
+		"project", machine.Spec.Project,
+		"region", machine.Spec.Region,
+		"computeProfile", machine.Spec.ComputeProfile,
+		"image", machine.Spec.Image)
+
+	// Resolve the owning EvrocCluster via CAPI Cluster.Spec.InfrastructureRef.
+	// This is fetched once and threaded through to avoid repeated lookups and
+	// the assumption that CAPI Cluster name == EvrocCluster name.
+	evrocCluster, err := r.resolveEvrocCluster(ctx, machine)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving EvrocCluster: %w", err)
+	}
+
+	// Resolve cloud client — per-cluster credentials take priority over global.
+	cloudClient, err := r.resolveCloudClient(ctx, machine, evrocCluster)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving cloud credentials: %w", err)
+	}
+
+	// Handle deletion using helper
+	if deleting, err := helpers.HandleDeletion(ctx, r.Client, machine, machineFinalizer,
+		func(ctx context.Context) error {
+			return r.deleteMachineFromCloud(ctx, machine, cloudClient)
+		}); deleting {
+		return ctrl.Result{}, err
+	}
+
+	// Ensure finalizer using helper
+	if requeue, err := helpers.EnsureFinalizer(ctx, r.Client, machine, machineFinalizer); err != nil || requeue {
+		return ctrl.Result{RequeueAfter: requeueImmediately}, err
+	}
+
+	return r.reconcileNormal(ctx, machine, cloudClient, evrocCluster)
+}
+
+// resolveEvrocCluster fetches the EvrocCluster that owns this machine by going
+// through the CAPI Cluster's InfrastructureRef, rather than assuming the CAPI
+// Cluster name and EvrocCluster name are identical.
+// Returns nil (not an error) when the cluster is not yet available.
+func (r *EvrocMachineReconciler) resolveEvrocCluster(ctx context.Context, machine *infrav1.EvrocMachine) (*infrav1.EvrocCluster, error) {
+	clusterName := machine.Labels[clusterv1.ClusterNameLabel]
+	if clusterName == "" {
+		return nil, nil
+	}
+
+	// Fetch the CAPI Cluster to get the canonical InfrastructureRef.
+	capiCluster := &clusterv1.Cluster{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      clusterName,
+		Namespace: machine.Namespace,
+	}, capiCluster); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get CAPI Cluster %q: %w", clusterName, err)
+	}
+
+	infraName := capiCluster.Spec.InfrastructureRef.Name
+	if infraName == "" {
+		return nil, nil
+	}
+
+	evrocCluster := &infrav1.EvrocCluster{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      infraName,
+		Namespace: machine.Namespace,
+	}, evrocCluster); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get EvrocCluster %q: %w", infraName, err)
+	}
+
+	return evrocCluster, nil
+}
+
+// resolveCloudClient returns a cloud client for this machine's cluster.
+// If the owning EvrocCluster specifies a CredentialsRef, those credentials are used.
+// Otherwise the globally configured fallback client is returned.
+func (r *EvrocMachineReconciler) resolveCloudClient(ctx context.Context, machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster) (cloud.ClientInterface, error) {
+	if evrocCluster == nil {
+		if r.CloudClient == nil {
+			return nil, fmt.Errorf("no EvrocCluster found and no global credentials configured")
+		}
+		return r.CloudClient, nil
+	}
+
+	secretName := ""
+	secretNamespace := evrocCluster.Namespace
+	if ref := evrocCluster.Spec.CredentialsRef; ref != nil {
+		secretName = ref.Name
+		if ref.Namespace != "" {
+			secretNamespace = ref.Namespace
+		}
+	}
+	return cloud.ClientForCluster(ctx, r.Client, r.CloudClient, secretName, secretNamespace, r.SDKMetrics)
+}
+
+// clusterLabelInfo holds cluster-level label data fetched once per reconciliation.
+type clusterLabelInfo struct {
+	// UID is the EvrocCluster UID for the capi_cluster-uid ownership label.
+	UID string
+	// AdditionalLabels are user-specified labels from the EvrocCluster spec.
+	AdditionalLabels map[string]string
+}
+
+// clusterLabelInfoFrom extracts label propagation data from an already-fetched EvrocCluster.
+func clusterLabelInfoFrom(evrocCluster *infrav1.EvrocCluster) clusterLabelInfo {
+	if evrocCluster == nil {
+		return clusterLabelInfo{}
+	}
+	return clusterLabelInfo{
+		UID:              string(evrocCluster.UID),
+		AdditionalLabels: evrocCluster.Spec.AdditionalLabels,
+	}
+}
+
+func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface, evrocCluster *infrav1.EvrocCluster) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	// Extract cluster-level label info from the already-resolved EvrocCluster.
+	clusterInfo := clusterLabelInfoFrom(evrocCluster)
+
+	// Find the owner CAPI Machine by walking owner references.
+	// Use unstructured to support any CAPI API version installed in the cluster.
+	ownerName, ownerAPIVersion := getOwnerMachineRef(machine.OwnerReferences)
+	if ownerName == "" {
+		log.Info("Owner CAPI Machine not found yet, requeueing", "name", machine.Name)
+		return ctrl.Result{RequeueAfter: requeueShort}, nil
+	}
+
+	// Fetch the Machine unstructured to read bootstrap data regardless of CAPI API version.
+	ownerMachine := &unstructured.Unstructured{}
+	ownerMachine.SetAPIVersion(ownerAPIVersion)
+	ownerMachine.SetKind("Machine")
+	if err := r.Get(ctx, types.NamespacedName{Name: ownerName, Namespace: machine.Namespace}, ownerMachine); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			log.Info("Owner CAPI Machine not found yet, requeueing", "machineName", ownerName)
+			return ctrl.Result{RequeueAfter: requeueShort}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get owner Machine: %w", err)
+	}
+
+	// Resolve the availability zone from the CAPI Machine's failureDomain
+	// (assigned by KCP for control plane nodes) or by picking the least-used
+	// zone from the EvrocCluster's failureDomains (for workers).
+	var resolvedZone string
+	if fd, ok, _ := unstructured.NestedString(ownerMachine.Object, "spec", "failureDomain"); ok && fd != "" {
+		resolvedZone = fd
+	}
+	if resolvedZone == "" {
+		zone, err := r.pickZoneForMachine(ctx, machine, evrocCluster)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if zone != "" {
+			log.Info("Resolved availabilityZone from EvrocCluster failureDomains", "zone", zone)
+			resolvedZone = zone
+		}
+	}
+
+	// Guard: never proceed to cloud API calls without a zone.
+	// This prevents cryptic API errors from evroc when zone is empty.
+	if resolvedZone == "" {
+		return r.handleMachineError(ctx, machine, fmt.Errorf(
+			"availabilityZone is empty: configure failureDomains on the EvrocCluster so the controller can assign one automatically"))
+	}
+	machine.Status.AvailabilityZone = resolvedZone
+
+	// Wait for bootstrap provider to write cloud-init data.
+	dataSecretName, found, _ := unstructured.NestedString(ownerMachine.Object, "spec", "bootstrap", "dataSecretName")
+	if !found || dataSecretName == "" {
+		log.Info("Bootstrap data not yet ready, requeueing", "machine", machine.Name)
+		return ctrl.Result{RequeueAfter: requeueShort}, nil
+	}
+
+	// Read cloud-init from the bootstrap secret.
+	bootstrapSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: machine.Namespace,
+		Name:      dataSecretName,
+	}, bootstrapSecret); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			log.Info("Bootstrap secret not ready yet, requeueing", "secretName", dataSecretName)
+			return ctrl.Result{RequeueAfter: requeueShort}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get bootstrap secret %q: %w", dataSecretName, err)
+	}
+	bootstrapUserData := string(bootstrapSecret.Data["value"])
+	userData := mergeUserData(bootstrapUserData, machine.Spec.UserData)
+
+	// Ensure the boot disk exists and is ready before creating the VM.
+	// Evroc requires a disk to be pre-created (with image) and referenced by name in VMs.
+	if machine.Spec.RootDiskSize > 0 {
+		diskName := fmt.Sprintf("%s-boot-disk", machine.Name)
+		evrocDisk, diskErr := cloudClient.Disks().Get(ctx, diskName)
+		if errors.Is(diskErr, evroc.ErrNotFound) {
+			log.Info("Creating boot disk", "disk", diskName, "image", machine.Spec.Image, "size", machine.Spec.RootDiskSize)
+			if _, createErr := cloudClient.Disks().Create(ctx, diskName,
+				machine.Spec.RootDiskSize, machine.Spec.Image, machine.Status.AvailabilityZone, machineResourceLabels(machine, clusterInfo.UID, clusterInfo.AdditionalLabels)); createErr != nil {
+				return r.handleMachineError(ctx, machine, fmt.Errorf("failed to create boot disk: %w", createErr))
+			}
+			// Track boot disk in status so deletion reads from status, not guessing.
+			r.ensureResources(machine)
+			machine.Status.Resources.BootDisk = &infrav1.ManagedDisk{
+				Name:    diskName,
+				SizeGB:  machine.Spec.RootDiskSize,
+				Managed: true,
+			}
+			if err := r.persistResourcesStatus(ctx, machine); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to persist boot disk status: %w", err)
+			}
+			return ctrl.Result{RequeueAfter: requeueLong}, nil
+		} else if diskErr != nil {
+			return r.handleMachineError(ctx, machine, fmt.Errorf("failed to get boot disk: %w", diskErr))
+		}
+		if !compute.IsDiskReady(evrocDisk) {
+			if reason, message := getDiskErrorCondition(evrocDisk); reason != "" {
+				return r.handleMachineError(ctx, machine,
+					fmt.Errorf("boot disk %q failed: %s: %s", diskName, reason, message))
+			}
+			log.Info("Boot disk not yet ready, requeueing", "disk", diskName)
+			return ctrl.Result{RequeueAfter: requeueLong}, nil
+		}
+		// Ensure boot disk is tracked (may have been created before this tracking was added).
+		r.ensureResources(machine)
+		if machine.Status.Resources.BootDisk == nil {
+			machine.Status.Resources.BootDisk = &infrav1.ManagedDisk{
+				ID:      evrocDisk.Metadata.Id,
+				Name:    diskName,
+				SizeGB:  machine.Spec.RootDiskSize,
+				Managed: true,
+			}
+		}
+	}
+
+	// Ensure additional managed data disks are created before VM creation.
+	additionalDiskPending, additionalDisks, err := r.reconcileAdditionalDisks(ctx, machine, cloudClient, clusterInfo)
+	if err != nil {
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile additional disks: %w", err))
+	}
+	r.ensureResources(machine)
+	machine.Status.Resources.AdditionalDisks = additionalDisks
+	if additionalDiskPending {
+		if err := r.persistResourcesStatus(ctx, machine); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to persist managed additional disks status: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: requeueLong}, nil
+	}
+
+	// Ensure placement group references are valid/managed before VM creation.
+	placementPending, placementGroup, err := r.reconcilePlacementGroup(ctx, machine, cloudClient, clusterInfo)
+	if err != nil {
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile placement group: %w", err))
+	}
+	r.ensureResources(machine)
+	machine.Status.Resources.PlacementGroup = placementGroup
+	if placementPending {
+		if err := r.persistResourcesStatus(ctx, machine); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to persist managed placement group status: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: requeueMedium}, nil
+	}
+
+	// Ensure machine-level PublicIP intent is reconciled before VM creation.
+	publicIPPending, publicIP, err := r.reconcileMachinePublicIP(ctx, machine, cloudClient, clusterInfo)
+	if err != nil {
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile machine public IP: %w", err))
+	}
+	r.ensureResources(machine)
+	machine.Status.Resources.PublicIP = publicIP
+	if publicIPPending {
+		if err := r.persistResourcesStatus(ctx, machine); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to persist managed public IP status: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: requeueShort}, nil
+	}
+
+	// Ensure machine-level inline security groups exist before creating the VM.
+	if err := r.reconcileMachineSecurityGroups(ctx, machine, cloudClient, clusterInfo); err != nil {
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile machine security groups: %w", err))
+	}
+
+	// Try to get existing machine
+	evrocVM, err := cloudClient.VirtualMachines().Get(ctx, machine.Name)
+
+	if errors.Is(err, evroc.ErrNotFound) {
+		// Machine doesn't exist - create it
+		log.Info("Creating machine in evroc", "name", machine.Name)
+		vmRequest, buildErr := r.buildVMRequest(machine, userData, evrocCluster)
+		if buildErr != nil {
+			return r.handleMachineError(ctx, machine, fmt.Errorf("failed to build VM request: %w", buildErr))
+		}
+
+		_, err = cloudClient.VirtualMachines().Create(ctx, vmRequest)
+		if err != nil {
+			return r.handleMachineError(ctx, machine, err)
+		}
+
+		log.Info("Machine creation submitted, requeueing to check readiness", "name", machine.Name)
+		return ctrl.Result{RequeueAfter: requeueLong}, nil
+	} else if err != nil {
+		// Real error (not 404)
+		return r.handleMachineError(ctx, machine, err)
+	}
+
+	// If machine is not yet ready, requeue to poll
+	if !compute.IsVMReady(evrocVM) {
+		log.Info("Machine not yet ready, requeueing", "name", machine.Name)
+		return ctrl.Result{RequeueAfter: requeueLong}, nil
+	}
+
+	// Reconcile security groups on existing VM if configuration changed
+	// This allows users to update security groups without destroying the cluster
+	if err := r.reconcileVMSecurityGroups(ctx, machine, cloudClient, evrocCluster); err != nil {
+		log.Error(err, "failed to reconcile VM security groups (will retry)")
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile public IP on existing VM if configuration changed
+	// This allows users to add/remove/change public IPs without destroying the cluster
+	if err := r.reconcileVMPublicIP(ctx, machine, cloudClient, evrocCluster); err != nil {
+		log.Error(err, "failed to reconcile VM public IP (will retry)")
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile disks on existing VM if configuration changed.
+	// This allows users to add/remove additional disks without destroying the VM.
+	if err := r.reconcileVMDisks(ctx, machine, cloudClient); err != nil {
+		log.Error(err, "failed to reconcile VM disks (will retry)")
+		return ctrl.Result{}, err
+	}
+
+	// Reconcile placement on existing VM if configuration changed.
+	// The evroc API rejects this if the VM is running; the controller
+	// will requeue and succeed once the VM is stopped.
+	if err := r.reconcileVMPlacement(ctx, machine, cloudClient); err != nil {
+		log.Error(err, "failed to reconcile VM placement (will retry)")
+		return ctrl.Result{}, err
+	}
+
+	// Set provider ID in spec if not already set (must be done before status update to avoid race)
+	needsSpecUpdate := false
+	if machine.Spec.ProviderID == nil {
+		providerID := fmt.Sprintf("evroc://%s", evrocVM.Metadata.Uid.String())
+		machine.Spec.ProviderID = &providerID
+		needsSpecUpdate = true
+	}
+
+	// Update spec first if needed, then re-fetch to get latest resource version
+	if needsSpecUpdate {
+		if err := r.Update(ctx, machine); err != nil {
+			log.Error(err, "failed to update spec")
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, client.ObjectKeyFromObject(machine), machine); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+	}
+
+	// Update status using SDK helper
+	machine.Status.Ready = compute.IsVMReady(evrocVM)
+	machine.Status.MachineID = evrocVM.Metadata.Uid.String()
+	machine.Status.Addresses = extractMachineAddresses(evrocVM)
+
+	// Set Ready condition.
+	if machine.Status.Ready {
+		setMachineCondition(machine, "Ready", corev1.ConditionTrue, "MachineReady", "")
+	} else {
+		setMachineCondition(machine, "Ready", corev1.ConditionFalse, "MachineNotReady", "VM is not yet ready")
+	}
+
+	// Set initialization.provisioned as soon as the VM exists.
+	// CAPI v1beta2 contract: infrastructure is "provisioned" when the cloud
+	// resource exists — this must NOT be gated on ready state, node joining,
+	// or providerID patching, otherwise CAPI never transitions the Machine
+	// past Provisioning and the node can never join (deadlock).
+	provisioned := true
+	machine.Status.Initialization.Provisioned = &provisioned
+
+	// Update status (includes ready, addresses, phase, and initialization)
+	if err := r.Status().Update(ctx, machine); err != nil {
+		log.Error(err, "failed to update status")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Machine status updated",
+		"ready", machine.Status.Ready,
+		"machineID", machine.Status.MachineID,
+		"addressCount", len(machine.Status.Addresses))
+
+	// Patch the workload-cluster node's spec.providerID so CAPI can link the node
+	// to this Machine and transition it to Running. Without this, an external CCM
+	// would be required to set the providerID, which we don't have.
+	if machine.Status.Ready {
+		wc, err := r.getWorkloadClusterClient(ctx, machine)
+		if err != nil {
+			log.Error(err, "failed to get workload cluster client (will retry)")
+			return ctrl.Result{RequeueAfter: requeueMedium}, nil
+		}
+		if wc == nil {
+			// Kubeconfig not yet available; retry shortly.
+			return ctrl.Result{RequeueAfter: requeueMedium}, nil
+		}
+
+		if patched, err := r.patchNodeProviderID(ctx, machine, wc); err != nil {
+			log.Error(err, "failed to patch node providerID (will retry)")
+			return ctrl.Result{RequeueAfter: requeueMedium}, nil
+		} else if !patched {
+			// Node not yet available; retry shortly.
+			return ctrl.Result{RequeueAfter: requeueMedium}, nil
+		}
+
+		// Add topology labels and remove cloud provider taints
+		// This is bootstrap-provider agnostic and works with any Kubernetes distribution
+		if err := r.reconcileNodeLabelsAndTaints(ctx, machine, wc); err != nil {
+			log.Error(err, "failed to reconcile node labels and taints (will retry)")
+			// Don't fail reconciliation, just log and continue
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *EvrocMachineReconciler) handleMachineError(ctx context.Context, machine *infrav1.EvrocMachine, err error) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	machine.Status.Ready = false
+
+	errMsg := err.Error()
+	failureReason := "MachineOperationFailed"
+	failureMessage := fmt.Sprintf("Failed to get/create machine: %v", err)
+	eventReason := "MachineOperationFailed"
+	eventMessage := "Failed to get/create machine: %v"
+	eventArgs := []any{err}
+
+	// Determine if this is a terminal (non-retryable) error.
+	// Terminal errors are returned to controller-runtime which will use its
+	// default backoff. Transient errors get an explicit requeue to avoid
+	// rapid retry storms against the cloud API.
+	terminalError := false
+
+	// Check for quota errors specifically
+	if errors.Is(err, evroc.ErrForbidden) && strings.Contains(strings.ToLower(errMsg), "quota") {
+		quotaDetails := parseQuotaError(errMsg)
+		failureReason = "QuotaExceeded"
+		failureMessage = quotaDetails
+		eventReason = "QuotaExceeded"
+		eventMessage = quotaDetails
+		eventArgs = nil
+		terminalError = true
+		log.Error(err, "Quota exceeded", "details", quotaDetails)
+	} else if errors.Is(err, evroc.ErrForbidden) {
+		failureReason = "InsufficientPermissions"
+		failureMessage = fmt.Sprintf("Access denied creating machine: %v", err)
+		eventReason = "InsufficientPermissions"
+		eventMessage = "Access denied creating machine: %v"
+		eventArgs = []any{err}
+		terminalError = true
+	} else if errors.Is(err, evroc.ErrBadRequest) {
+		failureReason = "InvalidConfiguration"
+		failureMessage = fmt.Sprintf("Invalid machine configuration: %v", err)
+		eventReason = "InvalidConfiguration"
+		eventMessage = "Invalid machine configuration: %v"
+		eventArgs = []any{err}
+		terminalError = true
+	}
+
+	setMachineCondition(machine, "Ready", corev1.ConditionFalse, failureReason, failureMessage)
+	r.emitMachineWarningEvent(machine, eventReason, eventMessage, eventArgs...)
+
+	if statusErr := r.Status().Update(ctx, machine); statusErr != nil {
+		log.Error(statusErr, "failed to update status")
+	}
+
+	// Terminal errors (quota, permissions, bad request) won't resolve on retry.
+	// Transient errors (network, server errors) get a 30s backoff before retry.
+	if terminalError {
+		return ctrl.Result{}, err
+	}
+	log.Info("Transient cloud API error, will retry", "error", err, "retryAfter", "30s")
+	return ctrl.Result{RequeueAfter: requeueLong}, nil
+}
+
+func (r *EvrocMachineReconciler) emitMachineWarningEvent(machine *infrav1.EvrocMachine, reason, messageFmt string, args ...any) {
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(machine, corev1.EventTypeWarning, reason, messageFmt, args...)
+}
+
+// parseQuotaError extracts quota details from the error message to provide actionable feedback
+func parseQuotaError(errMsg string) string {
+	// Error format: "not enough quota to perform request. Requested additional X vCPUs and Y memory. Only Z vCPUs (out of W in quota) and A memory (out of B in quota) available"
+
+	requestedMatches := requestedQuotaRegex.FindStringSubmatch(errMsg)
+	availableMatches := availableQuotaRegex.FindStringSubmatch(errMsg)
+
+	if len(requestedMatches) == 3 && len(availableMatches) == 5 {
+		return fmt.Sprintf("Quota exceeded: Requested %s vCPUs and %s memory, but only %s/%s vCPUs and %s/%s memory available. "+
+			"Reduce machine size or increase quota limits to proceed.",
+			requestedMatches[1], requestedMatches[2],
+			availableMatches[1], availableMatches[2],
+			availableMatches[3], availableMatches[4])
+	}
+
+	// Fallback if regex doesn't match
+	return fmt.Sprintf("Quota exceeded: %s. Reduce machine size or increase quota limits to proceed.", errMsg)
+}
+
+func (r *EvrocMachineReconciler) deleteMachineFromCloud(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface) error {
+	log := log.FromContext(ctx)
+	log.Info("Deleting machine from evroc", "name", machine.Name)
+
+	// Collect errors from all deletion steps so we attempt every resource
+	// even if an earlier one fails. This prevents orphaned cloud resources.
+	var errs []error
+
+	// Delete VM and wait for it to be fully removed before cleaning up
+	// dependent resources (disks, SGs, IPs). Without waiting, the finalizer
+	// could be removed while cloud resources are still attached to the VM.
+	if err := cloudClient.VirtualMachines().Delete(ctx, machine.Name); err != nil {
+		if !helpers.IsNotFoundError(err) {
+			return fmt.Errorf("failed to delete machine: %w", err)
+		}
+		log.Info("Machine already deleted")
+	} else {
+		log.Info("Machine deletion initiated, waiting for removal", "name", machine.Name)
+		if err := cloudClient.VirtualMachines().WaitForDeleted(ctx, machine.Name, 5*time.Minute); err != nil {
+			return fmt.Errorf("timed out waiting for machine %s to be deleted: %w", machine.Name, err)
+		}
+		log.Info("Machine deleted", "name", machine.Name)
+	}
+
+	// Delete managed security groups using status (the record of what was
+	// actually created), not spec (which may have been cleared by the user).
+	if machine.Status.Resources != nil {
+		for _, tracked := range machine.Status.Resources.SecurityGroups {
+			if !tracked.Managed {
+				continue
+			}
+			log.Info("Deleting managed security group", "name", tracked.Name)
+			if err := cloudClient.SecurityGroups().Delete(ctx, tracked.Name); err != nil {
+				if !helpers.IsNotFoundError(err) {
+					errs = append(errs, fmt.Errorf("failed to delete managed security group %s: %w", tracked.Name, err))
+				}
+			}
+		}
+	}
+
+	// Placement groups are not managed by CAPI (only referenced via existingGroupName),
+	// so no PG cleanup is needed here.
+
+	// Delete managed PublicIP when created by this controller.
+	if machine.Status.Resources != nil &&
+		machine.Status.Resources.PublicIP != nil &&
+		machine.Status.Resources.PublicIP.Managed {
+		pipName := machine.Status.Resources.PublicIP.Name
+		log.Info("Deleting managed public IP", "name", pipName)
+		if err := cloudClient.PublicIPs().Delete(ctx, pipName); err != nil {
+			if !helpers.IsNotFoundError(err) {
+				errs = append(errs, fmt.Errorf("failed to delete managed public IP %s: %w", pipName, err))
+			}
+		}
+	}
+
+	// Delete additional managed disks.
+	if machine.Status.Resources != nil {
+		for _, managedDisk := range machine.Status.Resources.AdditionalDisks {
+			if !managedDisk.Managed {
+				continue
+			}
+			log.Info("Deleting additional managed disk", "name", managedDisk.Name)
+			if err := cloudClient.Disks().Delete(ctx, managedDisk.Name); err != nil {
+				if !helpers.IsNotFoundError(err) {
+					errs = append(errs, fmt.Errorf("failed to delete additional disk %s: %w", managedDisk.Name, err))
+				}
+			}
+		}
+	}
+
+	// Delete the boot disk tracked in status.
+	if machine.Status.Resources != nil &&
+		machine.Status.Resources.BootDisk != nil &&
+		machine.Status.Resources.BootDisk.Managed {
+		diskName := machine.Status.Resources.BootDisk.Name
+		log.Info("Deleting boot disk", "disk", diskName)
+		if err := cloudClient.Disks().Delete(ctx, diskName); err != nil {
+			if !helpers.IsNotFoundError(err) {
+				errs = append(errs, fmt.Errorf("failed to delete boot disk: %w", err))
+			}
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// getWorkloadClusterClient builds a controller-runtime client for the workload
+// cluster identified by the machine's cluster label. Returns (nil, nil) when the
+// kubeconfig secret does not yet exist (caller should requeue).
+func (r *EvrocMachineReconciler) getWorkloadClusterClient(ctx context.Context, machine *infrav1.EvrocMachine) (client.Client, error) {
+	clusterName := machine.Labels["cluster.x-k8s.io/cluster-name"]
+	if clusterName == "" {
+		return nil, nil
+	}
+
+	kubeconfigSecret := &corev1.Secret{}
+	err := r.Get(ctx, types.NamespacedName{
+		Namespace: machine.Namespace,
+		Name:      clusterName + "-kubeconfig",
+	}, kubeconfigSecret)
+	if err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil, nil // kubeconfig not ready yet
+		}
+		return nil, fmt.Errorf("getting kubeconfig secret: %w", err)
+	}
+
+	restCfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfigSecret.Data["value"])
+	if err != nil {
+		return nil, fmt.Errorf("parsing workload kubeconfig: %w", err)
+	}
+
+	wc, err := client.New(restCfg, client.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("creating workload cluster client: %w", err)
+	}
+	return wc, nil
+}
+
+// patchNodeProviderID sets spec.providerID on the workload-cluster node whose
+// name matches this EvrocMachine, so that CAPI can link the node to the Machine
+// and transition it to Running phase. Returns (true, nil) when done (or already
+// set), (false, nil) when the node is not yet available.
+func (r *EvrocMachineReconciler) patchNodeProviderID(ctx context.Context, machine *infrav1.EvrocMachine, wc client.Client) (bool, error) {
+	if machine.Spec.ProviderID == nil {
+		return false, nil
+	}
+
+	node := &corev1.Node{}
+	if err := wc.Get(ctx, types.NamespacedName{Name: machine.Name}, node); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return false, nil // node not found yet
+		}
+		return false, fmt.Errorf("getting workload cluster node: %w", err)
+	}
+
+	if node.Spec.ProviderID == *machine.Spec.ProviderID {
+		return true, nil // already set
+	}
+
+	patch := client.MergeFrom(node.DeepCopy())
+	node.Spec.ProviderID = *machine.Spec.ProviderID
+	if err := wc.Patch(ctx, node, patch); err != nil {
+		return false, fmt.Errorf("patching node providerID: %w", err)
+	}
+	return true, nil
+}
+
+// reconcileNodeLabelsAndTaints adds instance-type labels and removes cloud provider taints
+// This is a temporary solution until we have a full Cloud Controller Manager
+//
+// NOTE: Topology labels (zone, region) should be configured via bootstrap provider:
+// - RKE2: Use agentConfig.nodeLabels in RKE2ConfigTemplate/RKE2ControlPlane
+// - Kubeadm: Use kubeletExtraArgs.node-labels in KubeadmConfigTemplate/KubeadmControlPlane
+func (r *EvrocMachineReconciler) reconcileNodeLabelsAndTaints(ctx context.Context, machine *infrav1.EvrocMachine, wc client.Client) error {
+	targetNode := &corev1.Node{}
+	if err := wc.Get(ctx, types.NamespacedName{Name: machine.Name}, targetNode); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil // node not found yet, will retry
+		}
+		return fmt.Errorf("getting workload cluster node: %w", err)
+	}
+
+	needsUpdate := false
+	patch := client.MergeFrom(targetNode.DeepCopy())
+
+	// Add instance-type label (infrastructure-specific information)
+	if targetNode.Labels == nil {
+		targetNode.Labels = make(map[string]string)
+	}
+
+	if targetNode.Labels["node.kubernetes.io/instance-type"] != machine.Spec.ComputeProfile {
+		targetNode.Labels["node.kubernetes.io/instance-type"] = machine.Spec.ComputeProfile
+		needsUpdate = true
+	}
+
+	// Remove cloud provider initialization taint if present
+	var newTaints []corev1.Taint
+	for _, taint := range targetNode.Spec.Taints {
+		if taint.Key == "node.cloudprovider.kubernetes.io/uninitialized" {
+			needsUpdate = true
+			continue // skip this taint
+		}
+		newTaints = append(newTaints, taint)
+	}
+
+	if needsUpdate {
+		targetNode.Spec.Taints = newTaints
+		if err := wc.Patch(ctx, targetNode, patch); err != nil {
+			return fmt.Errorf("patching node labels and taints: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// pickZoneForMachine selects a zone by finding the least-used failure domain
+// among the EvrocCluster's failureDomains. This ensures even distribution
+// regardless of cluster size (e.g. 3 workers across 3 zones → a, b, c).
+func (r *EvrocMachineReconciler) pickZoneForMachine(
+	ctx context.Context,
+	machine *infrav1.EvrocMachine,
+	evrocCluster *infrav1.EvrocCluster,
+) (string, error) {
+	if evrocCluster == nil || len(evrocCluster.Spec.FailureDomains) == 0 {
+		return "", nil
+	}
+
+	clusterName := machine.Labels[clusterv1.ClusterNameLabel]
+	if clusterName == "" {
+		return "", nil
+	}
+
+	machineList := &infrav1.EvrocMachineList{}
+	if err := r.List(ctx, machineList,
+		client.InNamespace(machine.Namespace),
+		client.MatchingLabels{clusterv1.ClusterNameLabel: clusterName},
+	); err != nil {
+		return "", fmt.Errorf("listing cluster machines for zone distribution: %w", err)
+	}
+
+	zoneCounts := make(map[string]int)
+	for i := range machineList.Items {
+		m := &machineList.Items[i]
+		if m.Name == machine.Name {
+			continue // skip self
+		}
+		if m.Status.AvailabilityZone != "" {
+			zoneCounts[m.Status.AvailabilityZone]++
+		}
+	}
+
+	return leastUsedZone(evrocCluster.Spec.FailureDomains, zoneCounts), nil
+}
+
+// leastUsedZone returns the failure domain with the fewest assigned machines.
+// Ties are broken by choosing the zone that comes first in the failureDomains
+// slice, giving deterministic behavior (typically alphabetical: a, b, c).
+func leastUsedZone(failureDomains []string, zoneCounts map[string]int) string {
+	if len(failureDomains) == 0 {
+		return ""
+	}
+
+	best := failureDomains[0]
+	bestCount := zoneCounts[best]
+	for _, fd := range failureDomains[1:] {
+		if zoneCounts[fd] < bestCount {
+			best = fd
+			bestCount = zoneCounts[fd]
+		}
+	}
+	return best
+}
+
+// getOwnerMachineRef finds the CAPI Machine owner reference name and API version.
+// It matches on Group=cluster.x-k8s.io and Kind=Machine, supporting any version.
+func getOwnerMachineRef(refs []metav1.OwnerReference) (name, apiVersion string) {
+	for _, ref := range refs {
+		gv, err := schema.ParseGroupVersion(ref.APIVersion)
+		if err != nil {
+			continue
+		}
+		if ref.Kind == "Machine" && gv.Group == "cluster.x-k8s.io" {
+			return ref.Name, ref.APIVersion
+		}
+	}
+	return "", ""
+}
+
+// SetupWithManager sets up the controller with the Manager
+func (r *EvrocMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&infrav1.EvrocMachine{}).
+		Complete(r)
+}
+
+// buildVMRequest builds a VirtualMachineRequest from EvrocMachine spec
+func (r *EvrocMachineReconciler) buildVMRequest(machine *infrav1.EvrocMachine, userData string, evrocCluster *infrav1.EvrocCluster) (*computetypes.VirtualMachineRequest, error) {
+	// Merge and apply labels from cluster and machine
+	labels := buildLabels(machine, evrocCluster)
+
+	// Use SDK builder to create request with correct API version
+	builder := compute.NewVirtualMachineBuilder(machine.Name).
+		WithVMInstanceType(machine.Spec.ComputeProfile).
+		WithRunning(true)
+
+	// Add labels if present
+	if len(labels) > 0 {
+		builder = builder.WithLabels(labels)
+	}
+
+	// Build the request - this sets ApiVersion and Kind correctly
+	request := builder.Build()
+
+	// Set remaining fields using our helpers
+	request.Spec.Disks = r.buildDisks(machine)
+	request.Spec.Placement = r.buildPlacement(machine)
+	osSettings, err := r.buildOSSettings(machine, userData)
+	if err != nil {
+		return nil, err
+	}
+	request.Spec.OsSettings = osSettings
+	request.Spec.Networking = buildNetworking(machine, evrocCluster)
+
+	return request, nil
+}
+
+// buildLabels merges cluster-level and machine-level labels using the
+// already-resolved EvrocCluster (no API call).
+func buildLabels(machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster) map[string]string {
+	if evrocCluster == nil {
+		return helpers.MergeLabels(nil, machine, "")
+	}
+
+	// Determine role from machine labels.
+	// CAPI sets the control-plane label key on CP machines (value may be empty
+	// or "true" depending on the CAPI version), so check for key existence.
+	var role string
+	if _, isCP := machine.Labels[clusterv1.MachineControlPlaneLabel]; isCP {
+		role = "control-plane"
+	} else {
+		role = machine.Labels["cluster.x-k8s.io/deployment-name"]
+		if role == "" {
+			role = "worker"
+		}
+	}
+
+	return helpers.MergeLabels(evrocCluster, machine, role)
+}
+
+// buildDisks builds disk references for the VM
+func (r *EvrocMachineReconciler) buildDisks(machine *infrav1.EvrocMachine) *[]computetypes.VirtualMachineSpecDisksItem {
+	disks := &[]computetypes.VirtualMachineSpecDisksItem{}
+
+	if machine.Spec.RootDiskSize > 0 {
+		bootDiskName := fmt.Sprintf("%s-boot-disk", machine.Name)
+		bootFrom := true
+		*disks = append(*disks, computetypes.VirtualMachineSpecDisksItem{
+			DiskRef:  bootDiskName,
+			BootFrom: &bootFrom,
+		})
+	}
+
+	for _, disk := range machine.Spec.AdditionalDisks {
+		diskName := additionalDiskName(machine.Name, disk.Name)
+		*disks = append(*disks, computetypes.VirtualMachineSpecDisksItem{
+			DiskRef: diskName,
+		})
+	}
+
+	return disks
+}
+
+// buildPlacement builds placement configuration (zone and placement group)
+func (r *EvrocMachineReconciler) buildPlacement(machine *infrav1.EvrocMachine) computetypes.VirtualMachineSpecPlacement {
+	placement := computetypes.VirtualMachineSpecPlacement{}
+
+	if machine.Status.AvailabilityZone != "" {
+		zone := machine.Status.AvailabilityZone
+		placement.Zone = &zone
+	}
+
+	// Reference an existing placement group if configured
+	if machine.Spec.PlacementConfig != nil && machine.Spec.PlacementConfig.ExistingGroupName != nil {
+		placement.PlacementGroupRef = machine.Spec.PlacementConfig.ExistingGroupName
+	}
+
+	return placement
+}
+
+// buildOSSettings builds OS settings (user data and SSH keys).
+// userData is the cloud-init bootstrap data read from the CAPI bootstrap secret.
+//
+// SSH keys are always injected via cloud-init (even when userData is empty)
+// because the Evroc API ssh.authorizedKeys field is overridden when cloud-init
+// runs, making it unreliable. Using cloud-init exclusively avoids confusion.
+func (r *EvrocMachineReconciler) buildOSSettings(machine *infrav1.EvrocMachine, userData string) (*computetypes.VirtualMachineSpecOsSettings, error) {
+	if userData == "" && machine.Spec.SSHKey == "" {
+		return nil, nil
+	}
+
+	osSettings := &computetypes.VirtualMachineSpecOsSettings{}
+
+	// Inject SSH key into userData (generates cloud-config when userData is empty)
+	var err error
+	userData, err = injectSSHKeyIntoCloudInit(userData, machine.Spec.SSHKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inject SSH key into cloud-init: %w", err)
+	}
+	osSettings.CloudInitUserData = &userData
+
+	return osSettings, nil
+}
+
+// injectSSHKeyIntoCloudInit appends an ssh_authorized_keys entry and creates an evroc-user
+// account to cloud-init user-data. This is necessary because the Evroc API's ssh.authorizedKeys
+// field is overridden when cloud-init runs.
+//
+// If the userData already contains a "users:" section (e.g. from CAPI bootstrap), the users
+// block is not injected to avoid duplicate YAML keys (last key wins in YAML, which would
+// override the bootstrap-provided users). Similarly, ssh_authorized_keys is skipped if present.
+func injectSSHKeyIntoCloudInit(userData, sshKey string) (string, error) {
+	// Skip injection if SSH key is empty
+	if sshKey == "" {
+		return userData, nil
+	}
+
+	// Build the SSH config, skipping sections that already exist in userData
+	var sshConfig string
+	if !strings.Contains(userData, "ssh_authorized_keys:") {
+		sshConfig += fmt.Sprintf("ssh_authorized_keys:\n- %q\n", sshKey)
+	}
+	if !strings.Contains(userData, "users:") {
+		sshConfig += fmt.Sprintf(`users:
+  - name: evroc-user
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - %q
+`, sshKey)
+	}
+
+	if userData == "" {
+		return "#cloud-config\n" + sshConfig, nil
+	}
+	// Handle cloud-config (with or without jinja template directive)
+	// RKE2 bootstrap uses "## template: jinja\n#cloud-config" so we use Contains instead of HasPrefix
+	if strings.Contains(userData, "#cloud-config") {
+		if sshConfig == "" {
+			return userData, nil
+		}
+		return userData + "\n" + sshConfig, nil
+	}
+	// Shell scripts and other formats don't support ssh_authorized_keys
+	return "", fmt.Errorf("unsupported cloud-init format: expected #cloud-config, cannot inject SSH key")
+}
+
+// resolveTemplateSSHKey attempts to resolve the SSH key from the machine's template
+// if the machine was cloned from an EvrocMachineTemplate and has no SSH key set.
+func (r *EvrocMachineReconciler) resolveTemplateSSHKey(ctx context.Context, machine *infrav1.EvrocMachine) (string, error) {
+	// If machine already has an SSH key, return empty (don't override)
+	if machine.Spec.SSHKey != "" {
+		return machine.Spec.SSHKey, nil
+	}
+
+	// Check if machine was cloned from a template
+	templateName, hasName := machine.Annotations["cluster.x-k8s.io/cloned-from-name"]
+	groupKind, hasKind := machine.Annotations["cluster.x-k8s.io/cloned-from-groupkind"]
+
+	if !hasName || !hasKind {
+		return "", nil
+	}
+
+	// Only resolve from EvrocMachineTemplate
+	if groupKind != "EvrocMachineTemplate.infrastructure.cluster.x-k8s.io" {
+		return "", nil
+	}
+
+	// Fetch the template
+	template := &infrav1.EvrocMachineTemplate{}
+	templateKey := types.NamespacedName{
+		Name:      templateName,
+		Namespace: machine.Namespace,
+	}
+
+	if err := r.Get(ctx, templateKey, template); err != nil {
+		return "", fmt.Errorf("failed to get template %s: %w", templateName, err)
+	}
+
+	return template.Spec.Template.Spec.SSHKey, nil
+}
+
+// buildNetworking builds networking configuration (public IP and security groups).
+// When inheritFromCluster is true, the machine inherits common + role-specific SGs
+// from the EvrocCluster, and (for CP machines) the managed PublicIP.
+func buildNetworking(machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster) *computetypes.VirtualMachineSpecNetworking {
+	networking := &computetypes.VirtualMachineSpecNetworking{}
+
+	// Resolve PublicIP: explicit config takes priority, then cluster inheritance.
+	// Cluster public IP inheritance is independent of security group inheritance —
+	// any CP machine gets the cluster's managed public IP if one exists.
+	publicIPRef := resolvePublicIPRef(machine, evrocCluster)
+	if publicIPRef != "" {
+		networking.PublicIPv4Address = &struct {
+			Static *computetypes.VirtualMachineSpecNetworkingStatic `json:"static,omitempty"`
+		}{
+			Static: &computetypes.VirtualMachineSpecNetworkingStatic{
+				PublicIPRef: &publicIPRef,
+			},
+		}
+	}
+
+	// Handle SecurityGroups
+	if machine.Spec.NetworkingConfig != nil && machine.Spec.NetworkingConfig.SecurityGroups != nil {
+		sgConfig := machine.Spec.NetworkingConfig.SecurityGroups
+		var sgRefs []string
+
+		if sgConfig.InheritFromCluster {
+			_, isCP := machine.Labels[clusterv1.MachineControlPlaneLabel]
+			sgRefs = append(sgRefs, clusterSecurityGroupNamesForRole(evrocCluster, isCP)...)
+		}
+
+		for _, inlineSG := range sgConfig.InlineSecurityGroups {
+			sgRefs = append(sgRefs, fmt.Sprintf("%s-%s", machine.Name, inlineSG.Name))
+		}
+
+		sgRefs = append(sgRefs, sgConfig.ExistingNames...)
+
+		if len(sgRefs) > 0 {
+			networking.SecurityGroupSettings = &struct {
+				SecurityGroupMemberRefs *[]string `json:"securityGroupMemberRefs,omitempty"`
+			}{
+				SecurityGroupMemberRefs: &sgRefs,
+			}
+		}
+	}
+
+	return networking
+}
+
+// resolvePublicIPRef determines the PublicIP reference for this VM using the
+// already-resolved EvrocCluster (no API call).
+// Priority: explicit machine config > cluster managed PublicIP (for CP machines).
+// The evroc API prevents double-attach of static IPs, so no client-side
+// deduplication is needed.
+func resolvePublicIPRef(machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster) string {
+	// Explicit machine-level public IP config takes priority
+	if machine.Spec.NetworkingConfig != nil && machine.Spec.NetworkingConfig.PublicIP != nil {
+		if machine.Spec.NetworkingConfig.PublicIP.ExistingName != nil {
+			return *machine.Spec.NetworkingConfig.PublicIP.ExistingName
+		}
+		if machine.Spec.NetworkingConfig.PublicIP.Enabled {
+			return managedPublicIPName(machine.Name)
+		}
+	}
+
+	// For control plane machines, use the cluster's managed PublicIP if one exists.
+	// This is independent of security group inheritance.
+	if _, isCP := machine.Labels["cluster.x-k8s.io/control-plane"]; !isCP {
+		return ""
+	}
+
+	if evrocCluster == nil {
+		return ""
+	}
+
+	if evrocCluster.Status.Resources == nil ||
+		evrocCluster.Status.Resources.PublicIP == nil ||
+		evrocCluster.Status.Resources.PublicIP.Name == "" {
+		return ""
+	}
+
+	return evrocCluster.Status.Resources.PublicIP.Name
+}
+
+// reconcileMachineSecurityGroups creates machine-level inline security groups
+// in the evroc cloud. This must run before VM creation so the groups can be
+// referenced in the VM's networking spec.
+func (r *EvrocMachineReconciler) reconcileMachineSecurityGroups(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface, clusterInfo clusterLabelInfo) error {
+	if machine.Spec.NetworkingConfig == nil || machine.Spec.NetworkingConfig.SecurityGroups == nil {
+		return nil
+	}
+
+	sgConfig := machine.Spec.NetworkingConfig.SecurityGroups
+	lg := log.FromContext(ctx)
+
+	for _, inlineSG := range sgConfig.InlineSecurityGroups {
+		sgName := fmt.Sprintf("%s-%s", machine.Name, inlineSG.Name)
+
+		// Convert API rules to SDK rules (needed for both create and update)
+		sdkRules := helpers.ConvertSecurityGroupRulesToSDK(inlineSG.Rules)
+
+		exists, err := cloudClient.SecurityGroups().Exists(ctx, sgName)
+		if err != nil {
+			return fmt.Errorf("failed to check security group %s: %w", sgName, err)
+		}
+
+		if !exists {
+			lg.Info("Creating inline security group for machine", "name", sgName, "rules", len(inlineSG.Rules))
+			if _, err := cloudClient.SecurityGroups().Create(ctx, sgName, sdkRules, machineResourceLabels(machine, clusterInfo.UID, clusterInfo.AdditionalLabels)); err != nil {
+				return fmt.Errorf("failed to create security group %s: %w", sgName, err)
+			}
+			lg.Info("Created inline security group for machine", "name", sgName)
+		} else {
+			// Update existing security group with new rules
+			lg.V(1).Info("Updating inline security group for machine", "name", sgName, "rules", len(inlineSG.Rules))
+
+			// Get the existing security group
+			existingSG, err := cloudClient.SecurityGroups().Get(ctx, sgName)
+			if err != nil {
+				return fmt.Errorf("failed to get security group %s: %w", sgName, err)
+			}
+
+			// Update the rules
+			existingSG.Spec.Rules = &sdkRules
+
+			// Apply the update
+			_, err = cloudClient.SecurityGroups().Update(ctx, sgName, existingSG)
+			if err != nil {
+				return fmt.Errorf("failed to update security group %s: %w", sgName, err)
+			}
+			lg.V(1).Info("Updated inline security group for machine", "name", sgName)
+		}
+	}
+
+	return nil
+}
+
+// reconcileVMSecurityGroups updates security groups on an existing VM if they changed.
+// This runs after VM creation to handle security group updates.
+// When the machine has SG configuration but all groups resolve to empty, the VM's
+// security groups are cleared (not left stale).
+func (r *EvrocMachineReconciler) reconcileVMSecurityGroups(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface, evrocCluster *infrav1.EvrocCluster) error {
+	lg := log.FromContext(ctx)
+
+	// Only reconcile if VM already exists
+	if machine.Status.MachineID == "" {
+		return nil
+	}
+
+	// Build list of desired security group names.
+	// When config is nil the desired list is empty, which detaches all SGs
+	// and triggers cleanup of any managed SGs tracked in status.
+	var desiredSGNames []string
+
+	if machine.Spec.NetworkingConfig != nil && machine.Spec.NetworkingConfig.SecurityGroups != nil {
+		sgConfig := machine.Spec.NetworkingConfig.SecurityGroups
+
+		if sgConfig.InheritFromCluster {
+			_, isCP := machine.Labels[clusterv1.MachineControlPlaneLabel]
+			desiredSGNames = append(desiredSGNames, clusterSecurityGroupNamesForRole(evrocCluster, isCP)...)
+		}
+
+		for _, inlineSG := range sgConfig.InlineSecurityGroups {
+			sgName := fmt.Sprintf("%s-%s", machine.Name, inlineSG.Name)
+			desiredSGNames = append(desiredSGNames, sgName)
+		}
+		desiredSGNames = append(desiredSGNames, sgConfig.ExistingNames...)
+	}
+
+	lg.V(1).Info("Reconciling VM security groups", "machine", machine.Name, "securityGroups", desiredSGNames)
+
+	if err := cloudClient.VirtualMachines().UpdateSecurityGroups(ctx, machine.Name, desiredSGNames); err != nil {
+		return fmt.Errorf("failed to update security groups on VM %s: %w", machine.Name, err)
+	}
+
+	// Delete managed SGs that are no longer desired (zombie cleanup).
+	desiredSet := make(map[string]bool, len(desiredSGNames))
+	for _, name := range desiredSGNames {
+		desiredSet[name] = true
+	}
+	if machine.Status.Resources != nil {
+		for _, tracked := range machine.Status.Resources.SecurityGroups {
+			if tracked.Managed && !desiredSet[tracked.Name] {
+				lg.Info("Deleting stale managed security group", "name", tracked.Name)
+				if err := cloudClient.SecurityGroups().Delete(ctx, tracked.Name); err != nil {
+					if !helpers.IsNotFoundError(err) {
+						return fmt.Errorf("failed to delete stale security group %s: %w", tracked.Name, err)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// reconcileVMPublicIP updates public IP on an existing VM if configuration changed
+// This runs after VM creation to handle public IP attach/detach operations
+func (r *EvrocMachineReconciler) reconcileVMPublicIP(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface, evrocCluster *infrav1.EvrocCluster) error {
+	lg := log.FromContext(ctx)
+
+	// Only reconcile if VM already exists
+	if machine.Status.MachineID == "" {
+		return nil
+	}
+
+	// Determine desired public IP state.
+	// resolvePublicIPRef handles explicit machine config and cluster-level CP inheritance.
+	desiredPublicIPName := resolvePublicIPRef(machine, evrocCluster)
+
+	lg.V(1).Info("Reconciling VM public IP", "machine", machine.Name, "publicIP", desiredPublicIPName)
+
+	// Update VM public IP (patch is idempotent)
+	if err := cloudClient.VirtualMachines().UpdatePublicIP(ctx, machine.Name, desiredPublicIPName); err != nil {
+		return fmt.Errorf("failed to update public IP on VM %s: %w", machine.Name, err)
+	}
+
+	return nil
+}
+
+// reconcileVMDisks updates the disk list on an existing VM when additionalDisks change.
+// This allows users to add or remove data disks without recreating the VM.
+// reconcileVMDisks updates the disk list on an existing VM when additionalDisks change.
+// Passes disk names to the cloud client which resolves them to FQIDs.
+func (r *EvrocMachineReconciler) reconcileVMDisks(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface) error {
+	if machine.Status.MachineID == "" {
+		return nil
+	}
+
+	// Build the desired disk name list: boot disk + additional disks.
+	var diskNames []string
+	if machine.Spec.RootDiskSize > 0 {
+		diskNames = append(diskNames, fmt.Sprintf("%s-boot-disk", machine.Name))
+	}
+	for _, disk := range machine.Spec.AdditionalDisks {
+		diskNames = append(diskNames, additionalDiskName(machine.Name, disk.Name))
+	}
+
+	if err := cloudClient.VirtualMachines().UpdateDisks(ctx, machine.Name, diskNames); err != nil {
+		return fmt.Errorf("failed to update disks on VM %s: %w", machine.Name, err)
+	}
+
+	return nil
+}
+
+// reconcileVMPlacement updates the placement group on an existing VM.
+// The evroc API rejects this if the VM is running — the error propagates
+// and the controller requeues until the VM is stopped.
+func (r *EvrocMachineReconciler) reconcileVMPlacement(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface) error {
+	if machine.Status.MachineID == "" {
+		return nil
+	}
+
+	desiredPlacement := r.buildPlacement(machine)
+
+	if err := cloudClient.VirtualMachines().UpdatePlacement(ctx, machine.Name, desiredPlacement); err != nil {
+		return fmt.Errorf("failed to update placement on VM %s: %w", machine.Name, err)
+	}
+
+	return nil
+}
+
+func (r *EvrocMachineReconciler) reconcileMachinePublicIP(
+	ctx context.Context,
+	machine *infrav1.EvrocMachine,
+	cloudClient cloud.ClientInterface,
+	clusterInfo clusterLabelInfo,
+) (pending bool, managedPublicIP *infrav1.ManagedPublicIP, err error) {
+	if machine.Spec.NetworkingConfig == nil || machine.Spec.NetworkingConfig.PublicIP == nil {
+		return false, nil, nil
+	}
+
+	config := machine.Spec.NetworkingConfig.PublicIP
+	if config.ExistingName != nil {
+		ip, getErr := cloudClient.PublicIPs().Get(ctx, *config.ExistingName)
+		if getErr != nil {
+			return false, nil, fmt.Errorf("failed to get existing public IP %s: %w", *config.ExistingName, getErr)
+		}
+		address := ""
+		if ip.Status.PublicIPv4Address != nil {
+			address = *ip.Status.PublicIPv4Address
+		}
+		return false, &infrav1.ManagedPublicIP{
+			ID:      ip.Metadata.Id,
+			Name:    *config.ExistingName,
+			Address: address,
+			Managed: false,
+		}, nil
+	}
+
+	if !config.Enabled {
+		return false, nil, nil
+	}
+
+	name := managedPublicIPName(machine.Name)
+	exists, existsErr := cloudClient.PublicIPs().Exists(ctx, name)
+	if existsErr != nil {
+		return false, nil, fmt.Errorf("failed to check public IP existence: %w", existsErr)
+	}
+	if !exists {
+		if _, createErr := cloudClient.PublicIPs().Create(ctx, name, machineResourceLabels(machine, clusterInfo.UID, clusterInfo.AdditionalLabels)); createErr != nil {
+			return false, nil, fmt.Errorf("failed to create managed public IP %s: %w", name, createErr)
+		}
+		return true, &infrav1.ManagedPublicIP{
+			Name:    name,
+			Address: "",
+			Managed: true,
+		}, nil
+	}
+
+	ip, getErr := cloudClient.PublicIPs().Get(ctx, name)
+	if getErr != nil {
+		return false, nil, fmt.Errorf("failed to get managed public IP %s: %w", name, getErr)
+	}
+	if ip.Status.PublicIPv4Address == nil || *ip.Status.PublicIPv4Address == "" {
+		return true, &infrav1.ManagedPublicIP{
+			ID:      ip.Metadata.Id,
+			Name:    name,
+			Address: "",
+			Managed: true,
+		}, nil
+	}
+
+	return false, &infrav1.ManagedPublicIP{
+		ID:      ip.Metadata.Id,
+		Name:    name,
+		Address: *ip.Status.PublicIPv4Address,
+		Managed: true,
+	}, nil
+}
+
+func (r *EvrocMachineReconciler) reconcilePlacementGroup(
+	ctx context.Context,
+	machine *infrav1.EvrocMachine,
+	cloudClient cloud.ClientInterface,
+	_ clusterLabelInfo,
+) (pending bool, placement *infrav1.ManagedPlacementGroup, err error) {
+	if machine.Spec.PlacementConfig == nil || machine.Spec.PlacementConfig.ExistingGroupName == nil {
+		return false, nil, nil
+	}
+
+	name := *machine.Spec.PlacementConfig.ExistingGroupName
+	_, getErr := cloudClient.PlacementGroups().Get(ctx, name)
+	if getErr != nil {
+		return false, nil, fmt.Errorf("failed to get existing placement group %s: %w", name, getErr)
+	}
+	return false, &infrav1.ManagedPlacementGroup{
+		ID:      name,
+		Name:    name,
+		Managed: false,
+	}, nil
+}
+
+func (r *EvrocMachineReconciler) reconcileAdditionalDisks(
+	ctx context.Context,
+	machine *infrav1.EvrocMachine,
+	cloudClient cloud.ClientInterface,
+	clusterInfo clusterLabelInfo,
+) (pending bool, disks []infrav1.ManagedDisk, err error) {
+	if len(machine.Spec.AdditionalDisks) == 0 {
+		// Clean up any managed disks that were previously created but are
+		// no longer in the spec (zombie cleanup).
+		if machine.Status.Resources != nil {
+			lg := log.FromContext(ctx)
+			for _, tracked := range machine.Status.Resources.AdditionalDisks {
+				if !tracked.Managed {
+					continue
+				}
+				lg.Info("Deleting stale managed additional disk", "name", tracked.Name)
+				if delErr := cloudClient.Disks().Delete(ctx, tracked.Name); delErr != nil {
+					if !helpers.IsNotFoundError(delErr) {
+						return false, nil, fmt.Errorf("failed to delete stale additional disk %s: %w", tracked.Name, delErr)
+					}
+				}
+			}
+		}
+		return false, nil, nil
+	}
+
+	managedDisks := make([]infrav1.ManagedDisk, 0, len(machine.Spec.AdditionalDisks))
+	anyPending := false
+	for _, diskSpec := range machine.Spec.AdditionalDisks {
+		name := additionalDiskName(machine.Name, diskSpec.Name)
+		disk, getErr := cloudClient.Disks().Get(ctx, name)
+		if errors.Is(getErr, evroc.ErrNotFound) {
+			image := ""
+			if diskSpec.Image != nil {
+				image = *diskSpec.Image
+			}
+			if _, createErr := cloudClient.Disks().Create(ctx, name, diskSpec.SizeGB, image, machine.Status.AvailabilityZone, machineResourceLabels(machine, clusterInfo.UID, clusterInfo.AdditionalLabels)); createErr != nil {
+				return false, nil, fmt.Errorf("failed to create additional disk %s: %w", name, createErr)
+			}
+			managedDisks = append(managedDisks, infrav1.ManagedDisk{
+				Name:    name,
+				SizeGB:  diskSpec.SizeGB,
+				Managed: true,
+			})
+			anyPending = true
+			continue
+		}
+		if getErr != nil {
+			return false, nil, fmt.Errorf("failed to get additional disk %s: %w", name, getErr)
+		}
+		if !compute.IsDiskReady(disk) {
+			if reason, message := getDiskErrorCondition(disk); reason != "" {
+				return false, nil, fmt.Errorf("additional disk %q failed: %s: %s", name, reason, message)
+			}
+			anyPending = true
+		}
+		managedDisks = append(managedDisks, infrav1.ManagedDisk{
+			ID:      disk.Metadata.Id,
+			Name:    name,
+			SizeGB:  diskSpec.SizeGB,
+			Managed: true,
+		})
+	}
+	if anyPending {
+		return true, managedDisks, nil
+	}
+
+	// Delete managed disks that are tracked in status but no longer in spec.
+	desiredDiskNames := make(map[string]bool, len(machine.Spec.AdditionalDisks))
+	for _, diskSpec := range machine.Spec.AdditionalDisks {
+		desiredDiskNames[additionalDiskName(machine.Name, diskSpec.Name)] = true
+	}
+	if machine.Status.Resources != nil {
+		lg := log.FromContext(ctx)
+		for _, tracked := range machine.Status.Resources.AdditionalDisks {
+			if tracked.Managed && !desiredDiskNames[tracked.Name] {
+				lg.Info("Deleting stale managed additional disk", "name", tracked.Name)
+				if delErr := cloudClient.Disks().Delete(ctx, tracked.Name); delErr != nil {
+					if !helpers.IsNotFoundError(delErr) {
+						return false, nil, fmt.Errorf("failed to delete stale additional disk %s: %w", tracked.Name, delErr)
+					}
+				}
+			}
+		}
+	}
+
+	return false, managedDisks, nil
+}
+
+func (r *EvrocMachineReconciler) ensureResources(machine *infrav1.EvrocMachine) {
+	if machine.Status.Resources == nil {
+		machine.Status.Resources = &infrav1.MachineResources{}
+	}
+}
+
+func (r *EvrocMachineReconciler) persistResourcesStatus(ctx context.Context, machine *infrav1.EvrocMachine) error {
+	if machine.Status.Resources == nil {
+		return nil
+	}
+	if err := r.Status().Update(ctx, machine); err != nil {
+		return err
+	}
+	return r.Get(ctx, client.ObjectKeyFromObject(machine), machine)
+}
+
+func managedPublicIPName(machineName string) string {
+	return fmt.Sprintf("%s-public-ip", machineName)
+}
+
+func additionalDiskName(machineName, diskName string) string {
+	return fmt.Sprintf("%s-%s", machineName, diskName)
+}
+
+func mergeUserData(bootstrapUserData, machineUserData string) string {
+	bootstrapUserData = strings.TrimSpace(bootstrapUserData)
+	machineUserData = strings.TrimSpace(machineUserData)
+
+	if bootstrapUserData == "" {
+		return machineUserData
+	}
+	if machineUserData == "" {
+		return bootstrapUserData
+	}
+
+	if strings.HasPrefix(bootstrapUserData, "#cloud-config") && strings.HasPrefix(machineUserData, "#cloud-config") {
+		machineBody := strings.TrimPrefix(machineUserData, "#cloud-config")
+		machineBody = strings.TrimLeft(machineBody, "\n")
+		if machineBody == "" {
+			return bootstrapUserData
+		}
+		return bootstrapUserData + "\n\n# merged machine userData\n" + machineBody
+	}
+
+	return buildMultipartUserData(bootstrapUserData, machineUserData)
+}
+
+func buildMultipartUserData(parts ...string) string {
+	var payload bytes.Buffer
+	writer := multipart.NewWriter(&payload)
+
+	for _, part := range parts {
+		content := strings.TrimSpace(part)
+		if content == "" {
+			continue
+		}
+
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Type", cloudInitContentType(content))
+		header.Set("MIME-Version", "1.0")
+		header.Set("Content-Transfer-Encoding", "7bit")
+
+		partWriter, err := writer.CreatePart(header)
+		if err != nil {
+			return strings.Join(parts, "\n")
+		}
+		if _, err := partWriter.Write([]byte(content + "\n")); err != nil {
+			return strings.Join(parts, "\n")
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return strings.Join(parts, "\n")
+	}
+
+	return fmt.Sprintf("MIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=%q\n\n%s", writer.Boundary(), payload.String())
+}
+
+func cloudInitContentType(content string) string {
+	switch {
+	case strings.HasPrefix(content, "#cloud-config"):
+		return "text/cloud-config"
+	case strings.HasPrefix(content, "#!"):
+		return "text/x-shellscript"
+	default:
+		return "text/plain"
+	}
+}
+
+// getDiskErrorCondition returns the reason and message from a disk's Ready=False
+// condition. If the disk has no error condition (e.g. still provisioning with no
+// explicit failure), both return values are empty strings.
+// This prevents the controller from silently requeueing forever when the platform
+// reports a terminal disk error (e.g. "Disk is too small to contain disk image").
+func getDiskErrorCondition(disk *computetypes.Disk) (reason, message string) {
+	if disk == nil || disk.Status.Conditions == nil {
+		return "", ""
+	}
+	for _, cond := range *disk.Status.Conditions {
+		if cond.Type != "Ready" || cond.Status != "False" || cond.Reason == "" {
+			continue
+		}
+		// Skip in-progress reasons — these are normal provisioning states,
+		// not terminal errors. Only surface actual failures.
+		switch cond.Reason {
+		case "DiskImageDownloading", "Provisioning", "Pending":
+			continue
+		}
+		return cond.Reason, cond.Message
+	}
+	return "", ""
+}
+
+// setMachineCondition sets or updates a condition on the machine's status.
+func setMachineCondition(machine *infrav1.EvrocMachine, condType string, status corev1.ConditionStatus, reason, message string) {
+	now := metav1.Now()
+	newCondition := clusterv1.Condition{
+		Type:               clusterv1.ConditionType(condType),
+		Status:             status,
+		LastTransitionTime: now,
+		Reason:             reason,
+		Message:            message,
+	}
+	if status == corev1.ConditionFalse {
+		newCondition.Severity = clusterv1.ConditionSeverityError
+	}
+
+	for i, c := range machine.Status.Conditions {
+		if c.Type == newCondition.Type {
+			if c.Status != newCondition.Status {
+				machine.Status.Conditions[i] = newCondition
+			} else {
+				// Keep transition time, update reason/message.
+				machine.Status.Conditions[i].Reason = reason
+				machine.Status.Conditions[i].Message = message
+			}
+			return
+		}
+	}
+	machine.Status.Conditions = append(machine.Status.Conditions, newCondition)
+}
+
+func extractMachineAddresses(vm *computetypes.VirtualMachine) []corev1.NodeAddress {
+	var addresses []corev1.NodeAddress
+
+	if vm.Status.Networking != nil {
+		// Internal IP (private)
+		if vm.Status.Networking.PrivateIPv4Address != nil && *vm.Status.Networking.PrivateIPv4Address != "" {
+			addresses = append(addresses, corev1.NodeAddress{
+				Type:    corev1.NodeInternalIP,
+				Address: *vm.Status.Networking.PrivateIPv4Address,
+			})
+		}
+
+		// External IP (public)
+		if vm.Status.Networking.PublicIPv4Address != nil && *vm.Status.Networking.PublicIPv4Address != "" {
+			addresses = append(addresses, corev1.NodeAddress{
+				Type:    corev1.NodeExternalIP,
+				Address: *vm.Status.Networking.PublicIPv4Address,
+			})
+		}
+	}
+
+	// Hostname (use machine name as hostname)
+	if vm.Metadata.Id != "" {
+		addresses = append(addresses, corev1.NodeAddress{
+			Type:    corev1.NodeHostName,
+			Address: vm.Metadata.Id,
+		})
+	}
+
+	return addresses
+}

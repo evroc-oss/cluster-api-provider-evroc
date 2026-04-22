@@ -1,0 +1,280 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# High Availability Cluster Template (--flavor ha)
+#
+# This is a quickstart template. It provisions a working cluster but does NOT
+# install a CNI. You must install a CNI (e.g., Calico, Cilium) after the
+# control plane is up for pods to become Ready.
+#
+# Technical configuration:
+# - HA control plane with etcd quorum
+# - All 3 availability zones (a, b, c)
+# - Automatic zone distribution via failureDomains
+# - Inline configuration (no separate CRDs)
+# - Separate placement groups for control plane and workers
+#
+# Required environment variables:
+#   CLUSTER_NAME: Name of the cluster
+#   EVROC_PROJECT: evroc project ID
+#   EVROC_SSH_KEY: SSH public key used for node access
+#
+# Optional environment variables:
+#   EVROC_REGION: evroc region (default: se-sto)
+#   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
+#   WORKER_MACHINE_COUNT: Number of worker nodes (default: 3)
+#   KUBERNETES_VERSION: Kubernetes version (default: v1.28.0)
+#   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.l)
+#   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.m)
+#   EVROC_IMAGE: OS image (default: ubuntu.22-04.1)
+#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access (default: 0.0.0.0/0)
+#
+# Note: This template uses failureDomains [a, b, c] for multi-zone
+# distribution. Control plane machines receive zones via CAPI's
+# failureDomain assignment. Worker machines (MachineDeployment) do NOT
+# receive failureDomains from CAPI — the controller automatically assigns
+# a zone from the EvrocCluster's failureDomains list using deterministic
+# hashing of the machine name, ensuring even zone distribution.
+#
+# Region labels are set via kubeletExtraArgs, but zone labels are NOT set
+# because CAPI assigns zones dynamically via failureDomains. Zone labels
+# require an evroc Cloud Controller Manager (CCM). If your CSI driver
+# needs zone labels, use per-zone MachineDeployments
+# (see README.md "Topology Labels" section).
+
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.244.0.0/16"]
+    services:
+      cidrBlocks: ["10.96.0.0/12"]
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: ${CLUSTER_NAME}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+spec:
+  project: ${EVROC_PROJECT}
+  region: ${EVROC_REGION:=se-sto}
+  # Per-cluster credentials (recommended). Create a Secret with evroc API
+  # credentials and set the name here. When empty, falls back to the
+  # globally mounted config file.
+  credentialsRef:
+    name: "${EVROC_CREDENTIALS_SECRET:=}"
+    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+  failureDomains:
+  - a
+  - b
+  - c
+  controlPlaneConfig:
+    publicIP:
+      enabled: true
+  securityGroups:
+    common:
+      inlineSecurityGroups:
+      - name: common-sg
+        rules:
+        - name: ssh
+          direction: Ingress
+          protocol: TCP
+          port: 22
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+        - name: kubelet
+          direction: Ingress
+          protocol: TCP
+          port: 10250
+          remoteCIDR: "10.0.0.0/8"
+        # Broad internal rule — covers all intra-cluster traffic (pods, services, etc.)
+        - name: cluster-internal
+          direction: Ingress
+          protocol: All
+          remoteCIDR: "10.0.0.0/8"
+        - name: allow-all-egress
+          direction: Egress
+          protocol: All
+          remoteCIDR: "0.0.0.0/0"
+    controlPlane:
+      inlineSecurityGroups:
+      - name: ha-cp-sg
+        rules:
+        - name: k8s-api
+          direction: Ingress
+          protocol: TCP
+          port: 6443
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+        - name: etcd
+          direction: Ingress
+          protocol: TCP
+          port: 2379
+          endPort: 2380
+          remoteCIDR: "10.0.0.0/8"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: ${KUBERNETES_VERSION}
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+  kubeadmConfigSpec:
+    preKubeadmCommands:
+      - modprobe overlay
+      - modprobe br_netfilter
+      - |
+        cat <<EOF > /etc/sysctl.d/k8s.conf
+        net.bridge.bridge-nf-call-iptables = 1
+        net.bridge.bridge-nf-call-ip6tables = 1
+        net.ipv4.ip_forward = 1
+        EOF
+      - sysctl --system
+      - apt-get update -y
+      - apt-get install -y apt-transport-https ca-certificates curl gpg containerd
+      - mkdir -p /etc/containerd
+      - containerd config default > /etc/containerd/config.toml
+      - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+      - systemctl restart containerd
+      - systemctl enable containerd
+      - mkdir -p -m 755 /etc/apt/keyrings
+      - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
+      - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
+      - apt-get update -y
+      - apt-get install -y kubelet kubeadm kubectl
+      - systemctl enable kubelet
+    initConfiguration:
+      localAPIEndpoint:
+        advertiseAddress: "0.0.0.0"
+        bindPort: 6443
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: node-labels
+          value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: node-labels
+          value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+    clusterConfiguration:
+      apiServer:
+        certSANs:
+          - "0.0.0.0"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.l}
+      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      rootDiskSize: ${EVROC_CONTROL_PLANE_DISK_SIZE:=200}
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      version: ${KUBERNETES_VERSION}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-workers
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.m}
+      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      rootDiskSize: ${EVROC_WORKER_DISK_SIZE:=100}
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - modprobe overlay
+        - modprobe br_netfilter
+        - |
+          cat <<EOF > /etc/sysctl.d/k8s.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+          EOF
+        - sysctl --system
+        - apt-get update -y
+        - apt-get install -y apt-transport-https ca-certificates curl gpg containerd
+        - mkdir -p /etc/containerd
+        - containerd config default > /etc/containerd/config.toml
+        - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+        - systemctl restart containerd
+        - systemctl enable containerd
+        - mkdir -p -m 755 /etc/apt/keyrings
+        - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
+        - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
+        - apt-get update -y
+        - apt-get install -y kubelet kubeadm kubectl
+        - systemctl enable kubelet
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+          - name: node-labels
+            value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"

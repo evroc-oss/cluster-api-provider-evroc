@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Copy this file to config.yaml and fill in your evroc details:
+#   cp test/e2e/config.yaml.sample test/e2e/config.yaml
+
+managementClusterName: evroc-capi-e2e
+
+images:
+  - name: ghcr.io/evroc-oss/cluster-api-provider-evroc:latest
+    loadBehavior: tryLoad
+
+intervals:
+  default/wait-controllers: ["15m", "10s"]
+  default/wait-cluster: ["30m", "30s"]
+  default/wait-rancher: ["25m", "30s"]
+  default/wait-delete-cluster: ["30m", "30s"]
+  default/wait-gitpush: ["3m", "10s"]
+  default/wait-getservice: ["5m", "30s"]
+
+variables:
+  # General configuration
+  NAMESPACE: "default"
+  MANAGEMENT_CLUSTER_ENVIRONMENT: "isolated-kind"
+  USE_EXISTING_CLUSTER: "false"
+  SKIP_RESOURCE_CLEANUP: "false"
+  SKIP_DELETION_TEST: "false"
+  ARTIFACTS_FOLDER: "../../_artifacts"
+
+  # Kubernetes configuration
+  KUBERNETES_VERSION: "v1.30.0+rke2r1"
+  KUBERNETES_MANAGEMENT_VERSION: "v1.30.0"
+
+  # Rancher configuration
+  RANCHER_VERSION: "v2.14.0-alpha12"
+  RANCHER_HOSTNAME: "rancher-e2e.localhost"
+  RANCHER_PASSWORD: "rancheradmin"
+  RANCHER_FEATURES: "embedded-cluster-api=true"
+  RANCHER_REPO_NAME: "rancher-alpha"
+  RANCHER_PATH: "rancher-alpha/rancher"
+  RANCHER_URL: "https://releases.rancher.com/server-charts/alpha"
+  CERT_MANAGER_REPO_NAME: "jetstack"
+  CERT_MANAGER_URL: "https://charts.jetstack.io"
+  CERT_MANAGER_PATH: "jetstack/cert-manager"
+  HELM_EXTRA_VALUES_FOLDER: "../../_artifacts"
+
+  # Turtles configuration
+  TURTLES_VERSION: "0.26.0-rc.6"
+  TURTLES_PATH: "turtles/rancher-turtles"
+  TURTLES_CHART_PATH: ""
+  TURTLES_CHART_REPO_NAME: "turtles"
+  TURTLES_CHART_REPO_URL: "https://rancher.github.io/turtles"
+  TURTLES_CHART_NAME: "rancher-turtles"
+
+  # Provider configuration
+  EVROC_PROVIDER_VERSION: "latest"
+  EVROC_AVAILABILITY_ZONE: "a"
+
+  # evroc credentials — use a credentials yaml file:
+  #   export EVROC_CREDENTIALS_FILE=/path/to/evroc-config.yaml
+  # The file format is documented in the README.
+  # Fill these in only if not using EVROC_CREDENTIALS_FILE:
+  EVROC_PROJECT: ""
+  EVROC_REGION: "se-sto"
+  EVROC_ORGANIZATION: ""
+  EVROC_TOKEN: ""
+  EVROC_REFRESH_TOKEN: ""

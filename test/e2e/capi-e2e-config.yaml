@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# CAPI QuickStart E2E Test Configuration
+# Used for upstream CAPI E2E certification tests (QuickStart spec)
+# See: https://cluster-api.sigs.k8s.io/developer/core/e2e
+
+managementClusterName: evroc-capi-quickstart
+
+images: []
+
+intervals:
+  default/wait-controllers: ["15m", "10s"]
+  default/wait-cluster: ["35m", "30s"]
+  default/wait-delete-cluster: ["20m", "30s"]
+  default/wait-machines: ["20m", "30s"]
+  default/wait-move: ["10m", "30s"]
+
+variables:
+  NAMESPACE: "default"
+  KUBERNETES_VERSION: "v1.28.0"
+  EVROC_PROVIDER_VERSION: "latest"
+  CONTROL_PLANE_MACHINE_COUNT: "1"
+  WORKER_MACHINE_COUNT: "1"
+  EVROC_AVAILABILITY_ZONE: "a"
+  EVROC_REGION: "se-sto"
+  EVROC_CONTROL_PLANE_FLAVOR: "a1a.s"
+  EVROC_IMAGE: "ubuntu.22-04.1"
+  EVROC_CONTROL_PLANE_DISK_SIZE: "100"
+  # evroc project/credentials (loaded from config.yaml by loadCredentialsFile, duplicated here as fallback)
+  EVROC_PROJECT: "f1dbc774-c978-4e75-bcf9-a28015a181f7"
+  EVROC_CREDENTIALS_NAMESPACE: "default"
+  EVROC_CREDENTIALS_SECRET: "evroc-credentials"
+  EVROC_SSH_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFeENOwB0QwUEicJGrFxt44yiShgBWzANhpE/5gNw041"

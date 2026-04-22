@@ -1,0 +1,482 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  labels:
+    cluster.x-k8s.io/v1beta1: v1beta1
+    cluster.x-k8s.io/v1beta2: v1beta1
+  name: evrocmachines.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: EvrocMachine
+    listKind: EvrocMachineList
+    plural: evrocmachines
+    singular: evrocmachine
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Machine is ready
+      jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - description: evroc Machine ID
+      jsonPath: .status.machineID
+      name: MachineID
+      type: string
+    - description: VM compute profile
+      jsonPath: .spec.computeProfile
+      name: ComputeProfile
+      type: string
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: EvrocMachine is the Schema for the evrocmachines API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: EvrocMachineSpec defines the desired state of EvrocMachine
+            properties:
+              additionalDisks:
+                description: |-
+                  AdditionalDisks defines additional disks to attach to this machine.
+                  These disks are auto-created, auto-attached, and auto-deleted with the machine.
+                items:
+                  description: |-
+                    AdditionalDiskSpec defines an additional disk to attach to a machine.
+                    These disks are automatically created, attached, and deleted with the machine.
+                  properties:
+                    image:
+                      description: |-
+                        Image is the OS image for the disk (optional, for bootable disks).
+                        If not specified, the disk will be empty.
+                      type: string
+                    name:
+                      description: |-
+                        Name is the logical name for this disk.
+                        The actual resource will be named "<machine-name>-<name>".
+                      type: string
+                    sizeGB:
+                      description: SizeGB is the size of the disk in gigabytes.
+                      minimum: 1
+                      type: integer
+                  required:
+                  - name
+                  - sizeGB
+                  type: object
+                type: array
+              additionalLabels:
+                additionalProperties:
+                  type: string
+                description: |-
+                  AdditionalLabels is an optional set of labels to add to this machine's Evroc resources.
+                  These labels are merged with cluster-level AdditionalLabels (machine labels take precedence).
+                  Useful for differentiating control plane vs worker nodes, or specific workload types.
+                  Example: {"role": "worker", "workload-type": "cpu-intensive"}
+                type: object
+              computeProfile:
+                description: ComputeProfile specifies the VM compute profile (e.g.,
+                  "a1a.m" for 4 vCPU, 16GB RAM)
+                type: string
+              image:
+                description: Image is the OS image to use for the VM (e.g., "ubuntu.24-04.1")
+                type: string
+              networkingConfig:
+                description: |-
+                  NetworkingConfig defines networking configuration for this machine.
+                  This is the simplified v1.1 approach - inline specs instead of separate CRDs.
+                  When specified, the controller will auto-create and manage the necessary resources.
+                  This is mutually compatible with v1 fields (SecurityGroupRefs, PublicIPRef) - inline config takes priority.
+                properties:
+                  publicIP:
+                    description: PublicIP configuration for this machine.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled auto-creates a public IP managed by the controller.
+                          The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
+                          When the cluster is deleted, the IP is automatically cleaned up.
+                        type: boolean
+                      existingName:
+                        description: |-
+                          ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
+                          The IP is looked up in the evroc project configured via the controller's credentials.
+                          This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
+                          Mutually exclusive with Enabled.
+                        type: string
+                    type: object
+                  securityGroups:
+                    description: SecurityGroups configuration for this machine.
+                    properties:
+                      existingNames:
+                        description: ExistingNames references pre-existing security
+                          groups by name.
+                        items:
+                          type: string
+                        type: array
+                      inheritFromCluster:
+                        description: |-
+                          InheritFromCluster inherits security groups from the cluster's securityGroups config.
+                          When true, the machine receives the "common" section plus its role-specific section
+                          (controlPlane for CP nodes, worker for workers) based on the machine's labels.
+                          Additional inline/existing groups can still be specified.
+                          Defaults to true if no inline or existing security groups are specified.
+                        type: boolean
+                      inlineSecurityGroups:
+                        description: |-
+                          InlineSecurityGroups defines security groups to auto-create with specified rules.
+                          Each group will be named "<machine-name>-<group-name>" and tracked in machine.status.
+                        items:
+                          description: InlineSecurityGroup defines a security group
+                            with inline rules for auto-creation.
+                          properties:
+                            name:
+                              description: |-
+                                Name is the logical name for this security group.
+                                The actual resource will be named "<cluster-name>-<cluster-uid>-<name>".
+                              type: string
+                            rules:
+                              description: Rules defines the firewall rules for this
+                                security group.
+                              items:
+                                description: |-
+                                  SecurityGroupRule defines a single firewall rule.
+                                  This type is used by inline security group configuration on EvrocCluster and EvrocMachine.
+                                properties:
+                                  direction:
+                                    description: Direction specifies if this is an
+                                      Ingress or Egress rule
+                                    enum:
+                                    - Ingress
+                                    - Egress
+                                    type: string
+                                  endPort:
+                                    description: EndPort specifies the end of a port
+                                      range
+                                    format: int32
+                                    type: integer
+                                  name:
+                                    description: Name is the unique name of this rule
+                                      within the security group
+                                    type: string
+                                  port:
+                                    description: Port specifies the port number (0
+                                      means all ports)
+                                    format: int32
+                                    type: integer
+                                  protocol:
+                                    description: Protocol specifies the protocol (TCP,
+                                      UDP, ICMP, or All)
+                                    enum:
+                                    - TCP
+                                    - UDP
+                                    - ICMP
+                                    - All
+                                    type: string
+                                  remoteCIDR:
+                                    description: RemoteCIDR specifies the remote IP
+                                      address or CIDR block
+                                    type: string
+                                  remoteSecurityGroup:
+                                    description: RemoteSecurityGroup references another
+                                      security group
+                                    type: string
+                                required:
+                                - direction
+                                - name
+                                type: object
+                              type: array
+                          required:
+                          - name
+                          type: object
+                        type: array
+                    type: object
+                type: object
+              placementConfig:
+                description: |-
+                  PlacementConfig defines placement group configuration for this machine.
+                  This is the simplified v1.1 approach - specify strategy inline or reference existing resources.
+                properties:
+                  existingGroupName:
+                    description: |-
+                      ExistingGroupName references a pre-existing placement group by name.
+                      The group will be used but NOT managed (created/deleted) by CAPI.
+                    type: string
+                type: object
+              project:
+                description: Project is the evroc project ID
+                type: string
+              providerID:
+                description: ProviderID is the unique identifier for the machine
+                type: string
+              region:
+                description: Region is the evroc region (e.g., se-sto)
+                type: string
+              rootDiskSize:
+                description: RootDiskSize is the size of the root disk in GB
+                type: integer
+              sshKey:
+                description: SSHKey is the SSH public key for access
+                type: string
+              userData:
+                description: UserData is cloud-init user data for bootstrap
+                type: string
+            required:
+            - computeProfile
+            - image
+            - project
+            - region
+            - rootDiskSize
+            type: object
+          status:
+            description: EvrocMachineStatus defines the observed state of EvrocMachine
+            properties:
+              addresses:
+                description: Addresses is the list of addresses assigned to the machine
+                items:
+                  description: NodeAddress contains information for the node's address.
+                  properties:
+                    address:
+                      description: The node address.
+                      type: string
+                    type:
+                      description: Node address type, one of Hostname, ExternalIP
+                        or InternalIP.
+                      type: string
+                  required:
+                  - address
+                  - type
+                  type: object
+                type: array
+              availabilityZone:
+                description: |-
+                  AvailabilityZone is the resolved availability zone for this machine.
+                  This is computed from the CAPI Machine's failureDomain (assigned from
+                  the EvrocCluster's failureDomains list) or a hash-based fallback.
+                type: string
+              conditions:
+                description: Conditions defines current service state of the EvrocMachine.
+                items:
+                  description: Condition defines an observation of a Cluster API resource
+                    operational state.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed. If that is not known, then using the time when
+                        the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This field may be empty.
+                      maxLength: 10240
+                      minLength: 1
+                      type: string
+                    reason:
+                      description: |-
+                        reason is the reason for the condition's last transition in CamelCase.
+                        The specific API may choose whether or not this field is considered a guaranteed API.
+                        This field may be empty.
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                    severity:
+                      description: |-
+                        severity provides an explicit classification of Reason code, so the users or machines can immediately
+                        understand the current situation and act accordingly.
+                        The Severity field MUST be set only when Status=False.
+                      maxLength: 32
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      type: string
+                    type:
+                      description: |-
+                        type of condition in CamelCase or in foo.example.com/CamelCase.
+                        Many .condition.type values are consistent across resources like Available, but because arbitrary conditions
+                        can be useful (see .node.status.conditions), the ability to deconflict is important.
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - status
+                  - type
+                  type: object
+                type: array
+              initialization:
+                description: |-
+                  Initialization tracks the status of machine infrastructure provisioning.
+                  This is part of the CAPI v1.12+ contract for orchestrating provisioning.
+                properties:
+                  provisioned:
+                    description: |-
+                      Provisioned is true when the machine infrastructure is fully provisioned.
+                      This is the field that CAPI v1.12 infrastructure contract checks.
+                    type: boolean
+                type: object
+              machineID:
+                description: MachineID is the unique identifier for the VM in evroc
+                type: string
+              ready:
+                description: Ready indicates if the machine is ready
+                type: boolean
+              resources:
+                description: Resources tracks cloud resources created or referenced
+                  by this machine controller.
+                properties:
+                  additionalDisks:
+                    description: AdditionalDisks attached to this machine.
+                    items:
+                      description: ManagedDisk tracks a disk resource.
+                      properties:
+                        id:
+                          description: ID is the cloud resource ID.
+                          type: string
+                        managed:
+                          description: Managed indicates whether CAPI created and
+                            owns this resource.
+                          type: boolean
+                        name:
+                          description: Name is the cloud resource name.
+                          type: string
+                        sizeGB:
+                          description: SizeGB is the size in gigabytes.
+                          type: integer
+                      required:
+                      - id
+                      - managed
+                      - name
+                      - sizeGB
+                      type: object
+                    type: array
+                  bootDisk:
+                    description: BootDisk is the boot disk created for this machine.
+                    properties:
+                      id:
+                        description: ID is the cloud resource ID.
+                        type: string
+                      managed:
+                        description: Managed indicates whether CAPI created and owns
+                          this resource.
+                        type: boolean
+                      name:
+                        description: Name is the cloud resource name.
+                        type: string
+                      sizeGB:
+                        description: SizeGB is the size in gigabytes.
+                        type: integer
+                    required:
+                    - id
+                    - managed
+                    - name
+                    - sizeGB
+                    type: object
+                  placementGroup:
+                    description: PlacementGroup used for this machine.
+                    properties:
+                      id:
+                        description: ID is the cloud resource ID.
+                        type: string
+                      managed:
+                        description: Managed indicates whether CAPI created and owns
+                          this resource.
+                        type: boolean
+                      name:
+                        description: Name is the cloud resource name.
+                        type: string
+                      strategy:
+                        description: Strategy is the placement strategy. EVROC only
+                          supports spread.
+                        type: string
+                    required:
+                    - id
+                    - managed
+                    - name
+                    - strategy
+                    type: object
+                  publicIP:
+                    description: PublicIP information for this machine.
+                    properties:
+                      address:
+                        description: Address is the allocated IPv4 address.
+                        type: string
+                      id:
+                        description: ID is the cloud resource ID (e.g., "my-cluster-cp-ip").
+                        type: string
+                      managed:
+                        description: |-
+                          Managed indicates whether CAPI created and owns this resource.
+                          True: CAPI created it, will delete it on cluster deletion.
+                          False: External resource (e.g., Terraform), CAPI only uses it.
+                        type: boolean
+                      name:
+                        description: Name is the cloud resource name.
+                        type: string
+                    required:
+                    - address
+                    - id
+                    - managed
+                    - name
+                    type: object
+                  securityGroups:
+                    description: SecurityGroups created or used for this machine.
+                    items:
+                      description: ManagedSecurityGroup tracks a security group resource
+                        used by the cluster.
+                      properties:
+                        id:
+                          description: ID is the cloud resource ID.
+                          type: string
+                        managed:
+                          description: |-
+                            Managed indicates whether CAPI created and owns this resource.
+                            True: CAPI created it, will delete it on cluster deletion.
+                            False: External resource (e.g., Terraform), CAPI only uses it.
+                          type: boolean
+                        name:
+                          description: Name is the cloud resource name.
+                          type: string
+                        role:
+                          description: |-
+                            Role indicates which section this SG belongs to: "common", "controlPlane", or "worker".
+                            Used by the machine controller to select the right SGs based on node role.
+                          type: string
+                      required:
+                      - id
+                      - managed
+                      - name
+                      - role
+                      type: object
+                    type: array
+                type: object
+            required:
+            - ready
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

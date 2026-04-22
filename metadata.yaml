@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Cluster API Provider evroc
+# Metadata for clusterctl
+apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3
+kind: Metadata
+metadata:
+  name: infrastructure-evroc
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-evroc
+    cluster.x-k8s.io/version: v0.1.28
+
+# Supported CAPI contract versions
+releaseSeries:
+  - major: 0
+    minor: 1
+    contract: v1beta2
+
+# Latest version in this release series
+latest: v0.1.28
+
+# Target namespace for provider installation
+namespace: capi-evroc-system

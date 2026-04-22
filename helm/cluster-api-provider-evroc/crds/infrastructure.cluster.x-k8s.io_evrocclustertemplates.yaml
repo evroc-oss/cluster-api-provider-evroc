@@ -1,0 +1,419 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: evrocclustertemplates.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: EvrocClusterTemplate
+    listKind: EvrocClusterTemplateList
+    plural: evrocclustertemplates
+    singular: evrocclustertemplate
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          EvrocClusterTemplate is the Schema for the evrocclustertemplates API
+          This template is used by ClusterClass to create EvrocCluster instances
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: EvrocClusterTemplateSpec defines the desired state of EvrocClusterTemplate
+            properties:
+              template:
+                description: EvrocClusterTemplateResource describes the data needed
+                  to create an EvrocCluster from a template
+                properties:
+                  spec:
+                    description: Spec is the specification of the desired behavior
+                      of the cluster.
+                    properties:
+                      additionalLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          AdditionalLabels is an optional set of labels to add to all Evroc resources managed by this cluster.
+                          These labels are applied to VMs, disks, IPs, security groups, and other infrastructure.
+                          Use these for cost tracking, billing allocation, and resource organization.
+                          Example: {"environment": "production", "team": "platform", "cost-center": "engineering"}
+                        type: object
+                      controlPlaneConfig:
+                        description: |-
+                          ControlPlaneConfig defines networking configuration for control plane nodes.
+                          Currently holds public IP configuration for the control plane endpoint.
+                        properties:
+                          publicIP:
+                            description: |-
+                              PublicIP configuration for the control plane endpoint.
+                              When enabled, a public IP will be auto-created and used for ControlPlaneEndpoint.Host.
+                            properties:
+                              enabled:
+                                description: |-
+                                  Enabled auto-creates a public IP managed by the controller.
+                                  The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
+                                  When the cluster is deleted, the IP is automatically cleaned up.
+                                type: boolean
+                              existingName:
+                                description: |-
+                                  ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
+                                  The IP is looked up in the evroc project configured via the controller's credentials.
+                                  This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
+                                  Mutually exclusive with Enabled.
+                                type: string
+                            type: object
+                        type: object
+                      controlPlaneEndpoint:
+                        description: ControlPlaneEndpoint represents the endpoint
+                          used to communicate with the control plane.
+                        minProperties: 1
+                        properties:
+                          host:
+                            description: host is the hostname on which the API server
+                              is serving.
+                            maxLength: 512
+                            minLength: 1
+                            type: string
+                          port:
+                            description: port is the port on which the API server
+                              is serving.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                        type: object
+                      credentialsRef:
+                        description: |-
+                          CredentialsRef is a reference to a Secret containing evroc API credentials.
+                          The secret must contain a "config.yaml" key with the evroc SDK config format:
+                            auth:
+                              token: "..."
+                              refresh_token: "..."
+                            context:
+                              project: "..."
+                              region: "..."
+                          When omitted the controller falls back to the globally mounted config file.
+                        properties:
+                          name:
+                            description: Name is the name of the Secret.
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is the namespace of the Secret. Defaults to the namespace of the
+                              EvrocCluster if omitted.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      failureDomains:
+                        description: |-
+                          FailureDomains is a list of failure domains (availability zones) in which machines should be placed.
+                          This provides high availability by spreading machines across zones.
+                          Defaults to ["a", "b", "c"] if not specified.
+                        items:
+                          type: string
+                        type: array
+                      network:
+                        description: |-
+                          NetworkSpec defines the network configuration for the cluster.
+                          Currently unused; reserved for future VPC/Subnet integration.
+                        properties:
+                          subnetRef:
+                            description: SubnetRef is a reference to an EvrocSubnet
+                              resource (future implementation)
+                            type: string
+                          vpcRef:
+                            description: VPCRef is a reference to an EvrocVPC resource
+                              (future implementation)
+                            type: string
+                        type: object
+                      project:
+                        description: Project is the evroc project name
+                        type: string
+                      region:
+                        description: |-
+                          Region is the evroc region (e.g., "se-sto").
+                          Defaults to "se-sto" if not specified.
+                        type: string
+                      securityGroups:
+                        description: |-
+                          SecurityGroups defines security group configuration for all nodes in the cluster.
+                          Rules are split into three sections: common (all nodes), controlPlane (CP only),
+                          and worker (workers only). Machines with inheritFromCluster: true automatically
+                          receive the common section plus their role-specific section.
+                        properties:
+                          common:
+                            description: Common security groups applied to ALL nodes
+                              (control plane and workers).
+                            properties:
+                              existingNames:
+                                description: |-
+                                  ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                                  These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
+                                items:
+                                  type: string
+                                type: array
+                              inlineSecurityGroups:
+                                description: |-
+                                  InlineSecurityGroups defines security groups to auto-create with specified rules.
+                                  Each group will be named "<cluster-name>-<cluster-uid>-<group-name>" and tracked in cluster.status.
+                                items:
+                                  description: InlineSecurityGroup defines a security
+                                    group with inline rules for auto-creation.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name is the logical name for this security group.
+                                        The actual resource will be named "<cluster-name>-<cluster-uid>-<name>".
+                                      type: string
+                                    rules:
+                                      description: Rules defines the firewall rules
+                                        for this security group.
+                                      items:
+                                        description: |-
+                                          SecurityGroupRule defines a single firewall rule.
+                                          This type is used by inline security group configuration on EvrocCluster and EvrocMachine.
+                                        properties:
+                                          direction:
+                                            description: Direction specifies if this
+                                              is an Ingress or Egress rule
+                                            enum:
+                                            - Ingress
+                                            - Egress
+                                            type: string
+                                          endPort:
+                                            description: EndPort specifies the end
+                                              of a port range
+                                            format: int32
+                                            type: integer
+                                          name:
+                                            description: Name is the unique name of
+                                              this rule within the security group
+                                            type: string
+                                          port:
+                                            description: Port specifies the port number
+                                              (0 means all ports)
+                                            format: int32
+                                            type: integer
+                                          protocol:
+                                            description: Protocol specifies the protocol
+                                              (TCP, UDP, ICMP, or All)
+                                            enum:
+                                            - TCP
+                                            - UDP
+                                            - ICMP
+                                            - All
+                                            type: string
+                                          remoteCIDR:
+                                            description: RemoteCIDR specifies the
+                                              remote IP address or CIDR block
+                                            type: string
+                                          remoteSecurityGroup:
+                                            description: RemoteSecurityGroup references
+                                              another security group
+                                            type: string
+                                        required:
+                                        - direction
+                                        - name
+                                        type: object
+                                      type: array
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                            type: object
+                          controlPlane:
+                            description: ControlPlane security groups applied only
+                              to control plane nodes.
+                            properties:
+                              existingNames:
+                                description: |-
+                                  ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                                  These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
+                                items:
+                                  type: string
+                                type: array
+                              inlineSecurityGroups:
+                                description: |-
+                                  InlineSecurityGroups defines security groups to auto-create with specified rules.
+                                  Each group will be named "<cluster-name>-<cluster-uid>-<group-name>" and tracked in cluster.status.
+                                items:
+                                  description: InlineSecurityGroup defines a security
+                                    group with inline rules for auto-creation.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name is the logical name for this security group.
+                                        The actual resource will be named "<cluster-name>-<cluster-uid>-<name>".
+                                      type: string
+                                    rules:
+                                      description: Rules defines the firewall rules
+                                        for this security group.
+                                      items:
+                                        description: |-
+                                          SecurityGroupRule defines a single firewall rule.
+                                          This type is used by inline security group configuration on EvrocCluster and EvrocMachine.
+                                        properties:
+                                          direction:
+                                            description: Direction specifies if this
+                                              is an Ingress or Egress rule
+                                            enum:
+                                            - Ingress
+                                            - Egress
+                                            type: string
+                                          endPort:
+                                            description: EndPort specifies the end
+                                              of a port range
+                                            format: int32
+                                            type: integer
+                                          name:
+                                            description: Name is the unique name of
+                                              this rule within the security group
+                                            type: string
+                                          port:
+                                            description: Port specifies the port number
+                                              (0 means all ports)
+                                            format: int32
+                                            type: integer
+                                          protocol:
+                                            description: Protocol specifies the protocol
+                                              (TCP, UDP, ICMP, or All)
+                                            enum:
+                                            - TCP
+                                            - UDP
+                                            - ICMP
+                                            - All
+                                            type: string
+                                          remoteCIDR:
+                                            description: RemoteCIDR specifies the
+                                              remote IP address or CIDR block
+                                            type: string
+                                          remoteSecurityGroup:
+                                            description: RemoteSecurityGroup references
+                                              another security group
+                                            type: string
+                                        required:
+                                        - direction
+                                        - name
+                                        type: object
+                                      type: array
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                            type: object
+                          worker:
+                            description: Worker security groups applied only to worker
+                              nodes.
+                            properties:
+                              existingNames:
+                                description: |-
+                                  ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                                  These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
+                                items:
+                                  type: string
+                                type: array
+                              inlineSecurityGroups:
+                                description: |-
+                                  InlineSecurityGroups defines security groups to auto-create with specified rules.
+                                  Each group will be named "<cluster-name>-<cluster-uid>-<group-name>" and tracked in cluster.status.
+                                items:
+                                  description: InlineSecurityGroup defines a security
+                                    group with inline rules for auto-creation.
+                                  properties:
+                                    name:
+                                      description: |-
+                                        Name is the logical name for this security group.
+                                        The actual resource will be named "<cluster-name>-<cluster-uid>-<name>".
+                                      type: string
+                                    rules:
+                                      description: Rules defines the firewall rules
+                                        for this security group.
+                                      items:
+                                        description: |-
+                                          SecurityGroupRule defines a single firewall rule.
+                                          This type is used by inline security group configuration on EvrocCluster and EvrocMachine.
+                                        properties:
+                                          direction:
+                                            description: Direction specifies if this
+                                              is an Ingress or Egress rule
+                                            enum:
+                                            - Ingress
+                                            - Egress
+                                            type: string
+                                          endPort:
+                                            description: EndPort specifies the end
+                                              of a port range
+                                            format: int32
+                                            type: integer
+                                          name:
+                                            description: Name is the unique name of
+                                              this rule within the security group
+                                            type: string
+                                          port:
+                                            description: Port specifies the port number
+                                              (0 means all ports)
+                                            format: int32
+                                            type: integer
+                                          protocol:
+                                            description: Protocol specifies the protocol
+                                              (TCP, UDP, ICMP, or All)
+                                            enum:
+                                            - TCP
+                                            - UDP
+                                            - ICMP
+                                            - All
+                                            type: string
+                                          remoteCIDR:
+                                            description: RemoteCIDR specifies the
+                                              remote IP address or CIDR block
+                                            type: string
+                                          remoteSecurityGroup:
+                                            description: RemoteSecurityGroup references
+                                              another security group
+                                            type: string
+                                        required:
+                                        - direction
+                                        - name
+                                        type: object
+                                      type: array
+                                  required:
+                                  - name
+                                  type: object
+                                type: array
+                            type: object
+                        type: object
+                    required:
+                    - project
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true

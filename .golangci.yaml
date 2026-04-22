@@ -1,0 +1,82 @@
+# golangci-lint configuration for cluster-api-provider-evroc
+# Based on evroc-csi-driver standards
+# Focus: correctness and security over strict style enforcement
+
+version: "2"
+run:
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+  timeout: 5m
+
+linters:
+  enable:
+    # Critical: Error checking
+    - errcheck          # Check for unchecked errors
+    - errorlint         # Correct use of error wrapping
+
+    # Critical: Bug detection
+    - staticcheck       # Advanced static analysis
+    - govet            # Standard Go vet checks
+    - ineffassign      # Detect ineffectual assignments
+    - unused           # Detect unused code
+
+    # Context handling
+    - noctx            # Require context in http.Request
+    - contextcheck     # Check context.Context usage
+
+    # Code quality
+    - misspell         # Fix common spelling mistakes
+
+  disable:
+    # Disabled - conflicts with Kubernetes controller patterns
+    - gochecknoglobals  # Scheme registration, webhook loggers need globals
+    - ireturn           # Controller runtime requires returning interfaces
+    - lll              # Line length - readability over strict limits (kubebuilder annotations are long)
+    - varnamelen       # Variable names - context matters (tt for table tests is fine)
+    - nonamedreturns   # Named returns helpful in controller methods
+    - nakedret         # Sometimes clearer
+    - godot            # Comment formatting - too pedantic
+    - revive           # ALL_CAPS constants fine for Kubernetes
+    - gochecknoinits   # init() required for scheme registration
+    - testableexamples # Not writing examples
+    - nilnil           # Too pedantic
+    - forbidigo        # Don't restrict patterns
+    - containedctx     # Context in structs OK for reconcilers
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+    # Allow ignoring errors in specific safe cases
+    exclude-functions:
+      - (io.Closer).Close
+
+  staticcheck:
+    checks: ["all", "-ST1000", "-SA1019"]  # Disable package comment requirement, allow v1beta1
+
+  govet:
+    enable-all: true
+    disable:
+      - shadow       # Shadow variables sometimes OK
+      - fieldalignment  # Struct field alignment - too pedantic
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+  exclude-rules:
+    # Exclude generated code
+    - linters:
+        - all
+      path: zz_generated\.deepcopy\.go
+
+    # Allow test helpers to ignore errors
+    - linters:
+        - errcheck
+        - noctx
+      path: _test\.go
+
+    # Allow globals in scheme registration and webhooks
+    - linters:
+        - gochecknoglobals
+      path: (groupversion_info|webhook|main)\.go

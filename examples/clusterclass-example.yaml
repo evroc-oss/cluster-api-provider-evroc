@@ -1,0 +1,203 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# ClusterClass Example - Advanced CAPI Feature
+#
+# ClusterClass provides a reusable cluster blueprint that multiple clusters can reference.
+# This is an ADVANCED feature - most users should use regular flavors (minimal, ha, gpu).
+#
+# When to use ClusterClass:
+# - Managing 10+ clusters with similar configurations
+# - Multi-tenancy scenarios (same blueprint, different clusters)
+# - Centralized version upgrade management
+# - Platform teams automating cluster deployments
+#
+# When NOT to use ClusterClass:
+# - Single cluster deployments → use regular flavors
+# - Highly customized unique clusters → use regular flavors
+# - Getting started with CAPI → use regular flavors
+#
+# Learn more: https://cluster-api.sigs.k8s.io/tasks/experimental-features/cluster-class/
+#
+# Prerequisites:
+# - CAPI core with ClusterClass support (topology feature)
+# - clusterctl init (or equivalent) with Kubeadm bootstrap + control plane providers
+# - evroc infrastructure provider installed
+#
+# Usage:
+#   1. Set EVROC_PROJECT and EVROC_REGION
+#   2. envsubst < examples/clusterclass-example.yaml | kubectl apply -f -
+#   3. Create clusters via spec.topology.class (see commented example at end of file)
+
+---
+# Infrastructure Templates (reusable across clusters)
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocClusterTemplate
+metadata:
+  name: evroc-cluster-template
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      failureDomains:
+      - a
+      - b
+      - c
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: evroc-control-plane-template
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: a1a.m  # 4 vCPU, 16GB RAM
+      image: ubuntu.22-04.1
+      rootDiskSize: 50
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: evroc-worker-template
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: a1a.s  # 2 vCPU, 8GB RAM
+      image: ubuntu.22-04.1
+      rootDiskSize: 50
+---
+# Bootstrap Templates
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlaneTemplate
+metadata:
+  name: evroc-control-plane-config
+  namespace: default
+spec:
+  template:
+    spec:
+      kubeadmConfigSpec:
+        clusterConfiguration:
+          apiServer:
+            extraArgs:
+            - name: cloud-provider
+              value: external
+          controllerManager:
+            extraArgs:
+            - name: cloud-provider
+              value: external
+        initConfiguration:
+          nodeRegistration:
+            kubeletExtraArgs:
+            - name: cloud-provider
+              value: external
+        joinConfiguration:
+          nodeRegistration:
+            kubeletExtraArgs:
+            - name: cloud-provider
+              value: external
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: evroc-worker-config
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+---
+# ClusterClass Definition
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: ClusterClass
+metadata:
+  name: evroc-basic
+  namespace: default
+spec:
+  controlPlane:
+    ref:
+      apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+      kind: KubeadmControlPlaneTemplate
+      name: evroc-control-plane-config
+    machineInfrastructure:
+      ref:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: EvrocMachineTemplate
+        name: evroc-control-plane-template
+  infrastructure:
+    ref:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: EvrocClusterTemplate
+      name: evroc-cluster-template
+  workers:
+    machineDeployments:
+    - class: default-worker
+      template:
+        bootstrap:
+          ref:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            name: evroc-worker-config
+        infrastructure:
+          ref:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+            kind: EvrocMachineTemplate
+            name: evroc-worker-template
+  variables:
+  - name: controlPlaneReplicas
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 5
+  - name: workerReplicas
+    required: false
+    schema:
+      openAPIV3Schema:
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 10
+---
+# Example: Create a cluster using this ClusterClass
+#
+# 1. First, apply this file to install the ClusterClass:
+#    kubectl apply -f clusterclass-example.yaml
+#
+# 2. Then create a cluster using the ClusterClass:
+#
+# apiVersion: cluster.x-k8s.io/v1beta2
+# kind: Cluster
+# metadata:
+#   name: my-cluster
+#   namespace: default
+# spec:
+#   topology:
+#     class: evroc-basic
+#     version: v1.28.0
+#     controlPlane:
+#       replicas: 3
+#     workers:
+#       machineDeployments:
+#       - class: default-worker
+#         name: workers
+#         replicas: 3
+#
+# That's it! Just 15 lines vs 200+ with traditional templates.
+# The ClusterClass handles all the complexity.

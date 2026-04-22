@@ -1,0 +1,188 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Default values for cluster-api-provider-evroc
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# evroc Platform Configuration
+evroc:
+  # Name of existing Secret containing config.yaml with evroc credentials.
+  # REQUIRED: You must create this Secret before installing the chart.
+  # The Secret must contain a key named "config.yaml" with the full configuration.
+  # See README.md for the configuration file format.
+  existingConfigSecret: ""
+
+# Controller configuration
+controller:
+  # Number of controller replicas (only 1 is active, others are standby)
+  replicas: 1
+
+  image:
+    repository: ghcr.io/evroc-oss/cluster-api-provider-evroc
+    tag: v0.1.28
+    pullPolicy: IfNotPresent
+
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Health probe configuration
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8081
+    initialDelaySeconds: 15
+    periodSeconds: 20
+
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8081
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+  # Node selector for controller pod
+  nodeSelector: {}
+
+  # Tolerations for controller pod
+  tolerations: []
+
+  # Affinity rules for controller pod
+  affinity: {}
+
+  # Additional environment variables
+  extraEnv: []
+
+  # Enable leader election for high availability
+  leaderElection:
+    enabled: true
+
+  # Security context for the controller pod
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Security context for the controller container
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    privileged: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 65532
+
+# Webhook configuration
+webhook:
+  # Enable admission webhooks for validation and defaulting
+  enabled: true
+
+  # Webhook server port (controller-runtime default)
+  port: 9443
+
+  # Certificate directory for webhook TLS
+  certDir: /tmp/k8s-webhook-server/serving-certs
+
+  # cert-manager integration
+  certManager:
+    # Enable cert-manager for automatic certificate management
+    enabled: true
+
+    # Issuer to use for webhook certificates
+    # The chart will create a self-signed issuer if this is set
+    issuerRef:
+      kind: Issuer
+      name: selfsigned-issuer
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+
+# Service Account configuration
+serviceAccount:
+  # Create service account
+  create: true
+
+  # Annotations for service account
+  annotations: {}
+
+  # Name of service account (auto-generated if not specified)
+  name: ""
+
+# Namespace to deploy the provider
+namespace: capi-evroc-system
+
+# Image pull secrets
+imagePullSecrets: []
+
+# Global annotations
+annotations: {}
+
+# Global labels
+labels: {}
+
+# Pod annotations
+podAnnotations: {}
+
+# Pod labels
+podLabels: {}
+
+# Install CRDs with the Helm chart
+# Set to false if you want to manage CRDs separately
+installCRDs: true
+
+# Logging configuration
+logging:
+  # Log level (debug, info, warn, error)
+  level: info
+
+  # Log format (json or text)
+  format: json
+
+# Metrics service configuration
+metrics:
+  # Enable Prometheus metrics endpoint
+  enabled: true
+
+  # Metrics port
+  port: 8080
+
+  # Service configuration
+  service:
+    # Annotations for metrics service
+    annotations: {}
+
+    # Labels for metrics service
+    labels: {}
+
+  # ServiceMonitor for Prometheus Operator
+  serviceMonitor:
+    # Create ServiceMonitor resource
+    enabled: false
+
+    # Scrape interval
+    interval: 30s
+
+    # Scrape timeout (must be less than interval)
+    scrapeTimeout: 10s
+
+    # Additional labels for ServiceMonitor
+    # Use this to match your Prometheus instance's serviceMonitorSelector
+    additionalLabels: {}
+    # Example:
+    # additionalLabels:
+    #   prometheus: kube-prometheus
+
+# Enable debug mode
+debug: false

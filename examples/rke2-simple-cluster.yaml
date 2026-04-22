@@ -1,0 +1,266 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Simple RKE2 Cluster Example for EVROC
+# This is a minimal working example with 1 control plane node and 3 worker nodes.
+# Uses SUSE Linux Enterprise Micro 6.1 (SL Micro) with RKE2.
+#
+# Compatible with CAPI v1.12+ and CAPRKE2 v0.12+
+#
+# Usage:
+#   1. Update the values below (project, region, ssh key)
+#   2. kubectl apply -f examples/rke2-simple-cluster.yaml
+#   3. Watch: kubectl get cluster,machines -w
+#   4. Get kubeconfig when ready: clusterctl get kubeconfig rke2-simple > rke2-simple.kubeconfig
+
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: rke2-simple
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+        - 10.42.0.0/16
+    services:
+      cidrBlocks:
+        - 10.43.0.0/16
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: RKE2ControlPlane
+    name: rke2-simple-control-plane
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: rke2-simple
+
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: rke2-simple
+  namespace: default
+spec:
+  project: evroc-demo  # CHANGE THIS to your project
+  region: se-sto
+  failureDomains:
+  - a
+  - b
+  - c
+  controlPlaneConfig:
+    publicIP:
+      enabled: true
+  securityGroups:
+    common:
+      inlineSecurityGroups:
+        - name: common-sg
+          rules:
+            - name: ssh
+              direction: Ingress
+              protocol: TCP
+              port: 22
+              remoteCIDR: 0.0.0.0/0
+            - name: allow-all-egress
+              direction: Egress
+              protocol: All
+              remoteCIDR: 0.0.0.0/0
+    controlPlane:
+      inlineSecurityGroups:
+        - name: cp-sg
+          rules:
+            - name: kubernetes-api
+              direction: Ingress
+              protocol: TCP
+              port: 6443
+              remoteCIDR: 0.0.0.0/0
+            - name: rke2-supervisor
+              direction: Ingress
+              protocol: TCP
+              port: 9345
+              remoteCIDR: 0.0.0.0/0
+    worker:
+      inlineSecurityGroups:
+        - name: worker-sg
+          rules:
+            - name: kubelet
+              direction: Ingress
+              protocol: TCP
+              port: 10250
+              remoteCIDR: "10.0.0.0/8"
+            - name: canal-vxlan
+              direction: Ingress
+              protocol: UDP
+              port: 8472
+              remoteCIDR: "10.0.0.0/8"
+            - name: nodeport-tcp
+              direction: Ingress
+              protocol: TCP
+              port: 30000
+              endPort: 32767
+              remoteCIDR: "0.0.0.0/0"
+            - name: nodeport-udp
+              direction: Ingress
+              protocol: UDP
+              port: 30000
+              endPort: 32767
+              remoteCIDR: "0.0.0.0/0"
+
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: RKE2ControlPlane
+metadata:
+  name: rke2-simple-control-plane
+  namespace: default
+spec:
+  replicas: 1
+  version: v1.30.6+rke2r1
+  serverConfig:
+    cni: canal
+    cloudProviderName: external
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: rke2-simple-control-plane
+  # Canal CNI configuration for SL Micro
+  manifestsConfigMapReference:
+    name: rke2-canal-config
+    namespace: default
+  preRKE2Commands:
+    # Load kernel modules immediately
+    - modprobe overlay
+    - modprobe br_netfilter
+    # Persist kernel modules across reboots
+    - |
+      cat <<MODULES > /etc/modules-load.d/rke2.conf
+      overlay
+      br_netfilter
+      MODULES
+    # Configure sysctl (use 90- prefix for SUSE/Wicked compatibility)
+    - |
+      cat <<SYSCTL > /etc/sysctl.d/90-rke2.conf
+      net.bridge.bridge-nf-call-iptables = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward = 1
+      net.ipv4.conf.all.forwarding = 1
+      SYSCTL
+    # Apply sysctl settings
+    - sysctl --system
+
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: rke2-simple-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      project: evroc-demo  # CHANGE THIS to your project
+      region: se-sto
+      image: sl-micro.6-1.1
+      computeProfile: a1a.m
+      sshKey: agm  # CHANGE THIS to your SSH key name
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: rke2-simple-workers
+  namespace: default
+spec:
+  clusterName: rke2-simple
+  replicas: 3
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: rke2-simple
+      version: v1.30.6+rke2r1
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: RKE2ConfigTemplate
+          name: rke2-simple-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: rke2-simple-workers
+
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: RKE2ConfigTemplate
+metadata:
+  name: rke2-simple-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      preRKE2Commands:
+        # Load kernel modules immediately
+        - modprobe overlay
+        - modprobe br_netfilter
+        # Persist kernel modules across reboots
+        - |
+          cat <<MODULES > /etc/modules-load.d/rke2.conf
+          overlay
+          br_netfilter
+          MODULES
+        # Configure sysctl (use 90- prefix for SUSE/Wicked compatibility)
+        - |
+          cat <<SYSCTL > /etc/sysctl.d/90-rke2.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+          net.ipv4.conf.all.forwarding = 1
+          SYSCTL
+        # Apply sysctl settings
+        - sysctl --system
+
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: rke2-simple-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      project: evroc-demo  # CHANGE THIS to your project
+      region: se-sto
+      image: sl-micro.6-1.1
+      computeProfile: a1a.m
+      sshKey: agm  # CHANGE THIS to your SSH key name
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+
+---
+# Canal CNI Configuration for SL Micro
+# Flannel auto-detects the primary interface via default route
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rke2-canal-config
+  namespace: default
+data:
+  rke2-canal-config.yaml: |
+    apiVersion: helm.cattle.io/v1
+    kind: HelmChartConfig
+    metadata:
+      name: rke2-canal
+      namespace: kube-system
+    spec:
+      valuesContent: |-
+        flannel:
+          backend: vxlan

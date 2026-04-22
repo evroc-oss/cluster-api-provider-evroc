@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+{{ if .Values.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "cluster-api-provider-evroc.fullname" . }}-mutating-webhook-configuration
+  labels:
+    {{- include "cluster-api-provider-evroc.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "cluster-api-provider-evroc.fullname" . }}-serving-cert
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "cluster-api-provider-evroc.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-evroccluster
+  failurePolicy: Fail
+  name: mevroccluster.kb.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - evrocclusters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "cluster-api-provider-evroc.fullname" . }}-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-evrocmachine
+  failurePolicy: Fail
+  name: mevrocmachine.kb.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - evrocmachines
+  sideEffects: None
+{{ end }}

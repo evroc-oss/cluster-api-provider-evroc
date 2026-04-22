@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+apiVersion: v2
+name: cluster-api-provider-evroc
+description: A Cluster API v1beta2 infrastructure provider for managing Kubernetes clusters on evroc Cloud (compatible with CAPI v1.11+ and v1.12)
+type: application
+version: 0.1.28
+appVersion: "0.1.28"
+keywords:
+  - kubernetes
+  - cluster-api
+  - evroc
+  - infrastructure-provider
+  - capi
+home: https://github.com/evroc-oss/cluster-api-provider-evroc
+sources:
+  - https://github.com/evroc-oss/cluster-api-provider-evroc
+maintainers:
+  - name: evroc Team
+    email: support@evroc.com
+icon: https://raw.githubusercontent.com/evroc-oss/cluster-api-provider-evroc/main/docs/images/evroc-logo.png
+kubeVersion: ">=1.27.0-0"
+annotations:
+  # ArtifactHub — CNCF Helm chart discovery (artifacthub.io)
+  artifacthub.io/category: integration-delivery
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "false"
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://github.com/evroc-oss/cluster-api-provider-evroc/tree/main/docs
+    - name: Source
+      url: https://github.com/evroc-oss/cluster-api-provider-evroc
+  # Rancher Apps & Marketplace
+  catalog.cattle.io/display-name: evroc Cloud Infrastructure Provider
+  catalog.cattle.io/release-name: capi-evroc
+  catalog.cattle.io/namespace: capi-evroc-system
+  catalog.cattle.io/os: linux

@@ -1,0 +1,270 @@
+# Cluster with Autoscaler-Ready MachineDeployments
+# This template creates a CAPI cluster with MachineDeployments configured for autoscaling.
+# The Cluster Autoscaler will automatically create/delete evroc VMs based on workload demand.
+#
+# Key Features:
+# - Two worker pools (standard and small) with autoscaling annotations
+# - Standard pool: 1-10 nodes (a1a.m - 4 vCPU, 16GB RAM)
+# - Small pool: 0-5 nodes, scale-from-zero (a1a.s - 2 vCPU, 8GB RAM)
+# - Multi-zone HA control plane (3 nodes)
+#
+# Usage:
+#   1. Create the cluster:
+#      export CLUSTER_NAME="autoscaler-demo"
+#      export EVROC_PROJECT="your-project-id"
+#      export EVROC_REGION="se-sto"
+#
+#      clusterctl generate cluster ${CLUSTER_NAME} \
+#        --from examples/cluster-autoscaler.yaml \
+#        | kubectl apply -f -
+#
+#   2. Wait for cluster (3-5 minutes):
+#      kubectl get cluster,machinedeployment,evrocmachine -w
+#
+#   3. Get workload cluster kubeconfig:
+#      clusterctl get kubeconfig ${CLUSTER_NAME} > ${CLUSTER_NAME}.kubeconfig
+#
+#   4. Install Cluster Autoscaler in the workload cluster:
+#      See: https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler/cloudprovider/clusterapi
+#
+#      Quick install:
+#      export KUBECONFIG=${CLUSTER_NAME}.kubeconfig
+#
+#      # Create management cluster access secret
+#      kubectl create secret generic cluster-autoscaler-mgmt-kubeconfig \
+#        --from-file=kubeconfig=~/.kube/config \
+#        -n kube-system
+#
+#      # Deploy autoscaler
+#      kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/cloudprovider/clusterapi/examples/deployment.yaml
+#
+#   5. Test autoscaling:
+#      # Create workload that needs more nodes
+#      kubectl create deployment nginx --image=nginx --replicas=20
+#      kubectl set resources deployment nginx --requests=cpu=1000m,memory=1Gi
+#
+#      # Watch MachineDeployments scale up (from management cluster)
+#      kubectl get machinedeployment -w
+#
+#      # Watch new evroc VMs being created
+#      kubectl get evrocmachine -w
+#
+#      # Delete workload and watch scale-down after ~10 minutes
+#      kubectl delete deployment nginx
+#
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+    services:
+      cidrBlocks:
+      - 10.96.0.0/12
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: ${CLUSTER_NAME}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: default
+spec:
+  project: ${EVROC_PROJECT}
+  region: ${EVROC_REGION:=se-sto}
+  failureDomains:
+  - a
+  - b
+  - c
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: default
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT:=3}
+  version: ${KUBERNETES_VERSION:=v1.28.0}
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+  kubeadmConfigSpec:
+    clusterConfiguration:
+      apiServer:
+        extraArgs:
+        - name: cloud-provider
+          value: external
+      controllerManager:
+        extraArgs:
+        - name: cloud-provider
+          value: external
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${CONTROL_PLANE_MACHINE_COMPUTE_PROFILE:=a1a.m}
+      image: ubuntu-22.04
+      rootDiskSize: 50
+---
+# Standard Worker Pool - Autoscales from 1 to 10 nodes
+# These are the primary workers for general workloads
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: default
+  annotations:
+    # Cluster Autoscaler annotations
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "1"
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "10"
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: 1  # Start with 1 worker, autoscaler will scale up as needed
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        node-pool: standard
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      version: ${KUBERNETES_VERSION:=v1.28.0}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-workers
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${WORKER_MACHINE_COMPUTE_PROFILE:=a1a.m}  # 4 vCPU, 16GB RAM
+      image: ubuntu-22.04
+      rootDiskSize: 50
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+---
+# Small Worker Pool - Scale-from-zero for cost optimization
+# Start at 0 nodes, autoscaler creates them only when needed
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-workers-small
+  namespace: default
+  annotations:
+    # Cluster Autoscaler annotations
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-min-size: "0"
+    cluster.x-k8s.io/cluster-api-autoscaler-node-group-max-size: "5"
+    # Capacity hints for scale-from-zero (tells autoscaler the node size)
+    capacity.cluster-autoscaler.kubernetes.io/memory: "8Gi"
+    capacity.cluster-autoscaler.kubernetes.io/cpu: "2"
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: 0  # Start with 0 workers (scale-from-zero!)
+  selector:
+    matchLabels: {}
+  template:
+    metadata:
+      labels:
+        node-pool: small
+        workload-type: burst
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      version: ${KUBERNETES_VERSION:=v1.28.0}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-workers-small
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-workers-small
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers-small
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: a1a.s  # 2 vCPU, 8GB RAM (smaller/cheaper than standard)
+      image: ubuntu-22.04
+      rootDiskSize: 30
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers-small
+  namespace: default
+spec:
+  template:
+    spec:
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+          - name: node-labels
+            value: workload-type=burst

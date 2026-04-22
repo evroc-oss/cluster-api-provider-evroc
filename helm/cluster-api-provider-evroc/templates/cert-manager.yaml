@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+{{ if and .Values.webhook.enabled .Values.webhook.certManager.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "cluster-api-provider-evroc.fullname" . }}-selfsigned-issuer
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cluster-api-provider-evroc.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "cluster-api-provider-evroc.fullname" . }}-serving-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "cluster-api-provider-evroc.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+  - {{ include "cluster-api-provider-evroc.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc
+  - {{ include "cluster-api-provider-evroc.fullname" . }}-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "cluster-api-provider-evroc.fullname" . }}-selfsigned-issuer
+  secretName: {{ include "cluster-api-provider-evroc.fullname" . }}-webhook-server-cert
+{{ end }}
