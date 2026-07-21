@@ -149,16 +149,17 @@ func TestCloudClient_SecurityGroupLifecycle(t *testing.T) {
 	sgName := fmt.Sprintf("capi-integ-test-%d", time.Now().Unix())
 	t.Logf("Creating security group: %s", sgName)
 
-	tcpProto := networkingtypes.SecurityGroupSpecRulesItemProtocolTCP
+	tcpProto := networkingtypes.TCP
 	rules := []networkingtypes.SecurityGroupSpecRulesItem{
 		{
-			Direction: networkingtypes.SecurityGroupSpecRulesItemDirectionIngress,
+			Direction: networkingtypes.Ingress,
 			Protocol:  &tcpProto,
 			Port:      int32Ptr(22),
 			Remote: struct {
 				Address          *networkingtypes.SecurityGroupSpecRulesItemAddress `json:"address,omitempty"`
 				SecurityGroupRef *string                                            `json:"securityGroupRef,omitempty"`
 				SubnetRef        *string                                            `json:"subnetRef,omitempty"`
+				VpcRef           *string                                            `json:"vpcRef,omitempty"`
 			}{
 				Address: &networkingtypes.SecurityGroupSpecRulesItemAddress{
 					IpAddressOrCIDR: "0.0.0.0/0",

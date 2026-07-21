@@ -30,19 +30,24 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate CRD and webhook manifests.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./api/...;./cmd/...;./internal/..." output:crd:artifacts:config=config/crd/bases output:webhook:artifacts:config=config/webhook
+manifests: controller-gen ## Generate CRD manifests.
+	$(CONTROLLER_GEN) crd paths="./api/...;./cmd/...;./internal/..." output:crd:artifacts:config=./helm/cluster-api-provider-evroc/crds/
 	# The upstream clusterv1.APIEndpoint type carries +kubebuilder:validation:MinProperties=1,
 	# which blocks status updates when controlPlaneEndpoint is not yet set (zero value = {}).
 	# Strip it post-generation so the CRD allows an absent/zero endpoint.
-	@sed -i '/minProperties: 1/d' config/crd/bases/infrastructure.cluster.x-k8s.io_evrocclusters.yaml
+	@sed -i '/minProperties: 1/d' helm/cluster-api-provider-evroc/crds/infrastructure.cluster.x-k8s.io_evrocclusters.yaml
 
-.PHONY: sync-helm
-sync-helm: manifests ## Sync generated CRDs and webhook manifests to the Helm chart.
-	cp config/crd/bases/*.yaml helm/cluster-api-provider-evroc/crds/
+.PHONY: generate-templates
+generate-templates: ## Generate templates/infrastructure-components.yaml from Helm chart.
+	helm template cluster-api-provider-evroc helm/cluster-api-provider-evroc \
+		--namespace capi-evroc-system \
+		--set controller.image.tag="$(shell cat VERSION)" \
+		--set fullnameOverride=cluster-api-provider-evroc \
+		--include-crds \
+		> templates/infrastructure-components.yaml
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: manifests controller-gen generate-templates ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations and update templates.
 	$(CONTROLLER_GEN) object:headerFile="scripts/boilerplate.go.txt" paths="./api/...;./cmd/...;./internal/..."
 
 .PHONY: fmt
@@ -95,8 +100,12 @@ check-compliance: ## Check CAPI 1.12 compliance.
 validate-templates: ## Validate cluster templates are well-formed YAML.
 	@./scripts/validate-templates.sh
 
+.PHONY: validate-manifests
+validate-manifests: manifests ## Validate manifests against CRD schemas and the Helm chart renders to valid YAML.
+	go test ./test/manifests/...
+
 .PHONY: verify
-verify: test check-compliance validate-templates ## Run all verification checks (tests + compliance + templates).
+verify: test check-compliance validate-templates validate-manifests ## Run all verification checks (tests + compliance + templates + manifest schemas + chart render).
 	@echo "All verification checks passed!"
 
 ##@ Build
@@ -179,7 +188,7 @@ test-e2e-capi: ## Run upstream CAPI QuickStart E2E tests (requires live evroc cr
 	REPO_ROOT=$(PWD) \
 	EVROC_CREDENTIALS_FILE=$(EVROC_CREDENTIALS_FILE) \
 	E2E_LOCAL_IMAGE=$(E2E_LOCAL_IMAGE) \
-	go run github.com/onsi/ginkgo/v2/ginkgo -v -trace --tags e2e -output-dir=$(PWD)/_artifacts \
+	go run github.com/onsi/ginkgo/v2/ginkgo -v -trace --tags e2e --timeout=$(GINKGO_TIMEOUT) -output-dir=$(PWD)/_artifacts \
 	./suites/capi
 
 .PHONY: test-e2e-conformance
@@ -191,6 +200,10 @@ test-e2e-conformance: manifests ## Run CAPI conformance tests (validates CRD con
 
 E2E_LOCAL_IMAGE ?= ghcr.io/evroc-oss/cluster-api-provider-evroc:latest
 E2E_LOG_FILE ?= $(PWD)/_artifacts/rancher-turtles-e2e-$(shell date +%Y%m%d-%H%M%S).log
+
+# Ginkgo Suite Timeout for the CAPI e2e run. Each spec provisions a real VM+LB,
+# so the whole suite needs above ginkgo's 1h default to run all 11 specs.
+GINKGO_TIMEOUT ?= 2h30m
 
 # Pin clusterctl to v1.12 for v1beta2 compatibility.
 # The run-e2e-tests.sh downloads this to /tmp if not already present.

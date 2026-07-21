@@ -23,7 +23,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
 - Docker running locally
 - `kubectl` and `kind` installed
 - [cert-manager](https://cert-manager.io/) installed on the management cluster (required for admission webhooks)
-- evroc API credentials (OAuth2 tokens or username/password)
+- evroc service account (either existing, or created in step 6)
 
 ### 1) Create a management cluster
 
@@ -93,96 +93,72 @@ kubectl get crd | grep evroc
 #   evrocmachinetemplates.infrastructure.cluster.x-k8s.io
 ```
 
-### 6) Create evroc credentials secret
+### 6) Create a service account
 
-The provider supports two credential modes. You need **at least one**:
+The provider uses service account authentication. Create a service account and credential using the evroc CLI:
 
-| Mode | Secret location | Used when |
-|------|----------------|-----------|
-| **Global (controller-level)** | `evroc-credentials` in `capi-evroc-system` | `EvrocCluster` has **no** `credentialsRef` |
-| **Per-cluster** | Any namespace (must match the cluster or be explicit) | `EvrocCluster` specifies `credentialsRef` |
+```bash
+# Create the service account
+evroc iam serviceaccount create my-capi-sa
 
-The global secret is volume-mounted into the provider controller pod at `/etc/evroc/config.yaml`. It acts as a fallback for any cluster that does not specify its own credentials. If you only run clusters in a single evroc project, the global secret is all you need.
+# Create a credential (save the private key — it is only shown once)
+evroc iam serviceaccount credential create my-key --service-account my-capi-sa
+```
 
-#### Global credentials (recommended for single-tenant setups)
+Assign the required roles:
+
+```bash
+SA_PRINCIPAL="/iam/projects/<your-project-id>/serviceAccounts/my-capi-sa"
+
+evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/computeOperator
+evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/networkingOperator
+evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/loadBalancerOperator
+```
+
+### 7) Create evroc credentials secret
+
+Create a secret with the service account credentials. Each `EvrocCluster` references its credentials via `spec.credentialsRef`:
 
 ```bash
 cat > /tmp/evroc-config.yaml <<EOF
 auth:
-  token: "your-access-token"
-  refresh_token: "your-refresh-token"
-
-context:
-  project: "your-project-id"
-  region: "se-sto"
-  organization: "your-organization-id"
+  service_account_id: "my-capi-sa"
+  service_account_secret: "<base64-encoded-jwk-private-key>"
 EOF
 
 kubectl create secret generic evroc-credentials \
   --from-file=config.yaml=/tmp/evroc-config.yaml \
-  -n capi-evroc-system
+  -n default
 
 rm /tmp/evroc-config.yaml
 ```
 
-**Option B: Username and password** (for development use):
+> **Note:** The secret contains only authentication material. Project and region
+> come from the `EvrocCluster` spec (`spec.project` / `spec.region`), which is
+> the single source of truth for where resources are created.
+>
+> For `clusterctl move`, the controller creates an owned copy in the
+> `EvrocCluster` namespace. The user-managed source Secret is never owned or
+> deleted by the controller. The source Secret must be in the same namespace as
+> the `EvrocCluster`.
+
+For multi-tenant environments, create separate secrets per tenant and reference them in each `EvrocCluster`:
 
 ```yaml
-auth:
-  username: "your-username"
-  password: "your-password"
-
-context:
-  project: "your-project-id"
-  region: "se-sto"
-  organization: "your-organization-id"
-```
-
-> **Note:** After creating the secret, restart the controller so it picks up the mounted config:
-> ```bash
-> kubectl rollout restart deployment -n capi-evroc-system
-> ```
-
-#### Per-cluster credentials (multi-tenant / Rancher)
-
-For multi-tenant environments where different clusters use different evroc projects or credentials, each `EvrocCluster` can reference its own secret via `spec.credentialsRef`:
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: EvrocCluster
-metadata:
-  name: my-cluster
-  namespace: default
 spec:
-  project: "tenant-a-project"
-  region: "se-sto"
   credentialsRef:
     name: tenant-a-evroc-creds
-    namespace: default  # optional; defaults to the EvrocCluster's namespace
 ```
 
-> **Important — namespace must match:** The controller looks up the secret in the **EvrocCluster's namespace** by default. If your cluster lives in `default`, the secret must also be in `default` (or you must set `credentialsRef.namespace` explicitly). The global `evroc-credentials` secret in `capi-evroc-system` is **not** used when `credentialsRef` is set — it is only for the controller pod's own mounted config.
-
-Create the per-cluster secret in the same namespace where the cluster will be created:
+Every `EvrocCluster` must name its credentials — there is no controller-level
+fallback. All cluster templates include `credentialsRef`; `EVROC_CREDENTIALS_SECRET`
+is required and `clusterctl` errors if it is unset:
 
 ```bash
-kubectl create secret generic tenant-a-evroc-creds \
-  --from-file=config.yaml=/tmp/evroc-config.yaml \
-  -n default   # must match the namespace of the EvrocCluster (or set credentialsRef.namespace)
+export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 ```
 
-The secret must contain a `config.yaml` key with the same YAML format shown above.
-
-All cluster templates include `credentialsRef` with optional variables. To use per-cluster credentials with `clusterctl generate cluster`, set:
-
-```bash
-export EVROC_CREDENTIALS_SECRET="tenant-a-evroc-creds"
-export EVROC_CREDENTIALS_NAMESPACE="default"  # optional; defaults to cluster namespace
-```
-
-When these variables are left unset (or empty), the webhook strips the empty `credentialsRef` and the controller falls back to the global config.
-
-### 7) Create your first workload cluster
+### 8) Create your first workload cluster
 
 **Option A: Using `clusterctl generate cluster` (recommended)**
 
@@ -230,7 +206,7 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 
 See [templates/](./templates/) for all flavor variables and defaults.
 
-### 8) Monitor cluster creation
+### 9) Monitor cluster creation
 
 ```bash
 # Watch cluster and machine status
@@ -248,7 +224,7 @@ Typical provisioning takes 3-5 minutes. Machines progress through phases:
 
 The control plane machine provisions first. Workers start provisioning once the control plane API endpoint is available.
 
-### 9) Access the workload cluster
+### 10) Access the workload cluster
 
 ```bash
 clusterctl get kubeconfig "${CLUSTER_NAME}" > "${CLUSTER_NAME}.kubeconfig"
@@ -319,7 +295,6 @@ If you prefer Helm over `clusterctl init`, you can install the provider directly
 ```bash
 helm install evroc-provider \
   oci://ghcr.io/evroc-oss/charts/cluster-api-provider-evroc \
-  --set evroc.existingConfigSecret=evroc-credentials \
   -n capi-evroc-system \
   --wait
 ```
@@ -504,9 +479,9 @@ kubectl get evrocmachine -A -o yaml
 
 ### Common Issues
 
-**Credentials errors (`secret not found`, `no global evroc credentials`):**
-- If using **global credentials**: ensure the `evroc-credentials` secret exists in `capi-evroc-system` and the controller pod has been restarted after creating it. Check the controller logs for `No global evroc credentials found`.
-- If using **per-cluster `credentialsRef`**: ensure the referenced secret exists in the correct namespace. By default the controller looks in the **same namespace as the EvrocCluster**, not in `capi-evroc-system`. If you created the cluster with `clusterctl generate cluster ... | kubectl apply -f -` (which defaults to the `default` namespace), the secret must also be in `default` — or set `credentialsRef.namespace` explicitly.
+**Credentials errors (`secret not found`, `credentialsRef must be specified`):**
+- `spec.credentialsRef` is required on every EvrocCluster. A cluster without it is rejected at apply time.
+- Ensure the referenced secret exists in the **same namespace as the EvrocCluster**, not in `capi-evroc-system`. If `clusterctl generate cluster ... | kubectl apply -f -` creates the cluster in `default`, the secret must also be in `default`.
 - Verify the secret contains a `config.yaml` key.
 
 **Machines stuck in Provisioning:**
@@ -599,7 +574,6 @@ metrics:
 ```bash
 helm install evroc-provider \
   oci://ghcr.io/evroc-oss/charts/cluster-api-provider-evroc \
-  --set evroc.existingConfigSecret=evroc-credentials \
   --set metrics.enabled=false \
   -n capi-evroc-system
 ```
@@ -609,7 +583,6 @@ helm install evroc-provider \
 ```bash
 helm install evroc-provider \
   oci://ghcr.io/evroc-oss/charts/cluster-api-provider-evroc \
-  --set evroc.existingConfigSecret=evroc-credentials \
   --set metrics.serviceMonitor.enabled=true \
   --set metrics.serviceMonitor.additionalLabels.prometheus=kube-prometheus \
   -n capi-evroc-system
@@ -716,6 +689,26 @@ make test-e2e-capi
 make test-e2e-isolated
 ```
 
+### Service Account Setup for E2E Tests
+
+Follow [step 6](#6-create-a-service-account) to create a service account, then configure the E2E test credentials in `test/e2e/config.yaml`:
+
+```yaml
+variables:
+  EVROC_PROJECT: "your-project-id"
+  EVROC_REGION: "se-sto"
+  EVROC_ORGANIZATION: "your-organization-id"
+  EVROC_SERVICE_ACCOUNT_ID: "my-capi-sa"
+  EVROC_SERVICE_ACCOUNT_SECRET: "<base64-encoded-jwk-private-key>"
+```
+
+Then run:
+
+```bash
+make e2e-image
+make test-e2e-capi
+```
+
 ## Documentation
 
 - [Helm chart README](./helm/cluster-api-provider-evroc/README.md) - Helm values reference
@@ -772,22 +765,25 @@ Helm chart packages are signed with Cosign. Signatures (`.sig`) and certificates
 ```bash
 # Download the chart, signature, and certificate from GitHub release
 wget https://github.com/evroc-oss/cluster-api-provider-evroc/releases/download/$VERSION/cluster-api-provider-evroc-${VERSION#v}.tgz
-wget https://github.com/evroc-oss/cluster-api-provider-evroc/releases/download/$VERSION/cluster-api-provider-evroc-${VERSION#v}.tgz.sig
-wget https://github.com/evroc-oss/cluster-api-provider-evroc/releases/download/$VERSION/cluster-api-provider-evroc-${VERSION#v}.tgz.pem
+wget https://github.com/evroc-oss/cluster-api-provider-evroc/releases/download/$VERSION/cluster-api-provider-evroc-${VERSION#v}.tgz.bundle
 
 # Verify the signature
 cosign verify-blob cluster-api-provider-evroc-${VERSION#v}.tgz \
-  --signature cluster-api-provider-evroc-${VERSION#v}.tgz.sig \
-  --certificate cluster-api-provider-evroc-${VERSION#v}.tgz.pem \
+  --bundle cluster-api-provider-evroc-${VERSION#v}.tgz.bundle \
   --certificate-identity=https://github.com/evroc-oss/cluster-api-provider-evroc/.github/workflows/release.yml@refs/tags/$VERSION \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com
 ```
 
-## Support
+## Support and Contributions
 
-- Issues: https://github.com/evroc-oss/cluster-api-provider-evroc/issues
-- Cluster API docs: https://cluster-api.sigs.k8s.io/
-- evroc docs: https://docs.evroc.com/
+This project does not accept external contributions or pull requests. GitHub
+Issues are not used for support or bug reporting and are not monitored.
+
+Support requests and bug reports must be submitted through the normal evroc
+support channels.
+
+- Cluster API documentation: https://cluster-api.sigs.k8s.io/
+- evroc documentation: https://docs.evroc.com/
 
 ## License
 

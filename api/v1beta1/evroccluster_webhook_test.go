@@ -90,27 +90,7 @@ func TestEvrocClusterDefault(t *testing.T) {
 			},
 		},
 		{
-			name: "strips empty credentialsRef (template default)",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
-					Project: "test-project",
-					CredentialsRef: &SecretReference{
-						Name:      "",
-						Namespace: "",
-					},
-				},
-			},
-			expected: &EvrocCluster{
-				Spec: EvrocClusterSpec{
-					Project:        "test-project",
-					Region:         "se-sto",
-					CredentialsRef: nil,
-					FailureDomains: []string{"a", "b", "c"},
-				},
-			},
-		},
-		{
-			name: "defaults credentialsRef namespace to cluster namespace",
+			name: "preserves credentialsRef name",
 			cluster: &EvrocCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "tenant-ns",
@@ -130,37 +110,7 @@ func TestEvrocClusterDefault(t *testing.T) {
 					Project: "test-project",
 					Region:  "se-sto",
 					CredentialsRef: &SecretReference{
-						Name:      "my-creds",
-						Namespace: "tenant-ns",
-					},
-					FailureDomains: []string{"a", "b", "c"},
-				},
-			},
-		},
-		{
-			name: "preserves explicit credentialsRef namespace",
-			cluster: &EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "tenant-ns",
-				},
-				Spec: EvrocClusterSpec{
-					Project: "test-project",
-					CredentialsRef: &SecretReference{
-						Name:      "my-creds",
-						Namespace: "other-ns",
-					},
-				},
-			},
-			expected: &EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "tenant-ns",
-				},
-				Spec: EvrocClusterSpec{
-					Project: "test-project",
-					Region:  "se-sto",
-					CredentialsRef: &SecretReference{
-						Name:      "my-creds",
-						Namespace: "other-ns",
+						Name: "my-creds",
 					},
 					FailureDomains: []string{"a", "b", "c"},
 				},
@@ -198,9 +148,33 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 						"b",
 						"c",
 					},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
+		},
+		{
+			name: "missing credentialsRef",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a"},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "empty credentialsRef name",
+			cluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a"},
+					CredentialsRef: &SecretReference{Name: ""},
+				},
+			},
+			expectError: true,
 		},
 		{
 			name: "missing project",
@@ -299,47 +273,10 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 					FailureDomains: []string{
 						"a",
 					},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
-		},
-		{
-			name: "ControlPlaneConfig.PublicIP both enabled and existingName",
-			cluster: func() *EvrocCluster {
-				existingName := "my-existing-ip"
-				return &EvrocCluster{
-					Spec: EvrocClusterSpec{
-						Project:        "test-project",
-						Region:         "se-sto",
-						FailureDomains: []string{"a", "b", "c"},
-						ControlPlaneConfig: &ControlPlaneConfig{
-							PublicIP: &PublicIPConfig{
-								Enabled:      true,
-								ExistingName: &existingName,
-							},
-						},
-					},
-				}
-			}(),
-			expectError: true,
-		},
-		{
-			name: "cluster with public IP enabled",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
-					Project:        "test-project",
-					Region:         "se-sto",
-					FailureDomains: []string{"a", "b", "c"},
-					ControlPlaneConfig: &ControlPlaneConfig{
-						PublicIP: &PublicIPConfig{
-							Enabled: true,
-						},
-					},
-				},
-			},
-			expectError:     false,
-			expectWarning:   true,
-			warningContains: "replicas > 1",
 		},
 	}
 
@@ -370,6 +307,7 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 				"a",
 				"b",
 			},
+			CredentialsRef: &SecretReference{Name: "test-creds"},
 		},
 	}
 
@@ -388,6 +326,7 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 						"a",
 						"b",
 					},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
@@ -431,6 +370,7 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 						"b",
 						"c",
 					},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
@@ -600,6 +540,7 @@ func TestEvrocClusterValidateCreate_SecurityGroupRules(t *testing.T) {
 				Project:        "test-project",
 				Region:         "se-sto",
 				FailureDomains: []string{"a", "b", "c"},
+				CredentialsRef: &SecretReference{Name: "test-creds"},
 				SecurityGroups: &ClusterSecurityGroupsConfig{
 					ControlPlane: &SecurityGroupsConfig{
 						InlineSecurityGroups: []InlineSecurityGroup{

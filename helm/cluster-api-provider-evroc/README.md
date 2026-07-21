@@ -42,15 +42,13 @@ See the [README](../../README.md) for all credential options (username/password,
 
 ```bash
 helm install capi-evroc ./helm/cluster-api-provider-evroc \
-  --namespace capi-evroc-system \
-  --set evroc.existingConfigSecret=evroc-credentials
+  --namespace capi-evroc-system
 ```
 
 ## Configuration
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `evroc.existingConfigSecret` | **Required.** Name of the Secret containing `config.yaml` | `""` |
 | `controller.replicas` | Number of controller replicas (leader election selects one active) | `1` |
 | `controller.image.repository` | Controller container image | `ghcr.io/evroc-oss/cluster-api-provider-evroc` |
 | `controller.image.tag` | Image tag | See `values.yaml` |

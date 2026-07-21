@@ -6,43 +6,52 @@ package cloud
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/evroc-oss/evroc-go-sdk/config"
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// configKey is the secret key for the full evroc SDK config YAML.
-// This is the same key used by the global credentials mount and the Helm chart.
-const configKey = "config.yaml"
+// Secret keys for service account credentials.
+const (
+	// configKey is the secret key for the full evroc SDK config YAML.
+	configKey = "config.yaml"
 
-// Flat-key prefix used by external credential stores (e.g. Rancher cloud credentials).
-// Keys look like "evroccredentialConfig-token", "evroccredentialConfig-project", etc.
-const flatKeyPrefix = "evroccredentialConfig-"
+	// Individual secret keys for service account auth.
+	keyServiceAccountID     = "serviceAccountID"
+	keyServiceAccountSecret = "serviceAccountSecret"
+	keyOrganization         = "organization"
+)
 
-// ClientForCluster returns a cloud client for a specific cluster. If secretName
-// and secretNamespace are provided, the credentials are read from that Secret.
-// The secret can use either format:
+// ClusterContext carries the project and region from the EvrocCluster spec.
+// These are the authoritative source — any project/region in the credentials
+// secret is ignored.
+type ClusterContext struct {
+	Project string
+	Region  string
+}
+
+// ClientForCluster returns a cloud client for a specific cluster.
+// Credentials are read from the Secret referenced by the cluster's credentialsRef,
+// which is mandatory. Project and region come from the EvrocCluster spec (not the secret).
 //
-//  1. A "config.yaml" key containing the full evroc SDK config YAML.
-//  2. Flat keys prefixed with "evroccredentialConfig-" (token, refreshToken, project, region).
+// The secret must use one of two formats:
+//  1. A "config.yaml" key containing the full evroc SDK config YAML with service account auth.
+//  2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
 //
-// Otherwise the fallback global client is returned.
+// Only service account authentication is supported.
 func ClientForCluster(
 	ctx context.Context,
 	k8sClient client.Reader,
-	fallback ClientInterface,
 	secretName, secretNamespace string,
+	clusterCtx ClusterContext,
 	m *metrics.Manager,
 ) (ClientInterface, error) {
 	if secretName == "" {
-		if fallback == nil {
-			return nil, fmt.Errorf("no credentialsRef on cluster and no global credentials configured")
-		}
-		return fallback, nil
+		return nil, fmt.Errorf("cluster has no credentialsRef")
 	}
 
 	secret := &corev1.Secret{}
@@ -51,59 +60,59 @@ func ClientForCluster(
 		return nil, fmt.Errorf("failed to get credentials secret %s/%s: %w", secretNamespace, secretName, err)
 	}
 
-	// Format 1: full YAML config
+	// Format 1: full YAML config (must use service account auth)
 	if data, ok := secret.Data[configKey]; ok {
-		return NewClientFromYAML(ctx, data, m)
+		return newClientFromYAMLWithContext(ctx, data, clusterCtx, m)
 	}
 
-	// Format 2: flat key-value pairs (e.g. from Rancher cloud credentials)
-	if cfg, ok := configFromFlatKeys(secret.Data); ok {
-		return NewClientFromConfig(ctx, cfg, m)
+	// Format 2: individual keys for service account auth
+	cfg, err := configFromServiceAccountKeys(secret.Data, clusterCtx)
+	if err != nil {
+		return nil, fmt.Errorf("credentials secret %s/%s: %w", secretNamespace, secretName, err)
 	}
-
-	return nil, fmt.Errorf("credentials secret %s/%s: expected either a %q key or %s* keys",
-		secretNamespace, secretName, configKey, flatKeyPrefix)
+	return NewClientFromConfig(ctx, cfg, m)
 }
 
-// configFromFlatKeys builds an SDK Config from flat secret keys like
-// "evroccredentialConfig-token". Returns false if the required keys are missing.
-func configFromFlatKeys(data map[string][]byte) (*config.Config, bool) {
-	get := func(field string) string {
-		for k, v := range data {
-			// Case-insensitive prefix match to tolerate minor casing variations.
-			if strings.EqualFold(k, flatKeyPrefix+field) {
-				return string(v)
-			}
-		}
-		return ""
+// newClientFromYAMLWithContext parses YAML credentials and overrides
+// project/region from the EvrocCluster spec.
+func newClientFromYAMLWithContext(ctx context.Context, data []byte, clusterCtx ClusterContext, m *metrics.Manager) (ClientInterface, error) {
+	var cfg config.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse credentials YAML: %w", err)
 	}
+	cfg.SetDefaults()
+	cfg.Context.Project = clusterCtx.Project
+	if clusterCtx.Region != "" {
+		cfg.Context.Region = clusterCtx.Region
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid credentials: %w", err)
+	}
+	return NewClientFromConfig(ctx, &cfg, m)
+}
 
-	token := get("token")
-	refreshToken := get("refreshToken")
-	username := get("username")
-	password := get("password")
-	project := get("project")
-	region := get("region")
+// configFromServiceAccountKeys builds an SDK Config from individual secret keys.
+// Project and region come from the EvrocCluster spec, not from the secret.
+func configFromServiceAccountKeys(data map[string][]byte, clusterCtx ClusterContext) (*config.Config, error) {
+	saID := string(data[keyServiceAccountID])
+	saSecret := string(data[keyServiceAccountSecret])
+	organization := string(data[keyOrganization])
 
-	hasTokenAuth := token != "" || refreshToken != ""
-	hasPasswordAuth := username != "" && password != ""
-	if !hasTokenAuth && !hasPasswordAuth {
-		return nil, false
+	if saID == "" || saSecret == "" {
+		return nil, fmt.Errorf("missing required keys: %s and %s", keyServiceAccountID, keyServiceAccountSecret)
 	}
 
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
-			Token:        token,
-			RefreshToken: refreshToken,
-			Username:     username,
-			Password:     password,
+			ServiceAccountID:     saID,
+			ServiceAccountSecret: saSecret,
 		},
 		Context: config.ContextConfig{
-			Project:      project,
-			Region:       region,
-			Organization: get("organization"),
+			Project:      clusterCtx.Project,
+			Region:       clusterCtx.Region,
+			Organization: organization,
 		},
 	}
 	cfg.SetDefaults()
-	return cfg, true
+	return cfg, nil
 }

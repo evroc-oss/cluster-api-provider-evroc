@@ -59,18 +59,6 @@ func (d *EvrocClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 		}
 	}
 
-	// Default CredentialsRef namespace to the cluster's namespace.
-	// Only default when a secret name is actually provided; an empty name
-	// means the user did not configure per-cluster credentials.
-	if r.Spec.CredentialsRef != nil && r.Spec.CredentialsRef.Name != "" && r.Spec.CredentialsRef.Namespace == "" {
-		r.Spec.CredentialsRef.Namespace = r.Namespace
-	}
-
-	// Strip an empty credentialsRef so the controller sees nil (global fallback).
-	if r.Spec.CredentialsRef != nil && r.Spec.CredentialsRef.Name == "" {
-		r.Spec.CredentialsRef = nil
-	}
-
 	return nil
 }
 
@@ -146,24 +134,6 @@ func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 		}
 	}
 
-	// PublicIP config is immutable once set. The controller does not reconcile
-	// changes (e.g., switching from enabled to existingName or vice versa).
-	oldPIP := oldCluster.Spec.ControlPlaneConfig.GetPublicIP()
-	newPIP := r.Spec.ControlPlaneConfig.GetPublicIP()
-	if oldPIP != nil && !oldPIP.IsZero() {
-		if newPIP == nil || newPIP.IsZero() {
-			allErrs = append(allErrs, field.Forbidden(
-				field.NewPath("spec", "controlPlaneConfig", "publicIP"),
-				"publicIP configuration cannot be removed once set",
-			))
-		} else if oldPIP.Enabled != newPIP.Enabled || !equalStringPtr(oldPIP.ExistingName, newPIP.ExistingName) {
-			allErrs = append(allErrs, field.Forbidden(
-				field.NewPath("spec", "controlPlaneConfig", "publicIP"),
-				"publicIP configuration is immutable once set",
-			))
-		}
-	}
-
 	// Run general validation
 	warnings, err := r.validateEvrocCluster()
 	if err != nil {
@@ -203,6 +173,20 @@ func (r *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec", "region"),
 			"region must be specified",
+		))
+	}
+
+	// Every cluster must name the credentials it uses. The CRD schema rejects an
+	// absent credentialsRef, but a present-but-empty name still reaches here.
+	if r.Spec.CredentialsRef == nil {
+		allErrs = append(allErrs, field.Required(
+			field.NewPath("spec", "credentialsRef"),
+			"credentialsRef must be specified",
+		))
+	} else if r.Spec.CredentialsRef.Name == "" {
+		allErrs = append(allErrs, field.Required(
+			field.NewPath("spec", "credentialsRef", "name"),
+			"credentialsRef.name must be specified",
 		))
 	}
 
@@ -325,36 +309,15 @@ func (r *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 				}
 			}
 
-			// Check for duplicates in existingNames, and cross-check against inline names.
-			for i, name := range section.config.ExistingNames {
-				sgPath := field.NewPath("spec", "securityGroups", section.name, "existingNames").Index(i)
+			// Check for duplicates in existingIDs, and cross-check against inline names.
+			for i, name := range section.config.ExistingIDs {
+				sgPath := field.NewPath("spec", "securityGroups", section.name, "existingIDs").Index(i)
 				if seenSGNames[name] {
 					allErrs = append(allErrs, field.Duplicate(sgPath,
 						fmt.Sprintf("%s (SG names must be unique across all sections)", name)))
 				}
 				seenSGNames[name] = true
 			}
-		}
-	}
-
-	// ControlPlaneConfig.PublicIP: Prevent mixing enabled and existingName
-	if r.Spec.ControlPlaneConfig != nil && r.Spec.ControlPlaneConfig.PublicIP != nil {
-		if r.Spec.ControlPlaneConfig.PublicIP.Enabled && r.Spec.ControlPlaneConfig.PublicIP.ExistingName != nil {
-			allErrs = append(allErrs, field.Forbidden(
-				field.NewPath("spec", "controlPlaneConfig", "publicIP"),
-				"cannot specify both enabled (auto-create) and existingName (external)",
-			))
-		}
-
-		// Warn users to configure their machine templates when enabling public IP
-		if r.Spec.ControlPlaneConfig.PublicIP.Enabled {
-			warnings = append(warnings,
-				"Cluster has controlPlaneConfig.publicIP.enabled=true. "+
-					"Ensure your control plane EvrocMachineTemplate includes networkingConfig.securityGroups.inheritFromCluster: true. "+
-					"NOTE: The public IP will be attached to only one control plane machine at a time. "+
-					"With replicas > 1 (HA), the controller assigns the public IP to the first CP machine; "+
-					"if that machine is deleted, it is re-attached to another CP machine automatically. "+
-					"This provides a single floating entry point — it is NOT a load-balanced VIP across all replicas.")
 		}
 	}
 
@@ -390,30 +353,6 @@ func validateSecurityGroupRule(rule SecurityGroupRule, path *field.Path) field.E
 	}
 
 	return errs
-}
-
-// GetPublicIP safely returns the PublicIP config, or nil.
-func (c *ControlPlaneConfig) GetPublicIP() *PublicIPConfig {
-	if c == nil {
-		return nil
-	}
-	return c.PublicIP
-}
-
-// IsZero returns true if the PublicIPConfig has no meaningful value.
-func (p *PublicIPConfig) IsZero() bool {
-	return p == nil || (!p.Enabled && p.ExistingName == nil)
-}
-
-// equalStringPtr returns true if both pointers are nil or point to equal strings.
-func equalStringPtr(a, b *string) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-	return *a == *b
 }
 
 // evrocMaxResourceNameLen is the maximum length of an evroc cloud resource name.

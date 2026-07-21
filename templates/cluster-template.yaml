@@ -61,19 +61,13 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: ${EVROC_REGION:=se-sto}
-  # Per-cluster credentials (recommended). Create a Secret with evroc API
-  # credentials and set the name here. When empty, falls back to the
-  # globally mounted config file.
+  # The credential Secret must be in the same namespace as this EvrocCluster.
   credentialsRef:
-    name: "${EVROC_CREDENTIALS_SECRET:=}"
-    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+    name: "${EVROC_CREDENTIALS_SECRET}"
   failureDomains:
   - a
   - b
   - c
-  controlPlaneConfig:
-    publicIP:
-      enabled: true
   securityGroups:
     common:
       inlineSecurityGroups:

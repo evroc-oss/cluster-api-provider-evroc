@@ -26,10 +26,11 @@
 #   WORKER_MACHINE_COUNT:        Number of worker nodes (default: 3)
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE:  Control plane VM compute profile (default: a1a.m)
 #   EVROC_WORKER_COMPUTE_PROFILE:         Worker VM compute profile (default: a1a.m)
-#   EVROC_IMAGE:                 OS image (default: sl-micro.6-1.1)
+#   EVROC_IMAGE:                 OS image (default: ubuntu.22-04.1)
 #   EVROC_CONTROL_PLANE_DISK_SIZE: Boot disk size GB (default: 100)
 #   EVROC_WORKER_DISK_SIZE:      Boot disk size GB (default: 100)
 #   EVROC_ALLOWED_CIDR:          Source CIDR for SSH and API access (default: 0.0.0.0/0)
+#   EVROC_VPC_CIDR:              VPC/private network CIDR for intra-cluster rules (default: 10.0.0.0/8)
 #   POD_CIDR:                    Pod CIDR (default: 10.42.0.0/16)
 #   SERVICE_CIDR:                Service CIDR (default: 10.43.0.0/16)
 #
@@ -80,19 +81,15 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: ${EVROC_REGION:=se-sto}
-  # Per-cluster credentials (recommended). Create a Secret with evroc API
-  # credentials and set the name here. When empty, falls back to the
-  # globally mounted config file.
+  # The credential Secret must be in the same namespace as this EvrocCluster.
   credentialsRef:
-    name: "${EVROC_CREDENTIALS_SECRET:=}"
-    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+    name: "${EVROC_CREDENTIALS_SECRET}"
   failureDomains:
   - a
   - b
   - c
   controlPlaneConfig:
-    publicIP:
-      enabled: true
+    loadBalancer: {}
   securityGroups:
     common:
       inlineSecurityGroups:
@@ -108,13 +105,13 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 10250
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         # Canal/Flannel VXLAN — pod-to-pod overlay networking (cluster-internal only)
         - name: canal-vxlan
           direction: Ingress
           protocol: UDP
           port: 8472
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         # Egress — allow all outbound traffic
         - name: allow-all-egress
           direction: Egress
@@ -130,24 +127,25 @@ spec:
           protocol: TCP
           port: 6443
           remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
-        # RKE2 supervisor — worker node registration (via public IP)
+        # RKE2 supervisor — worker/CP node registration (cluster-internal only,
+        # registration uses private IPs via registrationMethod: internal-first)
         - name: rke2-supervisor
           direction: Ingress
           protocol: TCP
           port: 9345
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         # etcd client — API server to etcd communication (cluster-internal only)
         - name: etcd-client
           direction: Ingress
           protocol: TCP
           port: 2379
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         # etcd peer — etcd cluster replication (cluster-internal only)
         - name: etcd-peer
           direction: Ingress
           protocol: TCP
           port: 2380
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: RKE2ControlPlane
@@ -164,12 +162,15 @@ spec:
   agentConfig:
     nodeLabels:
     - "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+  registrationMethod: internal-first
   serverConfig:
     cni: canal
     cloudProviderName: external
     tlsSan:
     - ${CLUSTER_NAME}.${EVROC_REGION:=se-sto}.evroc.cloud
   preRKE2Commands:
+  # Disable firewalld — evroc security groups handle network policy
+  - systemctl disable --now firewalld || true
   # Load kernel modules immediately
   - modprobe overlay
   - modprobe br_netfilter
@@ -207,7 +208,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.m}
-      image: ${EVROC_IMAGE:=sl-micro.6-1.1}
+      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
       rootDiskSize: ${EVROC_CONTROL_PLANE_DISK_SIZE:=100}
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:
@@ -249,7 +250,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.m}
-      image: ${EVROC_IMAGE:=sl-micro.6-1.1}
+      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
       rootDiskSize: ${EVROC_WORKER_DISK_SIZE:=100}
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:
@@ -268,6 +269,8 @@ spec:
         nodeLabels:
         - "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
       preRKE2Commands:
+      # Disable firewalld — evroc security groups handle network policy
+      - systemctl disable --now firewalld || true
       # Load kernel modules immediately
       - modprobe overlay
       - modprobe br_netfilter

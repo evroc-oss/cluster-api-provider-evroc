@@ -16,9 +16,6 @@ main
 *.out
 cover.out
 
-# Kubernetes Generated files - skip generated CRD yamls unless needed
-# config/crd/bases
-
 # editor and IDE paraphernalia
 .idea
 .vscode
@@ -29,6 +26,14 @@ cover.out
 # Temporary files
 tmp/
 *.tmp
+
+# Terraform state and secrets
+*.tfvars
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
 
 # Credentials - NEVER commit these!
 .env

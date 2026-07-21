@@ -4,6 +4,19 @@
 # CAPI QuickStart E2E Test Configuration
 # Used for upstream CAPI E2E certification tests (QuickStart spec)
 # See: https://cluster-api.sigs.k8s.io/developer/core/e2e
+#
+# Estimated durations (real evroc infrastructure, se-sto region):
+#   Full suite:          ~45-55 min
+#   BeforeSuite:         ~1-2 min   (kind cluster + clusterctl init)
+#   QuickStart:          ~6 min     (1 CP + 1 worker = 2 VMs, 1 LB, 1 public IP)
+#   ClusterctlMove:      ~15 min    (1 CP + 1 worker + 1 bastion = 3 VMs, 1 LB, 1 public IP)
+#   HA-LB (kubeadm):     ~14 min    (3 CP = 3 VMs, 1 LB, 1 public IP)
+#   HA-LB (RKE2):        ~15 min    (3 CP = 3 VMs, 1 LB, 1 public IP)
+#   Webhook Validation:  <1 min     (in-cluster kubectl apply tests, no cloud resources)
+#   Provider Install:    <1 min     (verify CRDs and deployment, no cloud resources)
+#
+# Peak resource usage: ~8 VMs, 3 LBs, 3 public IPs (if tests overlap)
+# Tests clean up resources on completion. Interrupted runs may leave orphans.
 
 managementClusterName: evroc-capi-quickstart
 
@@ -29,6 +42,5 @@ variables:
   EVROC_CONTROL_PLANE_DISK_SIZE: "100"
   # evroc project/credentials (loaded from config.yaml by loadCredentialsFile, duplicated here as fallback)
   EVROC_PROJECT: "f1dbc774-c978-4e75-bcf9-a28015a181f7"
-  EVROC_CREDENTIALS_NAMESPACE: "default"
   EVROC_CREDENTIALS_SECRET: "evroc-credentials"
   EVROC_SSH_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFeENOwB0QwUEicJGrFxt44yiShgBWzANhpE/5gNw041"

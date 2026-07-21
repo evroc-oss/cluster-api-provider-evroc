@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud/mocks"
 )
 
@@ -52,6 +53,9 @@ func testClusterObjects(namespace string) (*clusterv1.Cluster, *infrav1.EvrocClu
 			Project:        "test-project",
 			Region:         "se-sto",
 			FailureDomains: []string{"a"},
+			CredentialsRef: &infrav1.SecretReference{
+				Name: "test-creds",
+			},
 		},
 	}
 	capiCluster := &clusterv1.Cluster{
@@ -100,8 +104,9 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 	}
 	mockDiskService.On("Get", mock.Anything, diskName).Return(readyDisk, nil)
 
-	// VM lifecycle: first Get → not found, then Create, then Get → ready
-	mockVMService.On("Get", mock.Anything, vmName).Return(nil, evroc.ErrNotFound).Once()
+	// VM lifecycle: early cloud check returns not found on each reconcile
+	// until the VM is created, then returns the ready VM.
+	mockVMService.On("Get", mock.Anything, vmName).Return(nil, evroc.ErrNotFound).Times(2)
 	mockVMService.On("Create", mock.Anything, mock.AnythingOfType("*compute.VirtualMachineRequest")).
 		Return(&computetypes.VirtualMachine{
 			Metadata: computetypes.RegionalMetadataResponse{
@@ -190,9 +195,9 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 		Build()
 
 	reconciler := &EvrocMachineReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	req := ctrl.Request{
@@ -323,9 +328,9 @@ func TestEvrocMachineReconciler_CreateError(t *testing.T) {
 		Build()
 
 	reconciler := &EvrocMachineReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	req := ctrl.Request{
@@ -366,12 +371,17 @@ func TestEvrocMachineReconciler_Delete(t *testing.T) {
 	mockVMService.On("WaitForDeleted", mock.Anything, vmName, 5*time.Minute).Return(nil)
 	mockDiskService.On("Delete", mock.Anything, diskName).Return(nil)
 
+	capiCluster, evrocCluster := testClusterObjects("default")
+
 	evrocMachine := &infrav1.EvrocMachine{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              vmName,
 			Namespace:         "default",
 			DeletionTimestamp: &now,
 			Finalizers:        []string{machineFinalizer},
+			Labels: map[string]string{
+				clusterv1.ClusterNameLabel: "test-cluster",
+			},
 		},
 		Spec: infrav1.EvrocMachineSpec{
 			Project:        "test-project",
@@ -385,7 +395,6 @@ func TestEvrocMachineReconciler_Delete(t *testing.T) {
 			Resources: &infrav1.MachineResources{
 				BootDisk: &infrav1.ManagedDisk{
 					ID:      diskName,
-					Name:    diskName,
 					SizeGB:  50,
 					Managed: true,
 				},
@@ -395,14 +404,14 @@ func TestEvrocMachineReconciler_Delete(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(evrocMachine).
+		WithObjects(capiCluster, evrocCluster, evrocMachine).
 		WithStatusSubresource(evrocMachine).
 		Build()
 
 	reconciler := &EvrocMachineReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	req := ctrl.Request{
@@ -495,8 +504,12 @@ func TestReconcile_PersistsResourcesBeforePendingRequeue(t *testing.T) {
 
 	mockClient := new(mocks.MockClient)
 	mockDiskService := new(mocks.MockDiskService)
+	mockVMService := new(mocks.MockVirtualMachineService)
 	mockClient.On("Disks").Return(mockDiskService)
-	// SDKClient is not called in this test (only disk operations, no VM creation)
+	mockClient.On("VirtualMachines").Return(mockVMService)
+
+	// Early cloud check: VM does not exist yet.
+	mockVMService.On("Get", mock.Anything, vmName).Return(nil, evroc.ErrNotFound)
 
 	// Additional disk does not exist yet, so controller creates it and requeues.
 	mockDiskService.On("Get", mock.Anything, additionalDiskName).Return(nil, evroc.ErrNotFound).Once()
@@ -570,9 +583,9 @@ func TestReconcile_PersistsResourcesBeforePendingRequeue(t *testing.T) {
 		Build()
 
 	reconciler := &EvrocMachineReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	req := ctrl.Request{
@@ -596,7 +609,7 @@ func TestReconcile_PersistsResourcesBeforePendingRequeue(t *testing.T) {
 	if assert.NotNil(t, updatedMachine.Status.Resources) {
 		if assert.Len(t, updatedMachine.Status.Resources.AdditionalDisks, 1) {
 			d := updatedMachine.Status.Resources.AdditionalDisks[0]
-			assert.Equal(t, additionalDiskName, d.Name)
+			assert.Equal(t, additionalDiskName, d.ID)
 			assert.True(t, d.Managed)
 		}
 	}
@@ -1088,8 +1101,8 @@ func TestReconcileVMSecurityGroups(t *testing.T) {
 					Resources: &infrav1.ClusterResources{
 						SecurityGroups: []infrav1.ManagedSecurityGroup{
 							{
-								ID:   "sg-123",
-								Name: "test-cluster-api-server",
+								UID:  "sg-123",
+								ID:   "test-cluster-api-server",
 								Role: "common",
 							},
 						},
@@ -1139,8 +1152,8 @@ func TestReconcileVMSecurityGroups(t *testing.T) {
 					Resources: &infrav1.ClusterResources{
 						SecurityGroups: []infrav1.ManagedSecurityGroup{
 							{
-								ID:   "sg-123",
-								Name: "test-cluster-api-server",
+								UID:  "sg-123",
+								ID:   "test-cluster-api-server",
 								Role: "common",
 							},
 						},
@@ -1204,8 +1217,8 @@ func TestReconcileVMSecurityGroups(t *testing.T) {
 			fakeK8sClient := builder.Build()
 
 			reconciler := &EvrocMachineReconciler{
-				Client:      fakeK8sClient,
-				CloudClient: mockClient,
+				Client:        fakeK8sClient,
+				clientFactory: staticClientFactory(mockClient),
 			}
 
 			err := reconciler.reconcileVMSecurityGroups(context.Background(), tt.machine, mockClient, tt.evrocCluster)
@@ -1281,7 +1294,7 @@ func TestReconcileVMPublicIP(t *testing.T) {
 				Spec: infrav1.EvrocMachineSpec{
 					NetworkingConfig: &infrav1.MachineNetworkingConfig{
 						PublicIP: &infrav1.PublicIPConfig{
-							ExistingName: func() *string { s := "my-existing-ip"; return &s }(),
+							ExistingID: func() *string { s := "my-existing-ip"; return &s }(),
 						},
 					},
 				},
@@ -1297,7 +1310,7 @@ func TestReconcileVMPublicIP(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "VM exists with public IP disabled - should detach",
+			name: "VM exists with public IP disabled - no UpdatePublicIP (detach only on machine delete)",
 			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-machine",
@@ -1316,8 +1329,7 @@ func TestReconcileVMPublicIP(t *testing.T) {
 			},
 			expectedIPName: "",
 			mockExpectations: func(mockClient *mocks.MockClient, mockVMService *mocks.MockVirtualMachineService) {
-				mockClient.On("VirtualMachines").Return(mockVMService)
-				mockVMService.On("UpdatePublicIP", mock.Anything, "test-machine", "").Return(nil)
+				// Empty desired name → reconcilePublicIPAttachment returns without calling the API.
 			},
 			expectError: false,
 		},
@@ -1357,10 +1369,10 @@ func TestReconcileVMPublicIP(t *testing.T) {
 			}
 
 			reconciler := &EvrocMachineReconciler{
-				CloudClient: mockClient,
+				clientFactory: staticClientFactory(mockClient),
 			}
 
-			err := reconciler.reconcileVMPublicIP(context.Background(), tt.machine, mockClient, nil)
+			err := reconciler.reconcilePublicIPAttachment(context.Background(), tt.machine, mockClient, nil)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -1626,7 +1638,7 @@ func TestBuildPlacement(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
 				Spec: infrav1.EvrocMachineSpec{
 					PlacementConfig: &infrav1.PlacementConfig{
-						ExistingGroupName: func() *string { s := "my-pg"; return &s }(),
+						ExistingGroupID: func() *string { s := "my-pg"; return &s }(),
 					},
 				},
 				Status: infrav1.EvrocMachineStatus{
@@ -1642,7 +1654,7 @@ func TestBuildPlacement(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
 				Spec: infrav1.EvrocMachineSpec{
 					PlacementConfig: &infrav1.PlacementConfig{
-						ExistingGroupName: func() *string { s := "shared-pg"; return &s }(),
+						ExistingGroupID: func() *string { s := "shared-pg"; return &s }(),
 					},
 				},
 			},
@@ -1761,10 +1773,10 @@ func TestClusterSecurityGroupNamesForRole(t *testing.T) {
 		Status: infrav1.EvrocClusterStatus{
 			Resources: &infrav1.ClusterResources{
 				SecurityGroups: []infrav1.ManagedSecurityGroup{
-					{Name: "base-rules", Role: "common"},
-					{Name: "cp-api", Role: "controlPlane"},
-					{Name: "worker-nodeports", Role: "worker"},
-					{Name: "external-sg", Role: "common", Managed: false},
+					{ID: "base-rules", Role: "common"},
+					{ID: "cp-api", Role: "controlPlane"},
+					{ID: "worker-nodeports", Role: "worker"},
+					{ID: "external-sg", Role: "common", Managed: false},
 				},
 			},
 		},
@@ -1800,13 +1812,13 @@ func TestResolvePublicIPRef(t *testing.T) {
 		expectedRef string
 	}{
 		{
-			name: "explicit existing name",
+			name: "explicit existing ID",
 			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{Name: "vm-1", Namespace: "default"},
 				Spec: infrav1.EvrocMachineSpec{
 					NetworkingConfig: &infrav1.MachineNetworkingConfig{
 						PublicIP: &infrav1.PublicIPConfig{
-							ExistingName: func() *string { s := "my-ip"; return &s }(),
+							ExistingID: func() *string { s := "my-ip"; return &s }(),
 						},
 					},
 				},
@@ -1829,53 +1841,6 @@ func TestResolvePublicIPRef(t *testing.T) {
 			name: "no config",
 			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{Name: "vm-1", Namespace: "default"},
-			},
-			expectedRef: "",
-		},
-		{
-			name: "control plane inherits cluster public IP",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cp-0",
-					Namespace: "default",
-					Labels: map[string]string{
-						"cluster.x-k8s.io/control-plane": "",
-						"cluster.x-k8s.io/cluster-name":  "test-cluster",
-					},
-				},
-			},
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-				Status: infrav1.EvrocClusterStatus{
-					Resources: &infrav1.ClusterResources{
-						PublicIP: &infrav1.ManagedPublicIP{
-							Name: "test-cluster-cp-ip",
-						},
-					},
-				},
-			},
-			expectedRef: "test-cluster-cp-ip",
-		},
-		{
-			name: "worker does not inherit cluster public IP",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "worker-0",
-					Namespace: "default",
-					Labels: map[string]string{
-						"cluster.x-k8s.io/cluster-name": "test-cluster",
-					},
-				},
-			},
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-				Status: infrav1.EvrocClusterStatus{
-					Resources: &infrav1.ClusterResources{
-						PublicIP: &infrav1.ManagedPublicIP{
-							Name: "test-cluster-cp-ip",
-						},
-					},
-				},
 			},
 			expectedRef: "",
 		},
@@ -2030,6 +1995,98 @@ func TestReconcileMachineSecurityGroups(t *testing.T) {
 	}
 }
 
+func TestReconcileLBBackend(t *testing.T) {
+	tests := []struct {
+		name             string
+		machine          *infrav1.EvrocMachine
+		cluster          *infrav1.EvrocCluster
+		expectAddBackend bool
+		expectError      bool
+	}{
+		{
+			name: "registers CP machine as LB backend",
+			machine: &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cp-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						"cluster.x-k8s.io/control-plane": "",
+						"cluster.x-k8s.io/cluster-name":  "test-cluster",
+					},
+				},
+			},
+			cluster: &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+					UID:  types.UID("abcd1234-0000-0000-0000-000000000000"),
+				},
+			},
+			expectAddBackend: true,
+		},
+		{
+			name: "skips worker machines",
+			machine: &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "worker-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						"cluster.x-k8s.io/cluster-name": "test-cluster",
+					},
+				},
+			},
+			cluster: &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster",
+					UID:  types.UID("abcd1234-0000-0000-0000-000000000000"),
+				},
+			},
+			expectAddBackend: false,
+		},
+		{
+			name: "returns error when cluster not available",
+			machine: &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cp-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						"cluster.x-k8s.io/control-plane": "",
+						"cluster.x-k8s.io/cluster-name":  "test-cluster",
+					},
+				},
+			},
+			cluster:          nil,
+			expectAddBackend: false,
+			expectError:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := new(mocks.MockClient)
+			mockLBService := new(mocks.MockLoadBalancerService)
+
+			expectedLBName := "test-cluster-abcd1234-cp-lb"
+			if tt.expectAddBackend {
+				mockClient.On("LoadBalancers").Return(mockLBService)
+				mockLBService.On("AddBackend", mock.Anything, expectedLBName, cloud.Backend{Name: tt.machine.Name}).Return(nil)
+			}
+
+			reconciler := &EvrocMachineReconciler{}
+			err := reconciler.reconcileLBBackend(context.Background(), tt.machine, mockClient, tt.cluster)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			if tt.expectAddBackend {
+				mockLBService.AssertCalled(t, "AddBackend", mock.Anything, expectedLBName, cloud.Backend{Name: tt.machine.Name})
+			}
+		})
+	}
+}
+
 func TestReconcileMachinePublicIP(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -2049,13 +2106,13 @@ func TestReconcileMachinePublicIP(t *testing.T) {
 			expectError:   false,
 		},
 		{
-			name: "existing name",
+			name: "existing ID",
 			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
 				Spec: infrav1.EvrocMachineSpec{
 					NetworkingConfig: &infrav1.MachineNetworkingConfig{
 						PublicIP: &infrav1.PublicIPConfig{
-							ExistingName: func() *string { s := "my-ip"; return &s }(),
+							ExistingID: func() *string { s := "my-ip"; return &s }(),
 						},
 					},
 				},
@@ -2123,7 +2180,7 @@ func TestReconcileMachinePublicIP(t *testing.T) {
 			tt.setupMocks(mockClient, mockPIP)
 
 			reconciler := &EvrocMachineReconciler{}
-			pending, managedIP, err := reconciler.reconcileMachinePublicIP(context.Background(), tt.machine, mockClient, clusterLabelInfo{})
+			pending, managedIP, err := reconciler.reconcilePublicIPCreation(context.Background(), tt.machine, mockClient, clusterLabelInfo{})
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -2163,7 +2220,7 @@ func TestReconcilePlacementGroup(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
 				Spec: infrav1.EvrocMachineSpec{
 					PlacementConfig: &infrav1.PlacementConfig{
-						ExistingGroupName: func() *string { s := "my-pg"; return &s }(),
+						ExistingGroupID: func() *string { s := "my-pg"; return &s }(),
 					},
 				},
 			},
@@ -2307,7 +2364,6 @@ func TestDeleteMachineFromCloud(t *testing.T) {
 					Resources: &infrav1.MachineResources{
 						BootDisk: &infrav1.ManagedDisk{
 							ID:      "vm-1-boot-disk",
-							Name:    "vm-1-boot-disk",
 							SizeGB:  50,
 							Managed: true,
 						},
@@ -2347,10 +2403,10 @@ func TestDeleteMachineFromCloud(t *testing.T) {
 				Status: infrav1.EvrocMachineStatus{
 					Resources: &infrav1.MachineResources{
 						SecurityGroups: []infrav1.ManagedSecurityGroup{
-							{Name: "vm-1-ssh", Managed: true, Role: "common"},
+							{ID: "vm-1-ssh", Managed: true, Role: "common"},
 						},
 						PublicIP: &infrav1.ManagedPublicIP{
-							Name:    "vm-1-public-ip",
+							ID:      "vm-1-public-ip",
 							Managed: true,
 						},
 					},
@@ -2459,7 +2515,7 @@ func TestPersistResourcesStatus(t *testing.T) {
 			Spec:       infrav1.EvrocMachineSpec{Project: "p", Region: "se-sto", ComputeProfile: "a1a.m"},
 			Status: infrav1.EvrocMachineStatus{
 				Resources: &infrav1.MachineResources{
-					PublicIP: &infrav1.ManagedPublicIP{ID: "pip-1", Name: "pip-1", Managed: true},
+					PublicIP: &infrav1.ManagedPublicIP{ID: "pip-1", Managed: true},
 				},
 			},
 		}
@@ -2578,9 +2634,9 @@ func TestEvrocMachineReconciler_PausedSkipsDeletion(t *testing.T) {
 		Build()
 
 	reconciler := &EvrocMachineReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	req := ctrl.Request{
@@ -2601,4 +2657,121 @@ func TestEvrocMachineReconciler_PausedSkipsDeletion(t *testing.T) {
 	// No cloud API calls should have been made.
 	mockClient.AssertNotCalled(t, "VirtualMachines")
 	mockClient.AssertNotCalled(t, "Disks")
+}
+
+// TestEvrocMachineReconciler_PostMoveRecovery verifies that after clusterctl move
+// (status empty), the early cloud check finds the existing VM and rebuilds
+// status without re-running bootstrap/disk/SG creation.
+func TestEvrocMachineReconciler_PostMoveRecovery(t *testing.T) {
+	scheme := testScheme()
+
+	vmID := uuid.New()
+	vmName := "moved-machine"
+	privateIP := "10.0.1.42"
+	providerID := fmt.Sprintf("evroc://%s", vmID.String())
+
+	// Mock: only VM Get should be called — no disk, no create.
+	mockClient := new(mocks.MockClient)
+	mockVMService := new(mocks.MockVirtualMachineService)
+
+	mockClient.On("VirtualMachines").Return(mockVMService)
+
+	// The early cloud check calls Get; reconcileExistingVM also reconciles SG/IP.
+	readyVM := &computetypes.VirtualMachine{
+		Metadata: computetypes.RegionalMetadataResponse{
+			Uid: vmID,
+			Id:  vmName,
+		},
+		Status: computetypes.VirtualMachineStatus{
+			Conditions: &[]computetypes.VirtualMachineStatusConditionsItem{
+				{Type: "Ready", Status: "True"},
+			},
+			Networking: &computetypes.VirtualMachineStatusNetworking{
+				PrivateIPv4Address: &privateIP,
+			},
+			VirtualMachineStatus: func() *string { s := "Running"; return &s }(),
+		},
+	}
+	mockVMService.On("Get", mock.Anything, vmName).Return(readyVM, nil)
+
+	capiMachine := &clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "capi-moved",
+			Namespace: "default",
+			UID:       "capi-uid-1",
+		},
+		Spec: clusterv1.MachineSpec{
+			FailureDomain: "a",
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				Kind: "EvrocMachineTemplate",
+				Name: "test-template",
+			},
+		},
+	}
+
+	capiCluster, evrocCluster := testClusterObjects("default")
+
+	// EvrocMachine: providerID set (from before move) but status is empty (move clears status).
+	evrocMachine := &infrav1.EvrocMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       vmName,
+			Namespace:  "default",
+			Finalizers: []string{machineFinalizer},
+			Labels: map[string]string{
+				clusterv1.ClusterNameLabel: "test-cluster",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: clusterv1.GroupVersion.String(),
+					Kind:       "Machine",
+					Name:       capiMachine.Name,
+					UID:        capiMachine.UID,
+				},
+			},
+		},
+		Spec: infrav1.EvrocMachineSpec{
+			Project:        "test-project",
+			Region:         "se-sto",
+			ComputeProfile: "a1a.s",
+			Image:          "ubuntu.22-04.1",
+			ProviderID:     &providerID,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(capiCluster, evrocCluster, capiMachine, evrocMachine).
+		WithStatusSubresource(evrocMachine).
+		Build()
+
+	reconciler := &EvrocMachineReconciler{
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
+	}
+
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: vmName, Namespace: "default"},
+	}
+
+	// Reconcile: early cloud check finds the VM, status gets reconstructed.
+	// Requeue for workload cluster patching (no kubeconfig in test).
+	result, err := reconciler.Reconcile(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Equal(t, requeueMedium, result.RequeueAfter, "should requeue for node providerID patching")
+
+	// Verify status was reconstructed from cloud.
+	var updated infrav1.EvrocMachine
+	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: vmName, Namespace: "default"}, &updated)
+	assert.NoError(t, err)
+	assert.True(t, updated.Status.Ready, "machine should be ready after post-move recovery")
+	assert.Equal(t, vmID.String(), updated.Status.MachineID)
+	assert.NotEmpty(t, updated.Status.Addresses)
+
+	// Verify no disk operations were called (early cloud check skips them).
+	mockClient.AssertNotCalled(t, "Disks")
+	// reconcileVMSecurityGroups and reconcilePublicIPAttachment guard on MachineID which
+	// is empty at call time (set later in the same reconcile), so these must not fire.
+	mockVMService.AssertNotCalled(t, "UpdateSecurityGroups")
+	mockVMService.AssertNotCalled(t, "UpdatePublicIP")
 }

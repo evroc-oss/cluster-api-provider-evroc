@@ -42,6 +42,11 @@ spec:
     spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
+      # EvrocClusterTemplate has no defaulting webhook, so the namespace must
+      # be spelled out explicitly here.
+      credentialsRef:
+        name: evroc-credentials
+        namespace: default
       failureDomains:
       - a
       - b

@@ -5,14 +5,6 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
-# evroc Platform Configuration
-evroc:
-  # Name of existing Secret containing config.yaml with evroc credentials.
-  # REQUIRED: You must create this Secret before installing the chart.
-  # The Secret must contain a key named "config.yaml" with the full configuration.
-  # See README.md for the configuration file format.
-  existingConfigSecret: ""
-
 # Controller configuration
 controller:
   # Number of controller replicas (only 1 is active, others are standby)
@@ -20,7 +12,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/cluster-api-provider-evroc
-    tag: v0.1.28
+    tag: v0.2.0
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -51,7 +43,13 @@ controller:
   nodeSelector: {}
 
   # Tolerations for controller pod
-  tolerations: []
+  # Bootstrap clusters (kind, k3d) and single-node management clusters only
+  # have control-plane nodes, which carry the NoSchedule taint. Without this
+  # toleration the controller pod cannot be scheduled, blocking clusterctl
+  # move and any management operations from those clusters.
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      effect: NoSchedule
 
   # Affinity rules for controller pod
   affinity: {}

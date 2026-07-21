@@ -22,6 +22,7 @@ type EvrocMachineTemplateResource struct {
 // +kubebuilder:resource:path=evrocmachinetemplates,scope=Namespaced,categories=cluster-api
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta1"
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:storageversion
 
 // EvrocMachineTemplate is the Schema for the evrocmachinetemplates API

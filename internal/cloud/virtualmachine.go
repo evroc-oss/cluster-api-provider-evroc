@@ -170,8 +170,7 @@ func (vms *VirtualMachineService) UpdatePublicIP(
 
 	// Extract current public IP ref from VM spec
 	currentPublicIPName := ""
-	if vm.Spec.Networking != nil &&
-		vm.Spec.Networking.PublicIPv4Address != nil &&
+	if vm.Spec.Networking.PublicIPv4Address != nil &&
 		vm.Spec.Networking.PublicIPv4Address.Static != nil &&
 		vm.Spec.Networking.PublicIPv4Address.Static.PublicIPRef != nil {
 		ref := *vm.Spec.Networking.PublicIPv4Address.Static.PublicIPRef
