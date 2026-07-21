@@ -7,9 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -20,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
-	networkingtypes "github.com/evroc-oss/evroc-go-sdk/types/networking"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
@@ -30,54 +33,32 @@ import (
 
 const (
 	clusterFinalizer = "evroccluster.infrastructure.cluster.x-k8s.io"
-)
 
-// PublicIPResolution describes how to handle the control plane public IP
-type PublicIPResolution struct {
-	Mode         PublicIPMode
-	ResourceName string // Cloud resource name or CRD name
-}
-
-// clusterResourcePrefix returns a unique prefix for cluster-level cloud resources.
-// It includes the first 8 characters of the cluster UID to prevent name collisions
-// when a cluster is deleted and recreated with the same name. This follows the same
-// pattern used by cluster-api-provider-hetzner (CAPH), which adds random suffixes to
-// all managed cloud resources for the same reason.
-//
-// Without this, stale cloud resources from a deleted cluster (e.g. a public IP stuck
-// in a broken state) would be blindly reused by a new cluster with the same name.
-func clusterResourcePrefix(cluster *infrav1.EvrocCluster) (string, error) {
-	if cluster.UID == "" {
-		// UID is always set by the API server before persisting. If we get here,
-		// something is seriously wrong — fail the reconciliation rather than creating
-		// resources with colliding names (which is the exact bug this function prevents).
-		return "", fmt.Errorf("cluster %s/%s has empty UID, cannot generate unique resource prefix", cluster.Namespace, cluster.Name)
-	}
-	return fmt.Sprintf("%s-%s", cluster.Name, cluster.UID[:8]), nil
-}
-
-// PublicIPMode defines the strategy for control plane public IP
-type PublicIPMode string
-
-const (
-	PublicIPModeAutoCreate   PublicIPMode = "AutoCreate"   // Create cloud resource directly
-	PublicIPModeUseExisting  PublicIPMode = "UseExisting"  // Use existing cloud resource
-	PublicIPModeAutoDiscover PublicIPMode = "AutoDiscover" // Auto-discover from machines
+	// clusterResourcePrefixAnnotation preserves the identity of Evroc-managed
+	// cloud resources across clusterctl move. The move recreates EvrocCluster
+	// with a new UID and without status, but preserves metadata annotations.
+	clusterResourcePrefixAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/resource-prefix"
 )
 
 // EvrocClusterReconciler reconciles an EvrocCluster object
 type EvrocClusterReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	CloudClient cloud.ClientInterface
-	SDKMetrics  *metrics.Manager
+	Scheme     *runtime.Scheme
+	SDKMetrics *metrics.Manager
+
+	// clientFactory builds the cloud client for a cluster. Defaults to
+	// cloud.ClientForCluster; tests override it to inject a fake.
+	clientFactory clusterClientFactory
 }
 
-// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocclusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocclusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=evrocclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;get;list;patch;update;watch
+// clusterClientFactory matches the signature of cloud.ClientForCluster.
+type clusterClientFactory func(
+	ctx context.Context,
+	k8sClient client.Reader,
+	secretName, secretNamespace string,
+	clusterCtx cloud.ClusterContext,
+	m *metrics.Manager,
+) (cloud.ClientInterface, error)
 
 func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Fetch the EvrocCluster instance
@@ -91,13 +72,24 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// handling so that clusterctl move does not trigger infrastructure cleanup.
 	if helpers.IsPaused(ctx, r.Client, evrocCluster) {
 		log.FromContext(ctx).Info("Reconciliation is paused for this object")
+		setClusterCondition(evrocCluster, infrav1.PausedCondition, corev1.ConditionTrue, infrav1.PausedReason, "Reconciliation is paused")
+		_ = r.Status().Update(ctx, evrocCluster)
 		return ctrl.Result{}, nil
 	}
 
-	// Resolve the cloud client for this cluster (per-cluster credentials or global fallback).
+	// Resolve the cloud client for this cluster from its credentialsRef.
 	cloudClient, err := r.resolveCloudClient(ctx, evrocCluster)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("resolving cloud credentials: %w", err)
+		// Surface the cause on the object. Without this the controller retries
+		// silently and the only clue is in its logs, which looks identical to
+		// "still provisioning" from the outside.
+		setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionFalse,
+			infrav1.CredentialsNotFoundReason, err.Error())
+		credentialErr := fmt.Errorf("resolving cloud credentials: %w", err)
+		if statusErr := r.Status().Update(ctx, evrocCluster); statusErr != nil {
+			return ctrl.Result{}, errors.Join(credentialErr, fmt.Errorf("updating credential failure condition: %w", statusErr))
+		}
+		return ctrl.Result{}, credentialErr
 	}
 
 	// Handle deletion using helper
@@ -115,21 +107,6 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Handle normal reconciliation
 	return r.reconcileNormal(ctx, evrocCluster, cloudClient)
-}
-
-// resolveCloudClient returns a cloud client for the given cluster. If the
-// cluster specifies a CredentialsRef, the secret is read and a new client
-// is created. Otherwise the globally configured fallback client is returned.
-func (r *EvrocClusterReconciler) resolveCloudClient(ctx context.Context, cluster *infrav1.EvrocCluster) (cloud.ClientInterface, error) {
-	secretName := ""
-	secretNamespace := cluster.Namespace
-	if ref := cluster.Spec.CredentialsRef; ref != nil {
-		secretName = ref.Name
-		if ref.Namespace != "" {
-			secretNamespace = ref.Namespace
-		}
-	}
-	return cloud.ClientForCluster(ctx, r.Client, r.CloudClient, secretName, secretNamespace, r.SDKMetrics)
 }
 
 func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocCluster *infrav1.EvrocCluster, cloudClient cloud.ClientInterface) (_ ctrl.Result, retErr error) {
@@ -152,37 +129,32 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 		"project", evrocCluster.Spec.Project,
 		"region", evrocCluster.Spec.Region)
 
+	// Mark the Paused condition as False now that reconciliation has resumed.
+	setClusterCondition(evrocCluster, infrav1.PausedCondition, corev1.ConditionFalse, "Reconciling", "Reconciliation is active")
+
+	// Keep an owned copy of the credential secret so clusterctl move carries the
+	// credentials with the cluster, without taking ownership of the user's secret.
+	if err := r.ensureCredentialSecretCopy(ctx, evrocCluster); err != nil {
+		log.Error(err, "Failed to copy credential secret")
+		// Non-fatal: the cluster still reconciles using the referenced secret.
+	}
+
 	// Set up failure domains based on the region.
 	if err := r.reconcileFailureDomains(evrocCluster); err != nil {
 		log.Error(err, "Failed to reconcile failure domains")
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile PublicIP if endpoint not yet set or if the PublicIP status was
-	// lost (e.g. due to a conflict during a previous reconcile).
-	publicIPMissing := evrocCluster.Status.Resources == nil ||
-		evrocCluster.Status.Resources.PublicIP == nil
-	if evrocCluster.Spec.ControlPlaneEndpoint.IsZero() || publicIPMissing {
-		resolution, err := resolvePublicIPConfig(evrocCluster)
+	// Reconcile control plane load balancer (auto-created or existing).
+	// Reconcile control plane load balancer (always auto-created).
+	{
+		lbName, err := resolveLoadBalancerName(evrocCluster)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-
-		switch resolution.Mode {
-		case PublicIPModeAutoCreate:
-			result, err := r.reconcileAutoCreatedPublicIP(ctx, evrocCluster, resolution.ResourceName, cloudClient)
-			if err != nil || !result.IsZero() {
-				return result, err
-			}
-
-		case PublicIPModeUseExisting:
-			result, err := r.reconcileExistingPublicIP(ctx, evrocCluster, resolution.ResourceName, cloudClient)
-			if err != nil || !result.IsZero() {
-				return result, err
-			}
-
-		case PublicIPModeAutoDiscover:
-			// Fall through to machine auto-discovery below
+		result, err := r.reconcileAutoCreatedLoadBalancer(ctx, evrocCluster, lbName, cloudClient)
+		if err != nil || !result.IsZero() {
+			return result, err
 		}
 	}
 
@@ -193,31 +165,126 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 	}
 
 	// Mark infrastructure as provisioned and ready.
-	// The infrastructure layer has no resources to provision before machines exist (no VPC, no LB).
 	// CAPRKE2 requires Ready=true before it will create control plane machines.
 	provisioned := true
 	evrocCluster.Status.Initialization.Provisioned = &provisioned
 	evrocCluster.Status.Initialization.InfrastructureProvisioned = &provisioned
 	evrocCluster.Status.Ready = true
 
-	// When no public IP is configured, discover the endpoint from the first
-	// control-plane machine's private address. When a public IP IS configured
-	// (and the endpoint is already set), leave it alone — the management
-	// cluster and CAPI controllers need the public IP to reach the workload
-	// cluster's API server.
 	if evrocCluster.Spec.ControlPlaneEndpoint.IsZero() {
-		result, err := r.reconcileControlPlaneEndpointFromMachines(ctx, evrocCluster)
-		if err != nil {
-			return result, err
-		}
-	}
-	if evrocCluster.Spec.ControlPlaneEndpoint.IsZero() {
-		log.Info("Waiting for control plane endpoint")
+		log.Info("Waiting for control plane endpoint (LoadBalancer not yet ready)")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
 	log.Info("EvrocCluster is ready",
 		"endpoint", evrocCluster.Spec.ControlPlaneEndpoint.String())
+
+	return ctrl.Result{}, nil
+}
+
+// resolveLoadBalancerName returns the deterministic LB name for this cluster.
+func resolveLoadBalancerName(cluster *infrav1.EvrocCluster) (string, error) {
+	prefix, err := clusterResourcePrefix(cluster)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-cp-lb", prefix), nil
+}
+
+// buildLoadBalancerCreateRequest creates a LoadBalancerCreateRequest from the cluster config.
+func buildLoadBalancerCreateRequest(cluster *infrav1.EvrocCluster, resourceName string) *cloud.LoadBalancerCreateRequest {
+	req := &cloud.LoadBalancerCreateRequest{
+		Name:        resourceName,
+		Port:        6443,
+		BackendPort: 6443,
+		Labels:      helpers.ResourceLabels(cluster.Name, string(cluster.UID), cluster.Spec.AdditionalLabels),
+	}
+	if lbCfg := cluster.Spec.ControlPlaneConfig.GetLoadBalancer(); lbCfg != nil {
+		if lbCfg.ExistingPublicIPID != nil {
+			req.ExistingPublicIPID = *lbCfg.ExistingPublicIPID
+		}
+		req.AdditionalPorts = lbCfg.AdditionalPorts
+	}
+	return req
+}
+
+// reconcileAutoCreatedLoadBalancer creates and manages a load balancer for the control plane endpoint.
+func (r *EvrocClusterReconciler) reconcileAutoCreatedLoadBalancer(
+	ctx context.Context,
+	cluster *infrav1.EvrocCluster,
+	resourceName string,
+	cloudClient cloud.ClientInterface,
+) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+
+	// Check cloud API directly — do not use status as source of truth.
+	log.V(1).Info("Checking if LoadBalancer exists in cloud", "name", resourceName)
+	lb, err := cloudClient.LoadBalancers().Get(ctx, resourceName)
+	if err != nil {
+		if !cloud.IsNotFoundError(err) {
+			return ctrl.Result{}, fmt.Errorf("failed to check for existing load balancer: %w", err)
+		}
+
+		// Not found — create.
+		log.Info("Creating managed LoadBalancer in cloud", "name", resourceName)
+		request := buildLoadBalancerCreateRequest(cluster, resourceName)
+		lb, err = cloudClient.LoadBalancers().Create(ctx, request)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create load balancer: %w", err)
+		}
+	} else {
+		log.Info("Found existing managed LoadBalancer in cloud, will use it", "name", resourceName)
+	}
+
+	// Wait for LB to be active and have an address.
+	if lb.Address == "" || !lb.IsActive() {
+		log.Info("Waiting for LoadBalancer to become active", "name", resourceName, "status", lb.Status)
+		setClusterCondition(cluster, infrav1.LoadBalancerReadyCondition, corev1.ConditionFalse,
+			infrav1.LoadBalancerProvisioningReason, "Load balancer is being provisioned")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	return r.useLoadBalancer(ctx, cluster, lb)
+}
+
+// reconcileExistingLoadBalancer uses a pre-existing load balancer (not managed by CAPI).
+// useLoadBalancer stores LoadBalancer information in cluster status and sets controlPlaneEndpoint.
+func (r *EvrocClusterReconciler) useLoadBalancer(
+	_ context.Context,
+	cluster *infrav1.EvrocCluster,
+	lb *cloud.LoadBalancer,
+) (ctrl.Result, error) {
+	if lb.Address == "" {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	// Set controlPlaneEndpoint to the LB address.
+	if cluster.Spec.ControlPlaneEndpoint.IsZero() {
+		cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+			Host: lb.Address,
+			Port: 6443,
+		}
+	}
+
+	// Store LB info in status.
+	if cluster.Status.Resources == nil {
+		cluster.Status.Resources = &infrav1.ClusterResources{}
+	}
+
+	backendNames := make([]string, len(lb.Backends))
+	for i, b := range lb.Backends {
+		backendNames[i] = b.Name
+	}
+
+	cluster.Status.Resources.LoadBalancer = &infrav1.ManagedLoadBalancer{
+		ID:       lb.Name,
+		UID:      lb.ID,
+		Address:  lb.Address,
+		Backends: backendNames,
+	}
+
+	setClusterCondition(cluster, infrav1.LoadBalancerReadyCondition, corev1.ConditionTrue,
+		infrav1.LoadBalancerReadyReason, "Load balancer is active")
 
 	return ctrl.Result{}, nil
 }
@@ -238,241 +305,6 @@ func (r *EvrocClusterReconciler) reconcileFailureDomains(evrocCluster *infrav1.E
 
 	evrocCluster.Status.FailureDomains = failureDomains
 	return nil
-}
-
-// reconcileControlPlaneEndpointFromMachines discovers the controlPlaneEndpoint from the
-// first EvrocMachine with the control-plane label that has discovered addresses.
-//
-// Note: control-plane label matching must check key existence (not value equality),
-// because CAPI sets `cluster.x-k8s.io/control-plane=true`.
-func (r *EvrocClusterReconciler) reconcileControlPlaneEndpointFromMachines(
-	ctx context.Context, evrocCluster *infrav1.EvrocCluster,
-) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
-	// Use the CAPI cluster name label (set by CAPI on infra objects) rather
-	// than assuming the EvrocCluster name matches the CAPI Cluster name.
-	clusterName := evrocCluster.Name
-	if name, ok := evrocCluster.Labels[clusterv1.ClusterNameLabel]; ok && name != "" {
-		clusterName = name
-	}
-
-	machineList := &infrav1.EvrocMachineList{}
-	if err := r.List(ctx, machineList,
-		client.InNamespace(evrocCluster.Namespace),
-		client.MatchingLabels{
-			clusterv1.ClusterNameLabel: clusterName,
-		}); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	for _, m := range machineList.Items {
-		if _, isControlPlane := m.Labels[clusterv1.MachineControlPlaneLabel]; !isControlPlane {
-			continue
-		}
-		// Don't require Ready=true here. We only need a discovered private address,
-		// and publishing it early prevents worker bootstrap data from being generated
-		// against a temporary public endpoint.
-		if len(m.Status.Addresses) == 0 {
-			continue
-		}
-		ip := firstUsableIP(m.Status.Addresses)
-		if ip == "" {
-			continue
-		}
-		log.Info("Auto-populating controlPlaneEndpoint from control-plane machine",
-			"machine", m.Name, "ip", ip)
-		evrocCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
-			Host: ip,
-			Port: 6443,
-		}
-		return ctrl.Result{}, nil
-	}
-
-	log.Info("No control-plane machine with addresses found yet, waiting")
-	return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-}
-
-// firstUsableIP prefers InternalIP for cluster-internal communication.
-// This ensures nodes communicate over the private network while external
-// access (kubectl, Rancher) can still use the public IP if configured.
-func firstUsableIP(addrs []corev1.NodeAddress) string {
-	// Prefer InternalIP for control plane endpoint
-	for _, addr := range addrs {
-		if addr.Type == corev1.NodeInternalIP && addr.Address != "" {
-			return addr.Address
-		}
-	}
-	// Fallback to ExternalIP if no internal IP available
-	for _, addr := range addrs {
-		if addr.Type == corev1.NodeExternalIP && addr.Address != "" {
-			return addr.Address
-		}
-	}
-	return ""
-}
-
-// resolvePublicIPConfig determines how to handle public IP based on cluster configuration.
-// Priority order: inline enabled > inline existingName > none (auto-discover from machines)
-func resolvePublicIPConfig(cluster *infrav1.EvrocCluster) (PublicIPResolution, error) {
-	// Priority 1: controlPlaneConfig.publicIP.enabled
-	if cluster.Spec.ControlPlaneConfig != nil &&
-		cluster.Spec.ControlPlaneConfig.PublicIP != nil &&
-		cluster.Spec.ControlPlaneConfig.PublicIP.Enabled {
-		prefix, err := clusterResourcePrefix(cluster)
-		if err != nil {
-			return PublicIPResolution{}, err
-		}
-		return PublicIPResolution{
-			Mode:         PublicIPModeAutoCreate,
-			ResourceName: fmt.Sprintf("%s-cp-ip", prefix),
-		}, nil
-	}
-
-	// Priority 2: controlPlaneConfig.publicIP.existingName
-	if cluster.Spec.ControlPlaneConfig != nil &&
-		cluster.Spec.ControlPlaneConfig.PublicIP != nil &&
-		cluster.Spec.ControlPlaneConfig.PublicIP.ExistingName != nil {
-		return PublicIPResolution{
-			Mode:         PublicIPModeUseExisting,
-			ResourceName: *cluster.Spec.ControlPlaneConfig.PublicIP.ExistingName,
-		}, nil
-	}
-
-	// Priority 3: None - auto-discover from machines
-	return PublicIPResolution{Mode: PublicIPModeAutoDiscover}, nil
-}
-
-// reconcileAutoCreatedPublicIP creates a cloud public IP directly via SDK.
-// The IP is created in the evroc cloud and tracked in cluster.status.resources.
-func (r *EvrocClusterReconciler) reconcileAutoCreatedPublicIP(
-	ctx context.Context,
-	cluster *infrav1.EvrocCluster,
-	resourceName string,
-	cloudClient cloud.ClientInterface,
-) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
-	// Check if we already created it (stored in status)
-	if cluster.Status.Resources != nil &&
-		cluster.Status.Resources.PublicIP != nil &&
-		cluster.Status.Resources.PublicIP.Managed {
-
-		existingID := cluster.Status.Resources.PublicIP.ID
-		log.V(1).Info("Managed PublicIP already exists in status", "id", existingID)
-
-		// Verify it still exists in cloud
-		cloudIP, err := cloudClient.PublicIPs().Get(ctx, existingID)
-		if err != nil {
-			if cloud.IsNotFoundError(err) {
-				// Cloud resource deleted outside CAPI - clear status and requeue to recreate
-				log.Info("Managed PublicIP deleted outside CAPI, will recreate", "id", existingID)
-				cluster.Status.Resources.PublicIP = nil
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-			}
-			return ctrl.Result{}, fmt.Errorf("failed to verify managed PublicIP: %w", err)
-		}
-
-		// Still exists - use it
-		return r.usePublicIP(ctx, cluster, cloudIP, true)
-	}
-
-	// Check if PublicIP already exists in cloud (e.g., from previous reconciliation before status was lost)
-	log.V(1).Info("Checking if PublicIP already exists in cloud", "name", resourceName)
-	cloudIP, err := cloudClient.PublicIPs().Get(ctx, resourceName)
-	if err != nil {
-		if !cloud.IsNotFoundError(err) {
-			return ctrl.Result{}, fmt.Errorf("failed to check for existing public IP: %w", err)
-		}
-
-		// Not found - create new cloud resource
-		log.Info("Creating managed PublicIP in cloud", "name", resourceName)
-		cloudIP, err = cloudClient.PublicIPs().Create(ctx, resourceName, helpers.ResourceLabels(cluster.Name, string(cluster.UID), cluster.Spec.AdditionalLabels))
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create public IP: %w", err)
-		}
-	} else {
-		// Found existing resource - use it
-		log.Info("Found existing managed PublicIP in cloud, will use it", "name", resourceName)
-	}
-
-	// Wait for cloud resource to have an address allocated
-	if cloudIP.Status.PublicIPv4Address == nil || *cloudIP.Status.PublicIPv4Address == "" {
-		log.Info("Waiting for cloud PublicIP address to be allocated", "name", resourceName)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-
-	// Store in status and use
-	return r.usePublicIP(ctx, cluster, cloudIP, true)
-}
-
-// reconcileExistingPublicIP uses a pre-existing cloud resource (not managed by CAPI).
-// This supports Terraform/external infrastructure integration.
-func (r *EvrocClusterReconciler) reconcileExistingPublicIP(
-	ctx context.Context,
-	cluster *infrav1.EvrocCluster,
-	existingName string,
-	cloudClient cloud.ClientInterface,
-) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
-	log.Info("Using existing PublicIP", "name", existingName)
-
-	// Query cloud API for the existing resource
-	cloudIP, err := cloudClient.PublicIPs().Get(ctx, existingName)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("existing public IP %q not found: %w", existingName, err)
-	}
-
-	if cloudIP.Status.PublicIPv4Address == nil || *cloudIP.Status.PublicIPv4Address == "" {
-		log.Info("Waiting for existing PublicIP address to be allocated", "name", existingName)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
-
-	// Store reference (marked as NOT managed)
-	return r.usePublicIP(ctx, cluster, cloudIP, false)
-}
-
-// usePublicIP stores PublicIP information in cluster status and sets controlPlaneEndpoint.
-// All mutations are on the in-memory object; the deferred patchHelper persists them.
-func (r *EvrocClusterReconciler) usePublicIP(
-	ctx context.Context,
-	cluster *infrav1.EvrocCluster,
-	cloudIP *networkingtypes.PublicIP,
-	managed bool,
-) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
-	if cloudIP.Status.PublicIPv4Address == nil || *cloudIP.Status.PublicIPv4Address == "" {
-		log.V(1).Info("PublicIP address not yet allocated")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	address := *cloudIP.Status.PublicIPv4Address
-	ipName := cloudIP.Metadata.Id
-
-	// Set controlPlaneEndpoint to the public IP if not already set.
-	if cluster.Spec.ControlPlaneEndpoint.IsZero() {
-		cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
-			Host: address,
-			Port: 6443,
-		}
-		log.Info("Set controlPlaneEndpoint to public IP",
-			"address", address, "managed", managed)
-	}
-
-	// Store PublicIP info in status.
-	if cluster.Status.Resources == nil {
-		cluster.Status.Resources = &infrav1.ClusterResources{}
-	}
-	cluster.Status.Resources.PublicIP = &infrav1.ManagedPublicIP{
-		ID:      ipName,
-		Address: address,
-		Name:    ipName,
-		Managed: managed,
-	}
-
-	return ctrl.Result{}, nil
 }
 
 // reconcileSecurityGroups reconciles security groups across all three sections
@@ -593,21 +425,21 @@ func (r *EvrocClusterReconciler) reconcileSecurityGroupSection(
 		}
 
 		managed = append(managed, infrav1.ManagedSecurityGroup{
-			ID: sgName, Name: sgName, Managed: true, Role: role,
+			ID: sgName, Managed: true, Role: role,
 		})
 	}
 
-	for _, existingName := range sgConfig.ExistingNames {
-		exists, err := cloudClient.SecurityGroups().Exists(ctx, existingName)
+	for _, existingID := range sgConfig.ExistingIDs {
+		exists, err := cloudClient.SecurityGroups().Exists(ctx, existingID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to check existing security group %s: %w", existingName, err)
+			return nil, fmt.Errorf("failed to check existing security group %s: %w", existingID, err)
 		}
 		if !exists {
-			return nil, fmt.Errorf("existing security group %s not found", existingName)
+			return nil, fmt.Errorf("existing security group %s not found", existingID)
 		}
 
 		managed = append(managed, infrav1.ManagedSecurityGroup{
-			ID: existingName, Name: existingName, Managed: false, Role: role,
+			ID: existingID, Managed: false, Role: role,
 		})
 	}
 
@@ -626,20 +458,20 @@ func (r *EvrocClusterReconciler) deleteStaleSecurityGroups(ctx context.Context, 
 
 	desiredNames := make(map[string]bool, len(desired))
 	for _, sg := range desired {
-		desiredNames[sg.Name] = true
+		desiredNames[sg.ID] = true
 	}
 
 	for _, old := range cluster.Status.Resources.SecurityGroups {
 		if !old.Managed {
 			continue // never delete externally-managed SGs
 		}
-		if desiredNames[old.Name] {
+		if desiredNames[old.ID] {
 			continue // still desired
 		}
-		log.Info("Deleting stale managed security group", "name", old.Name)
-		if err := cloudClient.SecurityGroups().Delete(ctx, old.Name); err != nil {
+		log.Info("Deleting stale managed security group", "name", old.ID)
+		if err := cloudClient.SecurityGroups().Delete(ctx, old.ID); err != nil {
 			if !helpers.IsNotFoundError(err) {
-				return fmt.Errorf("failed to delete stale security group %s: %w", old.Name, err)
+				return fmt.Errorf("failed to delete stale security group %s: %w", old.ID, err)
 			}
 		}
 	}
@@ -719,7 +551,7 @@ func clusterSecurityGroupNamesForRole(cluster *infrav1.EvrocCluster, isControlPl
 	var names []string
 	for _, sg := range cluster.Status.Resources.SecurityGroups {
 		if sg.Role == "common" || sg.Role == roleFilter {
-			names = append(names, sg.Name)
+			names = append(names, sg.ID)
 		}
 	}
 	return names
@@ -734,6 +566,7 @@ func clusterSecurityGroupNamesForRole(cluster *infrav1.EvrocCluster, isControlPl
 func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *infrav1.EvrocCluster, cloudClient cloud.ClientInterface) error {
 	log := log.FromContext(ctx)
 
+	// TODO: DO NOT rely on status to determine resources to clean up.
 	if cluster.Status.Resources == nil {
 		return nil
 	}
@@ -741,17 +574,16 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 	var errs []error
 	stillDeleting := 0
 
-	// Delete managed PublicIP.
-	if pip := cluster.Status.Resources.PublicIP; pip != nil && pip.Managed {
-		log.Info("Deleting managed PublicIP", "id", pip.ID, "name", pip.Name)
-		if err := cloudClient.PublicIPs().Delete(ctx, pip.Name); err != nil {
+	// Delete managed LoadBalancer (and its sub-resources: PublicIP, BackendPool, BackendService, L4Route).
+	if lb := cluster.Status.Resources.LoadBalancer; lb != nil {
+		log.Info("Deleting LoadBalancer", "id", lb.ID)
+		if err := cloudClient.LoadBalancers().Delete(ctx, lb.ID); err != nil {
 			if !cloud.IsNotFoundError(err) {
-				errs = append(errs, fmt.Errorf("failed to delete managed PublicIP %s: %w", pip.Name, err))
+				errs = append(errs, fmt.Errorf("failed to delete managed LoadBalancer %s: %w", lb.ID, err))
 			}
 		}
-		// Check if it's gone yet.
-		if exists, err := cloudClient.PublicIPs().Exists(ctx, pip.Name); err != nil {
-			errs = append(errs, fmt.Errorf("failed to check PublicIP %s existence: %w", pip.Name, err))
+		if exists, err := cloudClient.LoadBalancers().Exists(ctx, lb.ID); err != nil {
+			errs = append(errs, fmt.Errorf("failed to check LoadBalancer %s existence: %w", lb.ID, err))
 		} else if exists {
 			stillDeleting++
 		}
@@ -762,15 +594,15 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 		if !sg.Managed {
 			continue
 		}
-		log.Info("Deleting managed SecurityGroup", "id", sg.ID, "name", sg.Name)
-		if err := cloudClient.SecurityGroups().Delete(ctx, sg.Name); err != nil {
+		log.Info("Deleting managed SecurityGroup", "uid", sg.UID, "id", sg.ID)
+		if err := cloudClient.SecurityGroups().Delete(ctx, sg.ID); err != nil {
 			if !cloud.IsNotFoundError(err) {
-				errs = append(errs, fmt.Errorf("failed to delete managed SecurityGroup %s: %w", sg.Name, err))
+				errs = append(errs, fmt.Errorf("failed to delete managed SecurityGroup %s: %w", sg.ID, err))
 			}
 		}
 		// Check if it's gone yet.
-		if exists, err := cloudClient.SecurityGroups().Exists(ctx, sg.Name); err != nil {
-			errs = append(errs, fmt.Errorf("failed to check SecurityGroup %s existence: %w", sg.Name, err))
+		if exists, err := cloudClient.SecurityGroups().Exists(ctx, sg.ID); err != nil {
+			errs = append(errs, fmt.Errorf("failed to check SecurityGroup %s existence: %w", sg.ID, err))
 		} else if exists {
 			stillDeleting++
 		}
@@ -786,6 +618,157 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 	return nil
 }
 
+// resolveCloudClient returns a cloud client for the given cluster, built from
+// the secret named by the cluster's mandatory CredentialsRef.
+func (r *EvrocClusterReconciler) resolveCloudClient(ctx context.Context, cluster *infrav1.EvrocCluster) (cloud.ClientInterface, error) {
+	secretKey := types.NamespacedName{Namespace: cluster.Namespace}
+	if ref := cluster.Spec.CredentialsRef; ref != nil {
+		secretKey.Name = ref.Name
+	}
+	clusterCtx := cloud.ClusterContext{Project: cluster.Spec.Project, Region: cluster.Spec.Region}
+	factory := r.clientFactory
+	if factory == nil {
+		factory = cloud.ClientForCluster
+	}
+	cloudClient, err := factory(ctx, r.Client, secretKey.Name, secretKey.Namespace, clusterCtx, r.SDKMetrics)
+	if !apierrors.IsNotFound(err) {
+		return cloudClient, err
+	}
+
+	// clusterctl move carries the owned copy, while the user-managed source
+	// secret may not exist in the target management cluster.
+	copyKey := credentialSecretCopyKey(cluster)
+	cloudClient, copyErr := factory(ctx, r.Client, copyKey.Name, copyKey.Namespace, clusterCtx, r.SDKMetrics)
+	if apierrors.IsNotFound(copyErr) {
+		return nil, err
+	}
+	return cloudClient, copyErr
+}
+
+// credentialSecretCopyKey identifies the owned credential copy in the same
+// namespace as the EvrocCluster so it can be included in clusterctl move.
+func credentialSecretCopyKey(cluster *infrav1.EvrocCluster) types.NamespacedName {
+	return types.NamespacedName{Name: cluster.Name + "-evroc-credentials", Namespace: cluster.Namespace}
+}
+
+// ensureCredentialSecretCopy copies the secret named by credentialsRef into a
+// per-cluster secret that this EvrocCluster owns. The copy, rather than the
+// user-managed source, moves with and is garbage-collected with the cluster.
+func (r *EvrocClusterReconciler) ensureCredentialSecretCopy(ctx context.Context, cluster *infrav1.EvrocCluster) error {
+	ref := cluster.Spec.CredentialsRef
+	if ref == nil {
+		return nil // defensive: the webhook rejects a cluster without credentialsRef
+	}
+
+	ns := cluster.Namespace
+
+	src := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: ns}, src); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The source is not moved because it is user-managed. Keep using the
+			// owned copy transferred with the cluster when it is available.
+			if copyErr := r.Get(ctx, credentialSecretCopyKey(cluster), &corev1.Secret{}); copyErr == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("failed to get credential secret %s/%s: %w", ns, ref.Name, err)
+	}
+
+	copyKey := credentialSecretCopyKey(cluster)
+	gvk := infrav1.GroupVersion.WithKind("EvrocCluster")
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      copyKey.Name,
+			Namespace: copyKey.Namespace,
+			Labels:    map[string]string{clusterv1.ClusterNameLabel: cluster.Name},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: gvk.GroupVersion().String(),
+				Kind:       gvk.Kind,
+				Name:       cluster.Name,
+				UID:        cluster.UID,
+			}},
+		},
+		Type: src.Type,
+		Data: src.Data,
+	}
+
+	existing := &corev1.Secret{}
+	err := r.Get(ctx, copyKey, existing)
+	if apierrors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			return fmt.Errorf("failed to create credential secret copy: %w", err)
+		}
+		log.FromContext(ctx).Info("Copied credential secret for this cluster",
+			"from", ns+"/"+ref.Name, "to", desired.Namespace+"/"+desired.Name)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to get credential secret copy: %w", err)
+	}
+
+	// Keep the copy in step with the source.
+	if !reflect.DeepEqual(existing.Data, desired.Data) {
+		existing.Data = desired.Data
+		if err := r.Update(ctx, existing); err != nil {
+			return fmt.Errorf("failed to update credential secret copy: %w", err)
+		}
+		log.FromContext(ctx).Info("Refreshed credential secret copy", "secret", desired.Namespace+"/"+desired.Name)
+	}
+	return nil
+}
+
+// clusterResourcePrefix returns the stable prefix for cluster-level cloud resources.
+// The annotation survives clusterctl move, where the UID changes and status is
+// not transferred. Existing clusters recover the prefix from their managed LB.
+func clusterResourcePrefix(cluster *infrav1.EvrocCluster) (string, error) {
+	if prefix := cluster.Annotations[clusterResourcePrefixAnnotation]; prefix != "" {
+		return prefix, nil
+	}
+	if cluster.Status.Resources != nil && cluster.Status.Resources.LoadBalancer != nil {
+		if lbName := cluster.Status.Resources.LoadBalancer.ID; strings.HasSuffix(lbName, "-cp-lb") {
+			prefix := strings.TrimSuffix(lbName, "-cp-lb")
+			// reconcileNormal's deferred patchHelper.Patch persists this annotation.
+			setClusterResourcePrefixAnnotation(cluster, prefix)
+			return prefix, nil
+		}
+	}
+	if cluster.UID == "" {
+		return "", fmt.Errorf("cluster %s/%s has empty UID, cannot generate unique resource prefix", cluster.Namespace, cluster.Name)
+	}
+	prefix := fmt.Sprintf("%s-%s", cluster.Name, cluster.UID[:8])
+	setClusterResourcePrefixAnnotation(cluster, prefix)
+	return prefix, nil
+}
+
+func setClusterResourcePrefixAnnotation(cluster *infrav1.EvrocCluster, prefix string) {
+	if cluster.Annotations == nil {
+		cluster.Annotations = map[string]string{}
+	}
+	cluster.Annotations[clusterResourcePrefixAnnotation] = prefix
+}
+
+// setClusterCondition sets or updates a condition on the cluster's status.
+func setClusterCondition(cluster *infrav1.EvrocCluster, condType clusterv1.ConditionType, status corev1.ConditionStatus, reason, message string) {
+	now := metav1.Now()
+	newCond := clusterv1.Condition{
+		Type:               condType,
+		Status:             status,
+		LastTransitionTime: now,
+		Reason:             reason,
+		Message:            message,
+	}
+	for i, c := range cluster.Status.Conditions {
+		if c.Type == condType {
+			if c.Status == status {
+				newCond.LastTransitionTime = c.LastTransitionTime
+			}
+			cluster.Status.Conditions[i] = newCond
+			return
+		}
+	}
+	cluster.Status.Conditions = append(cluster.Status.Conditions, newCond)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *EvrocClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -794,7 +777,28 @@ func (r *EvrocClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.
 			&infrav1.EvrocMachine{},
 			handler.EnqueueRequestsFromMapFunc(r.machineToCluster),
 		).
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(r.capiClusterToEvrocCluster),
+		).
 		Complete(r)
+}
+
+// capiClusterToEvrocCluster maps a CAPI Cluster event to the associated EvrocCluster.
+// This is required so the controller is notified when the Cluster is unpaused
+// after clusterctl move.
+func (r *EvrocClusterReconciler) capiClusterToEvrocCluster(_ context.Context, obj client.Object) []reconcile.Request {
+	cluster, ok := obj.(*clusterv1.Cluster)
+	if !ok {
+		return nil
+	}
+	ref := cluster.Spec.InfrastructureRef
+	if ref.Kind != "EvrocCluster" || ref.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Name: ref.Name, Namespace: cluster.Namespace}},
+	}
 }
 
 // machineToCluster maps an EvrocMachine event to its owning EvrocCluster.

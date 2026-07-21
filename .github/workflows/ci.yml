@@ -24,22 +24,22 @@ jobs:
       GOSUMDB: off
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Configure Git for private modules
         run: |
           git config --global url."https://${{ secrets.GO_MODULES_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Set up Go
-        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Download Go modules
         run: go mod download
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@971e284b6050e8a5849b72094c50ab08da042db8 # v7.1.0
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
         with:
           version: v2.8.0
           args: --timeout=5m
@@ -50,16 +50,62 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Helm
-        uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814 # v4.2.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: '3.16.3'
 
       - name: Lint Helm chart
         run: |
-          helm lint ./helm/cluster-api-provider-evroc --set evroc.existingConfigSecret="test-secret"
+          helm lint ./helm/cluster-api-provider-evroc
+
+  # CAPI contract compliance + manifest schema validation
+  compliance:
+    name: Compliance & Manifests
+    runs-on: ubuntu-latest
+    env:
+      GOPRIVATE: github.com/evroc-oss
+      GOSUMDB: off
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Configure Git for private modules
+        run: |
+          git config --global url."https://${{ secrets.GO_MODULES_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.25'
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: '3.16.3'
+
+      - name: Download Go modules
+        run: |
+          go mod download
+
+      - name: Check CAPI contract compliance
+        run: |
+          make check-compliance
+
+      # Asserts every shipped example and cluster template still applies against
+      # the generated CRD schemas — the same validation the API server performs —
+      # and that the Helm chart renders to valid YAML across value permutations
+      # (helm lint does not render, so it misses bare null list keys).
+      - name: Validate manifests and chart render
+        run: |
+          make validate-manifests
+
+      # CRD contract conformance. Needs no cluster, so it belongs in CI.
+      - name: Run CAPI conformance tests
+        run: |
+          make test-e2e-conformance
 
   # Unit tests
   test:
@@ -70,19 +116,19 @@ jobs:
       GOSUMDB: off
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Configure Git for private modules
         run: |
           git config --global url."https://${{ secrets.GO_MODULES_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Set up Go
-        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Cache Go modules
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cache/go-build
@@ -101,7 +147,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b # v4.5.0
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: coverage-report
           path: ./cover.out
@@ -116,19 +162,19 @@ jobs:
       GOSUMDB: off
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Configure Git for private modules
         run: |
           git config --global url."https://${{ secrets.GO_MODULES_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Set up Go
-        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Cache Go modules
-        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cache/go-build
@@ -158,16 +204,16 @@ jobs:
       GOSUMDB: off
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Configure Git for private modules
         run: |
           git config --global url."https://${{ secrets.GO_MODULES_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Set up Go
-        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Download dependencies and update go.sum
         run: |
@@ -176,15 +222,14 @@ jobs:
           echo "Running go mod tidy..."
           go mod tidy -v
           echo "Checking go.sum for SDK..."
-          grep evroc-go-sdk go.sum || echo "ERROR: SDK not in go.sum!"
+          grep evroc-go-sdk go.sum
           echo "Checking go.mod..."
           grep evroc-go-sdk go.mod
 
-      - name: Generate manifests and sync Helm CRDs
+      - name: Generate manifests, sync Helm CRDs, and regenerate templates
         run: |
-          make sync-helm
+          make generate
 
-      - name: Verify manifests are up to date
+      - name: Verify manifests and templates are up to date
         run: |
-          git diff --exit-code config/crd/bases/ || (echo "CRDs are out of date. Run 'make sync-helm' and commit the changes." && exit 1)
-          git diff --exit-code helm/cluster-api-provider-evroc/crds/ || (echo "Helm CRDs are out of sync with config/crd/bases/. Run 'make sync-helm' and commit the changes." && exit 1)
+          git diff --exit-code || (echo "Generated files, formatting, or module metadata are out of date. Run 'make generate', 'go mod tidy', and commit the changes." && exit 1)

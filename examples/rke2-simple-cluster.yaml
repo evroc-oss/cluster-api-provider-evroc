@@ -45,6 +45,9 @@ metadata:
 spec:
   project: evroc-demo  # CHANGE THIS to your project
   region: se-sto
+  # Credentials for this cluster (required).
+  credentialsRef:
+    name: evroc-credentials
   failureDomains:
   - a
   - b
@@ -167,6 +170,7 @@ spec:
       region: se-sto
       image: sl-micro.6-1.1
       computeProfile: a1a.m
+      rootDiskSize: 100
       sshKey: agm  # CHANGE THIS to your SSH key name
       networkingConfig:
         securityGroups:
@@ -240,6 +244,7 @@ spec:
       region: se-sto
       image: sl-micro.6-1.1
       computeProfile: a1a.m
+      rootDiskSize: 100
       sshKey: agm  # CHANGE THIS to your SSH key name
       networkingConfig:
         securityGroups:

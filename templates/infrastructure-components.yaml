@@ -9,6 +9,7 @@ metadata:
   labels:
     cluster.x-k8s.io/v1beta1: v1beta1
     cluster.x-k8s.io/v1beta2: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
   name: evrocclusters.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
@@ -74,26 +75,30 @@ spec:
                 type: object
               controlPlaneConfig:
                 description: |-
-                  ControlPlaneConfig defines networking configuration for control plane nodes.
-                  Currently holds public IP configuration for the control plane endpoint.
+                  ControlPlaneConfig defines configuration for the control plane endpoint.
+                  A load balancer is always created for the control plane.
+                  Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
                 properties:
-                  publicIP:
+                  loadBalancer:
                     description: |-
-                      PublicIP configuration for the control plane endpoint.
-                      When enabled, a public IP will be auto-created and used for ControlPlaneEndpoint.Host.
+                      LoadBalancer allows overriding the auto-created control plane load balancer.
+                      If omitted, the controller auto-creates a managed LB with default settings.
                     properties:
-                      enabled:
+                      additionalPorts:
                         description: |-
-                          Enabled auto-creates a public IP managed by the controller.
-                          The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
-                          When the cluster is deleted, the IP is automatically cleaned up.
-                        type: boolean
-                      existingName:
+                          AdditionalPorts specifies extra TCP ports to forward through the public LB.
+                          Each port gets its own BackendService + L4Route with TCP health check.
+                          The API server port (6443) is always included and does not need to be listed here.
+                          Node registration (e.g. RKE2 supervisor on 9345) happens cluster-internally over
+                          private IPs and does not belong here — open it via an inline security group instead.
+                        items:
+                          format: int32
+                          type: integer
+                        type: array
+                      existingPublicIPID:
                         description: |-
-                          ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
-                          The IP is looked up in the evroc project configured via the controller's credentials.
-                          This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
-                          Mutually exclusive with Enabled.
+                          ExistingPublicIPID references a pre-existing public IP to attach to the managed LB.
+                          If omitted, a new public IP is auto-created alongside the LB.
                         type: string
                     type: object
                 type: object
@@ -115,23 +120,19 @@ spec:
                 type: object
               credentialsRef:
                 description: |-
-                  CredentialsRef is a reference to a Secret containing evroc API credentials.
-                  The secret must contain a "config.yaml" key with the evroc SDK config format:
-                    auth:
-                      token: "..."
-                      refresh_token: "..."
-                    context:
-                      project: "..."
-                      region: "..."
-                  When omitted the controller falls back to the globally mounted config file.
+                  CredentialsRef is a reference to a Secret in the EvrocCluster namespace
+                  containing evroc service account credentials. Cross-namespace references
+                  are intentionally unsupported.
+                  Required: every cluster must name the credentials it uses.
+                  The secret must use one of two formats:
+                   1. A "config.yaml" key with the evroc SDK config:
+                        auth:
+                          service_account_id: "my-sa"
+                          service_account_secret: "<base64-jwk-or-path>"
+                   2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
                 properties:
                   name:
                     description: Name is the name of the Secret.
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace is the namespace of the Secret. Defaults to the namespace of the
-                      EvrocCluster if omitted.
                     type: string
                 required:
                 - name
@@ -177,9 +178,9 @@ spec:
                     description: Common security groups applied to ALL nodes (control
                       plane and workers).
                     properties:
-                      existingNames:
+                      existingIDs:
                         description: |-
-                          ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                          ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
                           These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
                         items:
                           type: string
@@ -257,9 +258,9 @@ spec:
                     description: ControlPlane security groups applied only to control
                       plane nodes.
                     properties:
-                      existingNames:
+                      existingIDs:
                         description: |-
-                          ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                          ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
                           These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
                         items:
                           type: string
@@ -336,9 +337,9 @@ spec:
                   worker:
                     description: Worker security groups applied only to worker nodes.
                     properties:
-                      existingNames:
+                      existingIDs:
                         description: |-
-                          ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                          ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
                           These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
                         items:
                           type: string
@@ -414,6 +415,7 @@ spec:
                     type: object
                 type: object
             required:
+            - credentialsRef
             - project
             type: object
           status:
@@ -537,31 +539,33 @@ spec:
                   These are cloud resource IDs, not Kubernetes CRDs.
                   Managed resources are automatically cleaned up when the cluster is deleted.
                 properties:
-                  publicIP:
+                  loadBalancer:
                     description: |-
-                      PublicIP information for the control plane endpoint.
-                      Only populated when using inline publicIP configuration (enabled or existingName).
+                      LoadBalancer tracks the L4 load balancer for the control plane API endpoint.
+                      Always populated — CAPI auto-creates an LB for every cluster.
                     properties:
                       address:
-                        description: Address is the allocated IPv4 address.
+                        description: Address is the LB's public IPv4 address (used
+                          as ControlPlaneEndpoint.Host).
                         type: string
+                      backends:
+                        description: Backends lists the evroc resource IDs (metadata.id)
+                          of VMs registered as backends.
+                        items:
+                          type: string
+                        type: array
                       id:
-                        description: ID is the cloud resource ID (e.g., "my-cluster-cp-ip").
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
-                      managed:
-                        description: |-
-                          Managed indicates whether CAPI created and owns this resource.
-                          True: CAPI created it, will delete it on cluster deletion.
-                          False: External resource (e.g., Terraform), CAPI only uses it.
-                        type: boolean
-                      name:
-                        description: Name is the cloud resource name.
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
                         type: string
                     required:
                     - address
                     - id
-                    - managed
-                    - name
+                    - uid
                     type: object
                   securityGroups:
                     description: SecurityGroups created or used for this cluster.
@@ -570,7 +574,8 @@ spec:
                         used by the cluster.
                       properties:
                         id:
-                          description: ID is the cloud resource ID.
+                          description: ID is the evroc resource identifier (metadata.id
+                            in the evroc API).
                           type: string
                         managed:
                           description: |-
@@ -578,19 +583,20 @@ spec:
                             True: CAPI created it, will delete it on cluster deletion.
                             False: External resource (e.g., Terraform), CAPI only uses it.
                           type: boolean
-                        name:
-                          description: Name is the cloud resource name.
-                          type: string
                         role:
                           description: |-
                             Role indicates which section this SG belongs to: "common", "controlPlane", or "worker".
                             Used by the machine controller to select the right SGs based on node role.
                           type: string
+                        uid:
+                          description: UID is the system-generated UUID (metadata.uid
+                            in the evroc API).
+                          type: string
                       required:
                       - id
                       - managed
-                      - name
                       - role
+                      - uid
                       type: object
                     type: array
                 type: object
@@ -609,6 +615,10 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
+  labels:
+    cluster.x-k8s.io/v1beta1: v1beta1
+    cluster.x-k8s.io/v1beta2: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
   name: evrocclustertemplates.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
@@ -667,26 +677,30 @@ spec:
                         type: object
                       controlPlaneConfig:
                         description: |-
-                          ControlPlaneConfig defines networking configuration for control plane nodes.
-                          Currently holds public IP configuration for the control plane endpoint.
+                          ControlPlaneConfig defines configuration for the control plane endpoint.
+                          A load balancer is always created for the control plane.
+                          Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
                         properties:
-                          publicIP:
+                          loadBalancer:
                             description: |-
-                              PublicIP configuration for the control plane endpoint.
-                              When enabled, a public IP will be auto-created and used for ControlPlaneEndpoint.Host.
+                              LoadBalancer allows overriding the auto-created control plane load balancer.
+                              If omitted, the controller auto-creates a managed LB with default settings.
                             properties:
-                              enabled:
+                              additionalPorts:
                                 description: |-
-                                  Enabled auto-creates a public IP managed by the controller.
-                                  The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
-                                  When the cluster is deleted, the IP is automatically cleaned up.
-                                type: boolean
-                              existingName:
+                                  AdditionalPorts specifies extra TCP ports to forward through the public LB.
+                                  Each port gets its own BackendService + L4Route with TCP health check.
+                                  The API server port (6443) is always included and does not need to be listed here.
+                                  Node registration (e.g. RKE2 supervisor on 9345) happens cluster-internally over
+                                  private IPs and does not belong here — open it via an inline security group instead.
+                                items:
+                                  format: int32
+                                  type: integer
+                                type: array
+                              existingPublicIPID:
                                 description: |-
-                                  ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
-                                  The IP is looked up in the evroc project configured via the controller's credentials.
-                                  This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
-                                  Mutually exclusive with Enabled.
+                                  ExistingPublicIPID references a pre-existing public IP to attach to the managed LB.
+                                  If omitted, a new public IP is auto-created alongside the LB.
                                 type: string
                             type: object
                         type: object
@@ -711,23 +725,19 @@ spec:
                         type: object
                       credentialsRef:
                         description: |-
-                          CredentialsRef is a reference to a Secret containing evroc API credentials.
-                          The secret must contain a "config.yaml" key with the evroc SDK config format:
-                            auth:
-                              token: "..."
-                              refresh_token: "..."
-                            context:
-                              project: "..."
-                              region: "..."
-                          When omitted the controller falls back to the globally mounted config file.
+                          CredentialsRef is a reference to a Secret in the EvrocCluster namespace
+                          containing evroc service account credentials. Cross-namespace references
+                          are intentionally unsupported.
+                          Required: every cluster must name the credentials it uses.
+                          The secret must use one of two formats:
+                           1. A "config.yaml" key with the evroc SDK config:
+                                auth:
+                                  service_account_id: "my-sa"
+                                  service_account_secret: "<base64-jwk-or-path>"
+                           2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
                         properties:
                           name:
                             description: Name is the name of the Secret.
-                            type: string
-                          namespace:
-                            description: |-
-                              Namespace is the namespace of the Secret. Defaults to the namespace of the
-                              EvrocCluster if omitted.
                             type: string
                         required:
                         - name
@@ -773,9 +783,9 @@ spec:
                             description: Common security groups applied to ALL nodes
                               (control plane and workers).
                             properties:
-                              existingNames:
+                              existingIDs:
                                 description: |-
-                                  ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                                  ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
                                   These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
                                 items:
                                   type: string
@@ -853,9 +863,9 @@ spec:
                             description: ControlPlane security groups applied only
                               to control plane nodes.
                             properties:
-                              existingNames:
+                              existingIDs:
                                 description: |-
-                                  ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                                  ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
                                   These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
                                 items:
                                   type: string
@@ -933,9 +943,9 @@ spec:
                             description: Worker security groups applied only to worker
                               nodes.
                             properties:
-                              existingNames:
+                              existingIDs:
                                 description: |-
-                                  ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+                                  ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
                                   These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
                                 items:
                                   type: string
@@ -1011,6 +1021,7 @@ spec:
                             type: object
                         type: object
                     required:
+                    - credentialsRef
                     - project
                     type: object
                 required:
@@ -1034,6 +1045,7 @@ metadata:
   labels:
     cluster.x-k8s.io/v1beta1: v1beta1
     cluster.x-k8s.io/v1beta2: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
   name: evrocmachines.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
@@ -1141,12 +1153,12 @@ spec:
                       enabled:
                         description: |-
                           Enabled auto-creates a public IP managed by the controller.
-                          The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
-                          When the cluster is deleted, the IP is automatically cleaned up.
+                          The IP will be named "<machine-name>-ip" and tracked in machine.status.resources.
+                          When the machine is deleted, the IP is automatically cleaned up.
                         type: boolean
-                      existingName:
+                      existingID:
                         description: |-
-                          ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
+                          ExistingID references a pre-existing public IP by its evroc resource ID (e.g., created by Terraform).
                           The IP is looked up in the evroc project configured via the controller's credentials.
                           This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
                           Mutually exclusive with Enabled.
@@ -1155,9 +1167,9 @@ spec:
                   securityGroups:
                     description: SecurityGroups configuration for this machine.
                     properties:
-                      existingNames:
-                        description: ExistingNames references pre-existing security
-                          groups by name.
+                      existingIDs:
+                        description: ExistingIDs references pre-existing security
+                          groups by their evroc resource ID.
                         items:
                           type: string
                         type: array
@@ -1244,9 +1256,9 @@ spec:
                   PlacementConfig defines placement group configuration for this machine.
                   This is the simplified v1.1 approach - specify strategy inline or reference existing resources.
                 properties:
-                  existingGroupName:
+                  existingGroupID:
                     description: |-
-                      ExistingGroupName references a pre-existing placement group by name.
+                      ExistingGroupID references a pre-existing placement group by its evroc resource ID.
                       The group will be used but NOT managed (created/deleted) by CAPI.
                     type: string
                 type: object
@@ -1380,69 +1392,75 @@ spec:
                       description: ManagedDisk tracks a disk resource.
                       properties:
                         id:
-                          description: ID is the cloud resource ID.
+                          description: ID is the evroc resource identifier (metadata.id
+                            in the evroc API).
                           type: string
                         managed:
                           description: Managed indicates whether CAPI created and
                             owns this resource.
                           type: boolean
-                        name:
-                          description: Name is the cloud resource name.
-                          type: string
                         sizeGB:
                           description: SizeGB is the size in gigabytes.
                           type: integer
+                        uid:
+                          description: UID is the system-generated UUID (metadata.uid
+                            in the evroc API).
+                          type: string
                       required:
                       - id
                       - managed
-                      - name
                       - sizeGB
+                      - uid
                       type: object
                     type: array
                   bootDisk:
                     description: BootDisk is the boot disk created for this machine.
                     properties:
                       id:
-                        description: ID is the cloud resource ID.
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
                       managed:
                         description: Managed indicates whether CAPI created and owns
                           this resource.
                         type: boolean
-                      name:
-                        description: Name is the cloud resource name.
-                        type: string
                       sizeGB:
                         description: SizeGB is the size in gigabytes.
                         type: integer
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
+                        type: string
                     required:
                     - id
                     - managed
-                    - name
                     - sizeGB
+                    - uid
                     type: object
                   placementGroup:
                     description: PlacementGroup used for this machine.
                     properties:
                       id:
-                        description: ID is the cloud resource ID.
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
                       managed:
                         description: Managed indicates whether CAPI created and owns
                           this resource.
                         type: boolean
-                      name:
-                        description: Name is the cloud resource name.
-                        type: string
                       strategy:
                         description: Strategy is the placement strategy. EVROC only
                           supports spread.
                         type: string
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
+                        type: string
                     required:
                     - id
                     - managed
-                    - name
                     - strategy
+                    - uid
                     type: object
                   publicIP:
                     description: PublicIP information for this machine.
@@ -1451,7 +1469,8 @@ spec:
                         description: Address is the allocated IPv4 address.
                         type: string
                       id:
-                        description: ID is the cloud resource ID (e.g., "my-cluster-cp-ip").
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
                       managed:
                         description: |-
@@ -1459,14 +1478,15 @@ spec:
                           True: CAPI created it, will delete it on cluster deletion.
                           False: External resource (e.g., Terraform), CAPI only uses it.
                         type: boolean
-                      name:
-                        description: Name is the cloud resource name.
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
                         type: string
                     required:
                     - address
                     - id
                     - managed
-                    - name
+                    - uid
                     type: object
                   securityGroups:
                     description: SecurityGroups created or used for this machine.
@@ -1475,7 +1495,8 @@ spec:
                         used by the cluster.
                       properties:
                         id:
-                          description: ID is the cloud resource ID.
+                          description: ID is the evroc resource identifier (metadata.id
+                            in the evroc API).
                           type: string
                         managed:
                           description: |-
@@ -1483,19 +1504,20 @@ spec:
                             True: CAPI created it, will delete it on cluster deletion.
                             False: External resource (e.g., Terraform), CAPI only uses it.
                           type: boolean
-                        name:
-                          description: Name is the cloud resource name.
-                          type: string
                         role:
                           description: |-
                             Role indicates which section this SG belongs to: "common", "controlPlane", or "worker".
                             Used by the machine controller to select the right SGs based on node role.
                           type: string
+                        uid:
+                          description: UID is the system-generated UUID (metadata.uid
+                            in the evroc API).
+                          type: string
                       required:
                       - id
                       - managed
-                      - name
                       - role
+                      - uid
                       type: object
                     type: array
                 type: object
@@ -1519,6 +1541,7 @@ metadata:
   labels:
     cluster.x-k8s.io/v1beta1: v1beta1
     cluster.x-k8s.io/v1beta2: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
   name: evrocmachinetemplates.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
@@ -1623,12 +1646,12 @@ spec:
                               enabled:
                                 description: |-
                                   Enabled auto-creates a public IP managed by the controller.
-                                  The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
-                                  When the cluster is deleted, the IP is automatically cleaned up.
+                                  The IP will be named "<machine-name>-ip" and tracked in machine.status.resources.
+                                  When the machine is deleted, the IP is automatically cleaned up.
                                 type: boolean
-                              existingName:
+                              existingID:
                                 description: |-
-                                  ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
+                                  ExistingID references a pre-existing public IP by its evroc resource ID (e.g., created by Terraform).
                                   The IP is looked up in the evroc project configured via the controller's credentials.
                                   This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
                                   Mutually exclusive with Enabled.
@@ -1637,9 +1660,9 @@ spec:
                           securityGroups:
                             description: SecurityGroups configuration for this machine.
                             properties:
-                              existingNames:
-                                description: ExistingNames references pre-existing
-                                  security groups by name.
+                              existingIDs:
+                                description: ExistingIDs references pre-existing security
+                                  groups by their evroc resource ID.
                                 items:
                                   type: string
                                 type: array
@@ -1726,9 +1749,9 @@ spec:
                           PlacementConfig defines placement group configuration for this machine.
                           This is the simplified v1.1 approach - specify strategy inline or reference existing resources.
                         properties:
-                          existingGroupName:
+                          existingGroupID:
                             description: |-
-                              ExistingGroupName references a pre-existing placement group by name.
+                              ExistingGroupID references a pre-existing placement group by its evroc resource ID.
                               The group will be used but NOT managed (created/deleted) by CAPI.
                             type: string
                         type: object
@@ -1775,11 +1798,11 @@ kind: Namespace
 metadata:
   name: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1794,11 +1817,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1808,11 +1831,11 @@ kind: ClusterRole
 metadata:
   name: cluster-api-provider-evroc-manager-role
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -1832,9 +1855,11 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
   - get
   - list
   - watch
+  - update
 - apiGroups:
   - cluster.x-k8s.io
   resources:
@@ -1920,11 +1945,11 @@ kind: ClusterRoleBinding
 metadata:
   name: cluster-api-provider-evroc-manager-rolebinding
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -1943,11 +1968,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-role
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -1990,11 +2015,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-rolebinding
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2013,11 +2038,11 @@ metadata:
   name: cluster-api-provider-evroc-metrics
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2043,11 +2068,11 @@ metadata:
   name: cluster-api-provider-evroc-webhook-service
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2072,11 +2097,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2103,7 +2128,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.1.28"
+        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.2.0"
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect
@@ -2154,17 +2179,14 @@ spec:
           runAsNonRoot: true
           runAsUser: 65532
         volumeMounts:
-        - name: config
-          mountPath: /etc/evroc
-          readOnly: true
         - mountPath: /tmp/k8s-webhook-server/serving-certs
           name: cert
           readOnly: true
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
       terminationGracePeriodSeconds: 10
       volumes:
-      - name: config
-        secret:
-          secretName: evroc-credentials
       - name: cert
         secret:
           defaultMode: 420
@@ -2185,11 +2207,11 @@ metadata:
   name: cluster-api-provider-evroc-serving-cert
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2208,11 +2230,11 @@ metadata:
   name: cluster-api-provider-evroc-selfsigned-issuer
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2228,11 +2250,11 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-mutating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:
@@ -2289,11 +2311,11 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-validating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.1.28
+    helm.sh/chart: cluster-api-provider-evroc-0.2.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.1.28"
+    app.kubernetes.io/version: "0.2.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:

@@ -138,22 +138,25 @@ echo ""
 echo "## 4. CRD Generation"
 echo "-------------------------------------------------------------------"
 
-if [ -f "config/crd/bases/infrastructure.cluster.x-k8s.io_evrocmachines.yaml" ]; then
+# CRDs are generated into the Helm chart (see the manifests target in Makefile).
+CRD_DIR="helm/cluster-api-provider-evroc/crds"
+
+if [ -f "${CRD_DIR}/infrastructure.cluster.x-k8s.io_evrocmachines.yaml" ]; then
     check_pass "EvrocMachine CRD manifest exists"
 else
     check_fail "EvrocMachine CRD manifest not found (run 'make manifests')"
 fi
 
-if [ -f "config/crd/bases/infrastructure.cluster.x-k8s.io_evrocmachinetemplates.yaml" ]; then
+if [ -f "${CRD_DIR}/infrastructure.cluster.x-k8s.io_evrocmachinetemplates.yaml" ]; then
     check_pass "EvrocMachineTemplate CRD manifest exists"
 else
-    check_fail "EvrocMachineTemplate CRD manifest not found"
+    check_fail "EvrocMachineTemplate CRD manifest not found (run 'make manifests')"
 fi
 
-if [ -f "config/crd/bases/infrastructure.cluster.x-k8s.io_evrocclusters.yaml" ]; then
+if [ -f "${CRD_DIR}/infrastructure.cluster.x-k8s.io_evrocclusters.yaml" ]; then
     check_pass "EvrocCluster CRD manifest exists"
 else
-    check_fail "EvrocCluster CRD manifest not found"
+    check_fail "EvrocCluster CRD manifest not found (run 'make manifests')"
 fi
 
 echo ""

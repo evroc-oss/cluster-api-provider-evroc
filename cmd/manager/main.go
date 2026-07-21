@@ -23,7 +23,6 @@ import (
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
-	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/controller"
 	"github.com/evroc-oss/cluster-api-provider-evroc/pkg/version"
 )
@@ -109,33 +108,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Try to initialize a global evroc cloud client from the mounted config file.
-	// This is optional — clusters with spec.credentialsRef will use per-cluster credentials.
-	var cloudClient cloud.ClientInterface
-	if globalClient, clientErr := cloud.NewClient(context.Background(), sdkMetrics); clientErr != nil {
-		setupLog.Info("No global evroc credentials found (clusters must specify credentialsRef)",
-			"path", cloud.ConfigPath, "error", clientErr)
-	} else {
-		cloudClient = globalClient
-		setupLog.Info("Global evroc cloud client initialized successfully")
-	}
-
 	if err = (&controller.EvrocClusterReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		CloudClient: cloudClient,
-		SDKMetrics:  sdkMetrics,
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		SDKMetrics: sdkMetrics,
 	}).SetupWithManager(context.Background(), mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvrocCluster")
 		os.Exit(1)
 	}
 
 	if err = (&controller.EvrocMachineReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		CloudClient: cloudClient,
-		Recorder:    mgr.GetEventRecorderFor("evrocmachine-controller"),
-		SDKMetrics:  sdkMetrics,
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor("evrocmachine-controller"),
+		SDKMetrics: sdkMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvrocMachine")
 		os.Exit(1)

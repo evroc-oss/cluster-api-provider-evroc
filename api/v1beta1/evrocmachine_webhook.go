@@ -71,7 +71,7 @@ func (d *EvrocMachineDefaulter) Default(_ context.Context, obj runtime.Object) e
 	}
 	if !r.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster &&
 		len(r.Spec.NetworkingConfig.SecurityGroups.InlineSecurityGroups) == 0 &&
-		len(r.Spec.NetworkingConfig.SecurityGroups.ExistingNames) == 0 {
+		len(r.Spec.NetworkingConfig.SecurityGroups.ExistingIDs) == 0 {
 		r.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster = true
 	}
 
@@ -274,12 +274,12 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 		allErrs = append(allErrs, validateAdditionalLabels(r.Spec.AdditionalLabels, field.NewPath("spec", "additionalLabels"))...)
 	}
 
-	// Inline config validation: Prevent mixing enabled and existingName
+	// Inline config validation: Prevent mixing enabled and existingID
 	if r.Spec.NetworkingConfig != nil && r.Spec.NetworkingConfig.PublicIP != nil {
-		if r.Spec.NetworkingConfig.PublicIP.Enabled && r.Spec.NetworkingConfig.PublicIP.ExistingName != nil {
+		if r.Spec.NetworkingConfig.PublicIP.Enabled && r.Spec.NetworkingConfig.PublicIP.ExistingID != nil {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec", "networkingConfig", "publicIP"),
-				"cannot specify both enabled (auto-create) and existingName (external)",
+				"cannot specify both enabled (auto-create) and existingID (external)",
 			))
 		}
 	}
@@ -331,9 +331,9 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 			}
 		}
 
-		// Check for duplicates in existingNames, and cross-check against inline names.
-		for i, name := range r.Spec.NetworkingConfig.SecurityGroups.ExistingNames {
-			sgPath := field.NewPath("spec", "networkingConfig", "securityGroups", "existingNames").Index(i)
+		// Check for duplicates in existingIDs, and cross-check against inline names.
+		for i, name := range r.Spec.NetworkingConfig.SecurityGroups.ExistingIDs {
+			sgPath := field.NewPath("spec", "networkingConfig", "securityGroups", "existingIDs").Index(i)
 			if seenSGNames[name] {
 				allErrs = append(allErrs, field.Duplicate(sgPath, name))
 			}

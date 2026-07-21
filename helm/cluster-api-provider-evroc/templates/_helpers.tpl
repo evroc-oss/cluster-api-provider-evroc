@@ -61,9 +61,3 @@ Create the name of the service account to use
 {{- end }}
 {{- end }}
 
-{{/*
-Create the name of the config secret
-*/}}
-{{- define "cluster-api-provider-evroc.configSecretName" -}}
-{{- required "evroc.existingConfigSecret is required" .Values.evroc.existingConfigSecret }}
-{{- end }}

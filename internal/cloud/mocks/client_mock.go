@@ -39,6 +39,11 @@ func (m *MockClient) VirtualMachines() cloud.VirtualMachineServiceInterface {
 	return args.Get(0).(cloud.VirtualMachineServiceInterface)
 }
 
+func (m *MockClient) LoadBalancers() cloud.LoadBalancerServiceInterface {
+	args := m.Called()
+	return args.Get(0).(cloud.LoadBalancerServiceInterface)
+}
+
 func (m *MockClient) SDKClient() *evroc.Client {
 	args := m.Called()
 	if args.Get(0) == nil {
