@@ -5,18 +5,22 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
 	evroc "github.com/evroc-oss/evroc-go-sdk"
 	"github.com/evroc-oss/evroc-go-sdk/config"
+	"github.com/evroc-oss/evroc-go-sdk/metrics"
 	networkingtypes "github.com/evroc-oss/evroc-go-sdk/types/networking"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -24,8 +28,45 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud/mocks"
 )
+
+// staticClientFactory returns a clusterClientFactory that always yields c,
+// bypassing credentialsRef secret lookup in unit tests.
+func staticClientFactory(c cloud.ClientInterface) clusterClientFactory {
+	return func(context.Context, client.Reader, string, string, cloud.ClusterContext, *metrics.Manager) (cloud.ClientInterface, error) {
+		return c, nil
+	}
+}
+
+func TestClusterResourcePrefixPreservedAcrossClusterctlMove(t *testing.T) {
+	sourceCluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "moved-cluster",
+			UID:  types.UID("olduid00-0000-0000-0000-000000000000"),
+		},
+	}
+
+	prefix, err := clusterResourcePrefix(sourceCluster)
+	assert.NoError(t, err)
+	assert.Equal(t, "moved-cluster-olduid00", prefix)
+	assert.Equal(t, prefix, sourceCluster.Annotations[clusterResourcePrefixAnnotation])
+
+	// clusterctl recreates the object with a new UID and without status, but
+	// preserves metadata such as annotations.
+	targetCluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        sourceCluster.Name,
+			UID:         types.UID("newuid00-0000-0000-0000-000000000000"),
+			Annotations: sourceCluster.Annotations,
+		},
+	}
+
+	lbName, err := resolveLoadBalancerName(targetCluster)
+	assert.NoError(t, err)
+	assert.Equal(t, "moved-cluster-olduid00-cp-lb", lbName)
+}
 
 // mockHTTPTransport is a mock HTTP transport that doesn't make real requests
 type mockHTTPTransport struct{}
@@ -57,6 +98,63 @@ func testSDKClientForCluster() *evroc.Client {
 	return client
 }
 
+// A missing credentials secret must surface on the object. Without a condition
+// the controller retries silently and, from the outside, a permanently broken
+// cluster is indistinguishable from one that is still provisioning.
+func TestEvrocClusterReconciler_MissingCredentialsSecretSetsCondition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	clusterName := "test-cluster-no-secret"
+	evrocCluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterName,
+			Namespace: "default",
+			UID:       types.UID("abcd1234-0000-0000-0000-000000000000"),
+			Labels:    map[string]string{clusterv1.ClusterNameLabel: clusterName},
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			Project:        "test-project",
+			Region:         "se-sto",
+			FailureDomains: []string{"a"},
+			CredentialsRef: &infrav1.SecretReference{Name: "does-not-exist"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(evrocCluster).
+		WithStatusSubresource(evrocCluster).
+		Build()
+
+	// No clientFactory override: exercise the real credential lookup so the
+	// missing secret actually fails.
+	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: clusterName, Namespace: "default"},
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving cloud credentials")
+
+	var updated infrav1.EvrocCluster
+	assert.NoError(t, fakeClient.Get(context.Background(),
+		types.NamespacedName{Name: clusterName, Namespace: "default"}, &updated))
+
+	var found bool
+	for _, c := range updated.Status.Conditions {
+		if c.Type == infrav1.ClusterReadyCondition {
+			found = true
+			assert.Equal(t, corev1.ConditionFalse, c.Status)
+			assert.Equal(t, infrav1.CredentialsNotFoundReason, c.Reason)
+			assert.Contains(t, c.Message, "does-not-exist")
+		}
+	}
+	assert.True(t, found, "Ready condition must report why credentials could not be resolved")
+}
+
 func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = infrav1.AddToScheme(scheme)
@@ -77,6 +175,7 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterName,
 			Namespace: "default",
+			UID:       types.UID("abcd1234-0000-0000-0000-000000000000"),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: clusterv1.GroupVersion.String(),
@@ -98,6 +197,13 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 			},
 			FailureDomains: []string{"a", "b", "c"},
 		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-lb", Address: "10.0.0.100",
+				},
+			},
+		},
 	}
 
 	// Create fake client
@@ -111,11 +217,20 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 	mockClient := new(mocks.MockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 
+	mockLBService := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLBService)
+	mockLBService.On("Get", mock.Anything, mock.AnythingOfType("string")).Return(&cloud.LoadBalancer{
+		Name:    "test-cluster-abcd1234-cp-lb",
+		ID:      "test-lb-uid",
+		Address: "10.0.0.100",
+		Status:  cloud.LoadBalancerStatusActive,
+	}, nil)
+
 	// Create reconciler
 	reconciler := &EvrocClusterReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	// Reconcile
@@ -181,6 +296,7 @@ func TestEvrocClusterReconciler_CreateWithoutEndpoint(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterName,
 			Namespace: "default",
+			UID:       types.UID("abcd1234-0000-0000-0000-000000000000"),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: clusterv1.GroupVersion.String(),
@@ -208,15 +324,23 @@ func TestEvrocClusterReconciler_CreateWithoutEndpoint(t *testing.T) {
 		WithStatusSubresource(evrocCluster).
 		Build()
 
-	// Create mock cloud client
+	// Create mock cloud client — LB Get returns not-found, Create returns a pending LB
 	mockClient := new(mocks.MockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	pendingLB := &cloud.LoadBalancer{
+		Name:   "test-cluster-no-endpoint-abcd1234-cp-lb",
+		Status: cloud.LoadBalancerStatusCreating,
+	}
+	mockLB.On("Get", mock.Anything, mock.Anything).Return(nil, evroc.ErrNotFound)
+	mockLB.On("Create", mock.Anything, mock.Anything).Return(pendingLB, nil)
 
 	// Create reconciler
 	reconciler := &EvrocClusterReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	// Reconcile
@@ -232,19 +356,16 @@ func TestEvrocClusterReconciler_CreateWithoutEndpoint(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.RequeueAfter > 0)
 
-	// Second reconcile should wait for endpoint (10s requeue)
+	// Second reconcile starts LB creation — requeues waiting for LB to become active
 	result, err = reconciler.Reconcile(context.Background(), req)
 	assert.NoError(t, err)
-	assert.Equal(t, 10*time.Second, result.RequeueAfter)
+	assert.True(t, result.RequeueAfter > 0, "should requeue while LB is provisioning")
 
-	// Cluster is marked ready immediately (infrastructure needs no pre-provisioning),
-	// even though the control plane endpoint has not been discovered yet.
+	// Verify failure domains are set even while LB is pending
 	var updatedCluster infrav1.EvrocCluster
 	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: clusterName, Namespace: "default"}, &updatedCluster)
 	assert.NoError(t, err)
-	assert.True(t, updatedCluster.Status.Ready)
 
-	// Verify failure domains are still set
 	assert.NotNil(t, updatedCluster.Status.FailureDomains)
 	assert.NotEmpty(t, updatedCluster.Status.FailureDomains)
 	// Check that zone a is present
@@ -301,6 +422,13 @@ func TestEvrocClusterReconciler_Delete(t *testing.T) {
 				Port: 6443,
 			},
 		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-lb", Address: "10.0.0.100",
+				},
+			},
+		},
 	}
 
 	// Create fake client
@@ -310,15 +438,19 @@ func TestEvrocClusterReconciler_Delete(t *testing.T) {
 		WithStatusSubresource(evrocCluster).
 		Build()
 
-	// Create mock cloud client
+	// Create mock cloud client with LB cleanup expectations
 	mockClient := new(mocks.MockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	mockLB.On("Delete", mock.Anything, "test-lb").Return(nil)
+	mockLB.On("Exists", mock.Anything, "test-lb").Return(false, nil)
 
 	// Create reconciler
 	reconciler := &EvrocClusterReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	// Reconcile
@@ -358,6 +490,7 @@ func TestEvrocClusterReconciler_AnyRegion(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      clusterName,
 			Namespace: "default",
+			UID:       types.UID("abcd1234-0000-0000-0000-000000000000"),
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: clusterv1.GroupVersion.String(),
@@ -379,6 +512,13 @@ func TestEvrocClusterReconciler_AnyRegion(t *testing.T) {
 			},
 			FailureDomains: []string{"a", "b", "c"}, // Explicitly set zones
 		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-lb", Address: "10.0.0.100",
+				},
+			},
+		},
 	}
 
 	// Create fake client
@@ -392,11 +532,20 @@ func TestEvrocClusterReconciler_AnyRegion(t *testing.T) {
 	mockClient := new(mocks.MockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 
+	mockLBService := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLBService)
+	mockLBService.On("Get", mock.Anything, mock.AnythingOfType("string")).Return(&cloud.LoadBalancer{
+		Name:    "test-cluster-abcd1234-cp-lb",
+		ID:      "test-lb-uid",
+		Address: "10.0.0.100",
+		Status:  cloud.LoadBalancerStatusActive,
+	}, nil)
+
 	// Create reconciler
 	reconciler := &EvrocClusterReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	// Reconcile
@@ -433,67 +582,215 @@ func TestEvrocClusterReconciler_AnyRegion(t *testing.T) {
 	}
 }
 
-func TestFirstUsableIP(t *testing.T) {
+func TestReconcileAutoCreatedLoadBalancer(t *testing.T) {
 	tests := []struct {
-		name     string
-		addrs    []corev1.NodeAddress
-		expected string
+		name           string
+		mockSetup      func(*mocks.MockLoadBalancerService)
+		expectRequeue  bool
+		expectError    bool
+		expectEndpoint string
 	}{
 		{
-			name:     "empty addresses",
-			addrs:    []corev1.NodeAddress{},
-			expected: "",
-		},
-		{
-			name: "internal IP only",
-			addrs: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: "10.0.0.5"},
+			name: "creates LB when not found in cloud",
+			mockSetup: func(m *mocks.MockLoadBalancerService) {
+				m.On("Get", mock.Anything, mock.AnythingOfType("string")).
+					Return((*cloud.LoadBalancer)(nil), evroc.ErrNotFound).Once()
+				m.On("Create", mock.Anything, mock.AnythingOfType("*cloud.LoadBalancerCreateRequest")).
+					Return(&cloud.LoadBalancer{
+						Name:   "test-lb",
+						ID:     "lb-uid",
+						Status: cloud.LoadBalancerStatusCreating,
+					}, nil)
+				m.On("Get", mock.Anything, mock.AnythingOfType("string")).
+					Return(&cloud.LoadBalancer{
+						Name:    "test-lb",
+						ID:      "lb-uid",
+						Address: "",
+						Status:  cloud.LoadBalancerStatusCreating,
+					}, nil)
 			},
-			expected: "10.0.0.5",
+			expectRequeue: true,
 		},
 		{
-			name: "external IP only",
-			addrs: []corev1.NodeAddress{
-				{Type: corev1.NodeExternalIP, Address: "1.2.3.4"},
+			name: "requeues when LB exists but not yet active",
+			mockSetup: func(m *mocks.MockLoadBalancerService) {
+				m.On("Get", mock.Anything, mock.AnythingOfType("string")).
+					Return(&cloud.LoadBalancer{
+						Name:   "test-lb",
+						ID:     "lb-uid",
+						Status: cloud.LoadBalancerStatusCreating,
+					}, nil)
 			},
-			expected: "1.2.3.4",
+			expectRequeue: true,
 		},
 		{
-			name: "prefers internal over external",
-			addrs: []corev1.NodeAddress{
-				{Type: corev1.NodeExternalIP, Address: "1.2.3.4"},
-				{Type: corev1.NodeInternalIP, Address: "10.0.0.5"},
+			name: "sets endpoint when LB is active with address",
+			mockSetup: func(m *mocks.MockLoadBalancerService) {
+				m.On("Get", mock.Anything, mock.AnythingOfType("string")).
+					Return(&cloud.LoadBalancer{
+						Name:    "test-lb",
+						ID:      "lb-uid",
+						Address: "1.2.3.4",
+						Status:  cloud.LoadBalancerStatusActive,
+					}, nil)
 			},
-			expected: "10.0.0.5",
+			expectEndpoint: "1.2.3.4",
 		},
 		{
-			name: "skips empty internal IP",
-			addrs: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: ""},
-				{Type: corev1.NodeExternalIP, Address: "1.2.3.4"},
+			name: "returns error on cloud API failure",
+			mockSetup: func(m *mocks.MockLoadBalancerService) {
+				m.On("Get", mock.Anything, mock.AnythingOfType("string")).
+					Return((*cloud.LoadBalancer)(nil), fmt.Errorf("cloud API error"))
 			},
-			expected: "1.2.3.4",
+			expectError: true,
 		},
 		{
-			name: "hostname type is ignored",
-			addrs: []corev1.NodeAddress{
-				{Type: corev1.NodeHostName, Address: "my-host"},
+			name: "requeues when LB active but no address yet",
+			mockSetup: func(m *mocks.MockLoadBalancerService) {
+				m.On("Get", mock.Anything, mock.AnythingOfType("string")).
+					Return(&cloud.LoadBalancer{
+						Name:   "test-lb",
+						ID:     "lb-uid",
+						Status: cloud.LoadBalancerStatusActive,
+					}, nil)
 			},
-			expected: "",
-		},
-		{
-			name:     "nil addresses",
-			addrs:    nil,
-			expected: "",
+			expectRequeue: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := firstUsableIP(tt.addrs)
-			assert.Equal(t, tt.expected, result)
+			scheme := runtime.NewScheme()
+			_ = infrav1.AddToScheme(scheme)
+			_ = clusterv1.AddToScheme(scheme)
+
+			cluster := &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster",
+					Namespace: "default",
+					UID:       "abcd1234-0000-0000-0000-000000000000",
+				},
+				Spec: infrav1.EvrocClusterSpec{
+					Project: "test-project",
+					Region:  "se-sto",
+				},
+			}
+
+			mockClient := new(mocks.MockClient)
+			mockLB := new(mocks.MockLoadBalancerService)
+			mockClient.On("LoadBalancers").Return(mockLB)
+			tt.mockSetup(mockLB)
+
+			reconciler := &EvrocClusterReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+				Scheme: scheme,
+			}
+
+			result, err := reconciler.reconcileAutoCreatedLoadBalancer(
+				context.Background(), cluster, "test-cluster-abcd1234-cp-lb", mockClient)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+
+			if tt.expectRequeue {
+				assert.True(t, result.RequeueAfter > 0, "expected requeue")
+			}
+
+			if tt.expectEndpoint != "" {
+				assert.Equal(t, tt.expectEndpoint, cluster.Spec.ControlPlaneEndpoint.Host)
+				assert.Equal(t, int32(6443), cluster.Spec.ControlPlaneEndpoint.Port)
+			}
 		})
 	}
+}
+
+func TestCleanupResources_DeletesLB(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+			UID:       "abcd1234-0000-0000-0000-000000000000",
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			Project: "test-project",
+			Region:  "se-sto",
+		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-cluster-abcd1234-cp-lb",
+				},
+			},
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+
+	// Expect delete and exists check
+	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb").Return(nil)
+	mockLB.On("Exists", mock.Anything, "test-cluster-abcd1234-cp-lb").Return(false, nil)
+
+	reconciler := &EvrocClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+	assert.NoError(t, err)
+	mockLB.AssertCalled(t, "Delete", mock.Anything, "test-cluster-abcd1234-cp-lb")
+}
+
+func TestCleanupResources_LBDeleteError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+			UID:       "abcd1234-0000-0000-0000-000000000000",
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			Project: "test-project",
+			Region:  "se-sto",
+		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-cluster-abcd1234-cp-lb",
+				},
+			},
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+
+	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb").
+		Return(fmt.Errorf("cloud API error"))
+	mockLB.On("Exists", mock.Anything, "test-cluster-abcd1234-cp-lb").Return(true, nil)
+
+	reconciler := &EvrocClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "cloud API error")
 }
 
 func TestCleanupResources(t *testing.T) {
@@ -517,52 +814,22 @@ func TestCleanupResources(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "deletes managed public IP and security groups",
+			name: "deletes managed security groups",
 			cluster: &infrav1.EvrocCluster{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
 				Status: infrav1.EvrocClusterStatus{
 					Resources: &infrav1.ClusterResources{
-						PublicIP: &infrav1.ManagedPublicIP{
-							ID:      "test-cp-ip",
-							Name:    "test-cp-ip",
-							Managed: true,
-						},
 						SecurityGroups: []infrav1.ManagedSecurityGroup{
-							{ID: "test-sg", Name: "test-sg", Managed: true},
-							{ID: "external-sg", Name: "external-sg", Managed: false},
+							{ID: "test-sg", Managed: true},
+							{ID: "external-sg", Managed: false},
 						},
 					},
 				},
 			},
 			setupMocks: func(mc *mocks.MockClient, pip *mocks.MockPublicIPService, sg *mocks.MockSecurityGroupService) {
-				mc.On("PublicIPs").Return(pip)
 				mc.On("SecurityGroups").Return(sg)
-				pip.On("Delete", mock.Anything, "test-cp-ip").Return(nil)
-				pip.On("Exists", mock.Anything, "test-cp-ip").Return(false, nil)
 				sg.On("Delete", mock.Anything, "test-sg").Return(nil)
 				sg.On("Exists", mock.Anything, "test-sg").Return(false, nil)
-				// external-sg should NOT be deleted
-			},
-			expectError: false,
-		},
-		{
-			name: "skips already-deleted resources",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Status: infrav1.EvrocClusterStatus{
-					Resources: &infrav1.ClusterResources{
-						PublicIP: &infrav1.ManagedPublicIP{
-							ID:      "gone-ip",
-							Name:    "gone-ip",
-							Managed: true,
-						},
-					},
-				},
-			},
-			setupMocks: func(mc *mocks.MockClient, pip *mocks.MockPublicIPService, sg *mocks.MockSecurityGroupService) {
-				mc.On("PublicIPs").Return(pip)
-				pip.On("Delete", mock.Anything, "gone-ip").Return(evroc.ErrNotFound)
-				pip.On("Exists", mock.Anything, "gone-ip").Return(false, nil)
 			},
 			expectError: false,
 		},
@@ -746,416 +1013,6 @@ func TestReconcileSecurityGroups_CreateInline(t *testing.T) {
 	mockSG.AssertExpectations(t)
 }
 
-func TestReconcileAutoCreatedPublicIP_NewIP(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	// IP not found in cloud → create it → address not yet allocated
-	mockPIP.On("Get", mock.Anything, "test-cluster-cp-ip").Return(nil, evroc.ErrNotFound)
-	mockPIP.On("Create", mock.Anything, "test-cluster-cp-ip", mock.Anything).Return(&networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "test-cluster-cp-ip"},
-	}, nil)
-
-	result, err := reconciler.reconcileAutoCreatedPublicIP(context.Background(), cluster, "test-cluster-cp-ip", mockClient)
-	assert.NoError(t, err)
-	// Should requeue because address not yet allocated
-	assert.True(t, result.RequeueAfter > 0)
-	mockPIP.AssertExpectations(t)
-}
-
-func TestReconcileAutoCreatedPublicIP_AlreadyCreatedInStatus(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	addr := "1.2.3.4"
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-		Status: infrav1.EvrocClusterStatus{
-			Resources: &infrav1.ClusterResources{
-				PublicIP: &infrav1.ManagedPublicIP{
-					ID:      "test-cluster-cp-ip",
-					Name:    "test-cluster-cp-ip",
-					Managed: true,
-				},
-			},
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	// Already in status, verify it still exists → found with address
-	mockPIP.On("Get", mock.Anything, "test-cluster-cp-ip").Return(&networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "test-cluster-cp-ip"},
-		Status:   networkingtypes.PublicIPStatus{PublicIPv4Address: &addr},
-	}, nil)
-
-	result, err := reconciler.reconcileAutoCreatedPublicIP(context.Background(), cluster, "test-cluster-cp-ip", mockClient)
-	assert.NoError(t, err)
-	assert.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	// Verify endpoint was set on in-memory object (deferred patch persists it)
-	assert.Equal(t, "1.2.3.4", cluster.Spec.ControlPlaneEndpoint.Host)
-	assert.Equal(t, int32(6443), cluster.Spec.ControlPlaneEndpoint.Port)
-
-	mockPIP.AssertExpectations(t)
-}
-
-func TestReconcileAutoCreatedPublicIP_DeletedOutsideCAPI(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-		Status: infrav1.EvrocClusterStatus{
-			Resources: &infrav1.ClusterResources{
-				PublicIP: &infrav1.ManagedPublicIP{
-					ID:      "test-cluster-cp-ip",
-					Name:    "test-cluster-cp-ip",
-					Managed: true,
-				},
-			},
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	// Cloud resource deleted outside CAPI
-	mockPIP.On("Get", mock.Anything, "test-cluster-cp-ip").Return(nil, evroc.ErrNotFound)
-
-	result, err := reconciler.reconcileAutoCreatedPublicIP(context.Background(), cluster, "test-cluster-cp-ip", mockClient)
-	assert.NoError(t, err)
-	// Should requeue to recreate
-	assert.True(t, result.RequeueAfter > 0)
-
-	// PublicIP status should be cleared on in-memory object (deferred patch persists it)
-	assert.Nil(t, cluster.Status.Resources.PublicIP)
-
-	mockPIP.AssertExpectations(t)
-}
-
-func TestReconcileAutoCreatedPublicIP_ExistsInCloudWithAddress(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	addr := "5.6.7.8"
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	// IP exists in cloud (from previous reconciliation before status was lost)
-	mockPIP.On("Get", mock.Anything, "test-cluster-cp-ip").Return(&networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "test-cluster-cp-ip"},
-		Status:   networkingtypes.PublicIPStatus{PublicIPv4Address: &addr},
-	}, nil)
-
-	result, err := reconciler.reconcileAutoCreatedPublicIP(context.Background(), cluster, "test-cluster-cp-ip", mockClient)
-	assert.NoError(t, err)
-	assert.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	// Verify endpoint was set on in-memory object (deferred patch persists it)
-	assert.Equal(t, "5.6.7.8", cluster.Spec.ControlPlaneEndpoint.Host)
-
-	mockPIP.AssertExpectations(t)
-}
-
-func TestReconcileExistingPublicIP_Success(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	addr := "9.10.11.12"
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	mockPIP.On("Get", mock.Anything, "my-existing-ip").Return(&networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "my-existing-ip"},
-		Status:   networkingtypes.PublicIPStatus{PublicIPv4Address: &addr},
-	}, nil)
-
-	result, err := reconciler.reconcileExistingPublicIP(context.Background(), cluster, "my-existing-ip", mockClient)
-	assert.NoError(t, err)
-	assert.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	// Verify endpoint was set on in-memory object (deferred patch persists it)
-	assert.Equal(t, "9.10.11.12", cluster.Spec.ControlPlaneEndpoint.Host)
-
-	// Verify managed=false in status
-	assert.NotNil(t, cluster.Status.Resources)
-	assert.NotNil(t, cluster.Status.Resources.PublicIP)
-	assert.False(t, cluster.Status.Resources.PublicIP.Managed)
-
-	mockPIP.AssertExpectations(t)
-}
-
-func TestReconcileExistingPublicIP_NotFound(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	mockPIP.On("Get", mock.Anything, "nonexistent-ip").Return(nil, evroc.ErrNotFound)
-
-	_, err := reconciler.reconcileExistingPublicIP(context.Background(), cluster, "nonexistent-ip", mockClient)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "nonexistent-ip")
-
-	mockPIP.AssertExpectations(t)
-}
-
-func TestReconcileExistingPublicIP_WaitingForAddress(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	mockClient := new(mocks.MockClient)
-	mockPIP := new(mocks.MockPublicIPService)
-	mockClient.On("PublicIPs").Return(mockPIP)
-
-	// IP exists but no address yet
-	mockPIP.On("Get", mock.Anything, "waiting-ip").Return(&networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "waiting-ip"},
-		Status:   networkingtypes.PublicIPStatus{},
-	}, nil)
-
-	result, err := reconciler.reconcileExistingPublicIP(context.Background(), cluster, "waiting-ip", mockClient)
-	assert.NoError(t, err)
-	assert.Equal(t, 10*time.Second, result.RequeueAfter)
-
-	mockPIP.AssertExpectations(t)
-}
-
-func TestUsePublicIP_SetsEndpointAndStatus(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	addr := "13.14.15.16"
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	cloudIP := &networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "test-cluster-cp-ip"},
-		Status:   networkingtypes.PublicIPStatus{PublicIPv4Address: &addr},
-	}
-
-	result, err := reconciler.usePublicIP(context.Background(), cluster, cloudIP, true)
-	assert.NoError(t, err)
-	assert.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	// Verify spec and status on in-memory object (deferred patch persists it)
-	assert.Equal(t, "13.14.15.16", cluster.Spec.ControlPlaneEndpoint.Host)
-	assert.Equal(t, int32(6443), cluster.Spec.ControlPlaneEndpoint.Port)
-	assert.NotNil(t, cluster.Status.Resources)
-	assert.NotNil(t, cluster.Status.Resources.PublicIP)
-	assert.Equal(t, "test-cluster-cp-ip", cluster.Status.Resources.PublicIP.ID)
-	assert.Equal(t, "13.14.15.16", cluster.Status.Resources.PublicIP.Address)
-	assert.True(t, cluster.Status.Resources.PublicIP.Managed)
-}
-
-func TestUsePublicIP_AddressNotAllocated(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	// No address allocated
-	cloudIP := &networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "test-ip"},
-		Status:   networkingtypes.PublicIPStatus{},
-	}
-
-	result, err := reconciler.usePublicIP(context.Background(), cluster, cloudIP, false)
-	assert.NoError(t, err)
-	assert.True(t, result.RequeueAfter > 0)
-}
-
-func TestUsePublicIP_ExistingEndpointPreserved(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	addr := "17.18.19.20"
-	cluster := &infrav1.EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-		Spec: infrav1.EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-			ControlPlaneEndpoint: clusterv1.APIEndpoint{
-				Host: "existing-ip",
-				Port: 6443,
-			},
-		},
-	}
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cluster).
-		WithStatusSubresource(cluster).
-		Build()
-
-	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-	cloudIP := &networkingtypes.PublicIP{
-		Metadata: networkingtypes.RegionalMetadataResponse{Id: "test-ip"},
-		Status:   networkingtypes.PublicIPStatus{PublicIPv4Address: &addr},
-	}
-
-	result, err := reconciler.usePublicIP(context.Background(), cluster, cloudIP, false)
-	assert.NoError(t, err)
-	assert.Equal(t, time.Duration(0), result.RequeueAfter)
-
-	// Verify original endpoint is preserved (not overwritten)
-	assert.Equal(t, "existing-ip", cluster.Spec.ControlPlaneEndpoint.Host)
-}
-
 func TestReconcileSecurityGroups_UpdateExisting(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = infrav1.AddToScheme(scheme)
@@ -1183,7 +1040,7 @@ func TestReconcileSecurityGroups_UpdateExisting(t *testing.T) {
 							},
 						},
 					},
-					ExistingNames: []string{"external-sg"},
+					ExistingIDs: []string{"external-sg"},
 				},
 			},
 		},
@@ -1228,142 +1085,6 @@ func TestReconcileSecurityGroups_UpdateExisting(t *testing.T) {
 	mockSG.AssertExpectations(t)
 }
 
-func TestReconcileControlPlaneEndpointFromMachines(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = infrav1.AddToScheme(scheme)
-	_ = clusterv1.AddToScheme(scheme)
-
-	t.Run("discovers endpoint from CP machine", func(t *testing.T) {
-		cluster := &infrav1.EvrocCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-			Spec: infrav1.EvrocClusterSpec{
-				Project: "test",
-				Region:  "se-sto",
-			},
-		}
-
-		cpMachine := &infrav1.EvrocMachine{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "cp-0",
-				Namespace: "default",
-				Labels: map[string]string{
-					clusterv1.ClusterNameLabel:         "test-cluster",
-					clusterv1.MachineControlPlaneLabel: "true",
-				},
-			},
-			Status: infrav1.EvrocMachineStatus{
-				Addresses: []corev1.NodeAddress{
-					{Type: corev1.NodeInternalIP, Address: "10.0.1.5"},
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(cluster, cpMachine).
-			Build()
-
-		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-		result, err := reconciler.reconcileControlPlaneEndpointFromMachines(context.Background(), cluster)
-		assert.NoError(t, err)
-		assert.Equal(t, time.Duration(0), result.RequeueAfter)
-		assert.Equal(t, "10.0.1.5", cluster.Spec.ControlPlaneEndpoint.Host)
-		assert.Equal(t, int32(6443), cluster.Spec.ControlPlaneEndpoint.Port)
-	})
-
-	t.Run("no CP machines yet - requeues", func(t *testing.T) {
-		cluster := &infrav1.EvrocCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-			Spec: infrav1.EvrocClusterSpec{
-				Project: "test",
-				Region:  "se-sto",
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(cluster).
-			Build()
-
-		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-		result, err := reconciler.reconcileControlPlaneEndpointFromMachines(context.Background(), cluster)
-		assert.NoError(t, err)
-		assert.Equal(t, 10*time.Second, result.RequeueAfter)
-	})
-
-	t.Run("CP machine without addresses - requeues", func(t *testing.T) {
-		cluster := &infrav1.EvrocCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-			Spec: infrav1.EvrocClusterSpec{
-				Project: "test",
-				Region:  "se-sto",
-			},
-		}
-
-		cpMachine := &infrav1.EvrocMachine{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "cp-0",
-				Namespace: "default",
-				Labels: map[string]string{
-					clusterv1.ClusterNameLabel:         "test-cluster",
-					clusterv1.MachineControlPlaneLabel: "true",
-				},
-			},
-			Status: infrav1.EvrocMachineStatus{},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(cluster, cpMachine).
-			Build()
-
-		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-		result, err := reconciler.reconcileControlPlaneEndpointFromMachines(context.Background(), cluster)
-		assert.NoError(t, err)
-		assert.Equal(t, 10*time.Second, result.RequeueAfter)
-	})
-
-	t.Run("skips worker machines", func(t *testing.T) {
-		cluster := &infrav1.EvrocCluster{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
-			Spec: infrav1.EvrocClusterSpec{
-				Project: "test",
-				Region:  "se-sto",
-			},
-		}
-
-		workerMachine := &infrav1.EvrocMachine{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "worker-0",
-				Namespace: "default",
-				Labels: map[string]string{
-					clusterv1.ClusterNameLabel: "test-cluster",
-				},
-			},
-			Status: infrav1.EvrocMachineStatus{
-				Addresses: []corev1.NodeAddress{
-					{Type: corev1.NodeInternalIP, Address: "10.0.1.10"},
-				},
-			},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(cluster, workerMachine).
-			Build()
-
-		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
-
-		result, err := reconciler.reconcileControlPlaneEndpointFromMachines(context.Background(), cluster)
-		assert.NoError(t, err)
-		// Should requeue since no CP machine was found
-		assert.Equal(t, 10*time.Second, result.RequeueAfter)
-	})
-}
-
 func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = infrav1.AddToScheme(scheme)
@@ -1383,8 +1104,8 @@ func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 			Status: infrav1.EvrocClusterStatus{
 				Resources: &infrav1.ClusterResources{
 					SecurityGroups: []infrav1.ManagedSecurityGroup{
-						{Name: "test-cluster-abcd1234-api-server", Managed: true, Role: "controlPlane"},
-						{Name: "external-sg", Managed: false, Role: "controlPlane"},
+						{ID: "test-cluster-abcd1234-api-server", Role: "controlPlane"},
+						{ID: "external-sg", Managed: false, Role: "controlPlane"},
 					},
 				},
 			},
@@ -1465,7 +1186,7 @@ func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 			Status: infrav1.EvrocClusterStatus{
 				Resources: &infrav1.ClusterResources{
 					SecurityGroups: []infrav1.ManagedSecurityGroup{
-						{Name: "test-cluster-abcd1234-api-server", Managed: true, Role: "controlPlane"},
+						{ID: "test-cluster-abcd1234-api-server", Role: "controlPlane"},
 					},
 				},
 			},
@@ -1516,7 +1237,7 @@ func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 			Status: infrav1.EvrocClusterStatus{
 				Resources: &infrav1.ClusterResources{
 					SecurityGroups: []infrav1.ManagedSecurityGroup{
-						{Name: "empty-cluster-abcd1234-api-server", Managed: true, Role: "controlPlane"},
+						{ID: "empty-cluster-abcd1234-api-server", Role: "controlPlane"},
 					},
 				},
 			},
@@ -1547,7 +1268,7 @@ func TestReconcileSecurityGroups_ExternalNotFound(t *testing.T) {
 			Region:  "se-sto",
 			SecurityGroups: &infrav1.ClusterSecurityGroupsConfig{
 				ControlPlane: &infrav1.SecurityGroupsConfig{
-					ExistingNames: []string{"missing-sg"},
+					ExistingIDs: []string{"missing-sg"},
 				},
 			},
 		},
@@ -1572,91 +1293,6 @@ func TestReconcileSecurityGroups_ExternalNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing-sg")
 
 	mockSG.AssertExpectations(t)
-}
-
-func TestResolvePublicIPConfig(t *testing.T) {
-	existingName := "my-existing-ip"
-
-	tests := []struct {
-		name         string
-		cluster      *infrav1.EvrocCluster
-		expectedMode PublicIPMode
-		expectedName string
-	}{
-		{
-			name: "no control plane config returns None",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec:       infrav1.EvrocClusterSpec{},
-			},
-			expectedMode: PublicIPModeAutoDiscover,
-		},
-		{
-			name: "nil public IP returns None",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec: infrav1.EvrocClusterSpec{
-					ControlPlaneConfig: &infrav1.ControlPlaneConfig{},
-				},
-			},
-			expectedMode: PublicIPModeAutoDiscover,
-		},
-		{
-			name: "enabled returns AutoCreate with derived name including UID",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-cluster", UID: types.UID("abcd1234-5678-9012-3456-789012345678")},
-				Spec: infrav1.EvrocClusterSpec{
-					ControlPlaneConfig: &infrav1.ControlPlaneConfig{
-						PublicIP: &infrav1.PublicIPConfig{
-							Enabled: true,
-						},
-					},
-				},
-			},
-			expectedMode: PublicIPModeAutoCreate,
-			expectedName: "my-cluster-abcd1234-cp-ip",
-		},
-		{
-			name: "existingName returns UseExisting",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "my-cluster"},
-				Spec: infrav1.EvrocClusterSpec{
-					ControlPlaneConfig: &infrav1.ControlPlaneConfig{
-						PublicIP: &infrav1.PublicIPConfig{
-							ExistingName: &existingName,
-						},
-					},
-				},
-			},
-			expectedMode: PublicIPModeUseExisting,
-			expectedName: "my-existing-ip",
-		},
-		{
-			name: "disabled with no existingName returns None",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test"},
-				Spec: infrav1.EvrocClusterSpec{
-					ControlPlaneConfig: &infrav1.ControlPlaneConfig{
-						PublicIP: &infrav1.PublicIPConfig{
-							Enabled: false,
-						},
-					},
-				},
-			},
-			expectedMode: PublicIPModeAutoDiscover,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := resolvePublicIPConfig(tt.cluster)
-			assert.NoError(t, err)
-			assert.Equal(t, tt.expectedMode, result.Mode)
-			if tt.expectedName != "" {
-				assert.Equal(t, tt.expectedName, result.ResourceName)
-			}
-		})
-	}
 }
 
 // TestEvrocClusterReconciler_PausedSkipsDeletion verifies that a paused
@@ -1707,9 +1343,9 @@ func TestEvrocClusterReconciler_PausedSkipsDeletion(t *testing.T) {
 	mockClient := new(mocks.MockClient)
 
 	reconciler := &EvrocClusterReconciler{
-		Client:      fakeClient,
-		Scheme:      scheme,
-		CloudClient: mockClient,
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
 	}
 
 	req := ctrl.Request{
@@ -1727,7 +1363,148 @@ func TestEvrocClusterReconciler_PausedSkipsDeletion(t *testing.T) {
 	assert.Contains(t, updated.Finalizers, clusterFinalizer,
 		"Finalizer must remain while paused — clusterctl move strips it separately")
 
+	// Verify the Paused condition was set.
+	var pausedCond *clusterv1.Condition
+	for i := range updated.Status.Conditions {
+		if updated.Status.Conditions[i].Type == infrav1.PausedCondition {
+			pausedCond = &updated.Status.Conditions[i]
+			break
+		}
+	}
+	assert.NotNil(t, pausedCond, "Paused condition should be set when reconciliation is paused")
+	if pausedCond != nil {
+		assert.Equal(t, corev1.ConditionTrue, pausedCond.Status)
+	}
+
 	// No cloud API calls should have been made.
 	mockClient.AssertNotCalled(t, "PublicIPs")
 	mockClient.AssertNotCalled(t, "SecurityGroups")
+}
+
+func TestEnsureCredentialSecretCopy(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	clusterUID := types.UID("cluster-uid-1")
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "default", UID: clusterUID},
+		Spec: infrav1.EvrocClusterSpec{
+			Project: "p", Region: "r",
+			CredentialsRef: &infrav1.SecretReference{Name: "user-creds"},
+		},
+	}
+	userSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "user-creds", Namespace: "default"},
+		Data:       map[string][]byte{"config.yaml": []byte("auth: {}")},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster, userSecret).
+		Build()
+	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
+
+	assert.NoError(t, reconciler.ensureCredentialSecretCopy(context.Background(), cluster))
+
+	// The copy exists, is owned by the cluster, and carries the same data.
+	copySecret := &corev1.Secret{}
+	assert.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: "c1-evroc-credentials", Namespace: "default",
+	}, copySecret))
+	assert.Equal(t, userSecret.Data, copySecret.Data)
+
+	var owned bool
+	for _, ref := range copySecret.OwnerReferences {
+		if ref.UID == clusterUID {
+			assert.Equal(t, "EvrocCluster", ref.Kind)
+			assert.Equal(t, infrav1.GroupVersion.String(), ref.APIVersion)
+			owned = true
+		}
+	}
+	assert.True(t, owned, "the copy must be owned by the cluster so clusterctl move carries it")
+
+	// The user's own secret must NOT be owned: an OwnerReference would make
+	// Kubernetes delete the user's credentials when the cluster goes away.
+	updatedUser := &corev1.Secret{}
+	assert.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: "user-creds", Namespace: "default",
+	}, updatedUser))
+	assert.Empty(t, updatedUser.OwnerReferences,
+		"the user's secret must never be owned by the cluster")
+}
+
+func TestEnsureCredentialSecretCopy_RefreshesWhenSourceChanges(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "c1", Namespace: "default", UID: types.UID("u1")},
+		Spec: infrav1.EvrocClusterSpec{
+			Project: "p", Region: "r",
+			CredentialsRef: &infrav1.SecretReference{Name: "user-creds"},
+		},
+	}
+	userSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "user-creds", Namespace: "default"},
+		Data:       map[string][]byte{"config.yaml": []byte("old")},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(cluster, userSecret).Build()
+	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
+
+	assert.NoError(t, reconciler.ensureCredentialSecretCopy(context.Background(), cluster))
+
+	// Rotate the user's credentials.
+	userSecret.Data = map[string][]byte{"config.yaml": []byte("new")}
+	assert.NoError(t, fakeClient.Update(context.Background(), userSecret))
+	assert.NoError(t, reconciler.ensureCredentialSecretCopy(context.Background(), cluster))
+
+	copySecret := &corev1.Secret{}
+	assert.NoError(t, fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: "c1-evroc-credentials", Namespace: "default",
+	}, copySecret))
+	assert.Equal(t, []byte("new"), copySecret.Data["config.yaml"],
+		"the copy must track rotations of the source secret")
+}
+
+func TestCredentialSecretCopyUsedWhenSourceIsMissing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "moved", Namespace: "default", UID: types.UID("new-uid")},
+		Spec: infrav1.EvrocClusterSpec{
+			Project: "p", Region: "se-sto",
+			CredentialsRef: &infrav1.SecretReference{Name: "source-creds"},
+		},
+	}
+	copyKey := credentialSecretCopyKey(cluster)
+	copySecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: copyKey.Name, Namespace: copyKey.Namespace}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(copySecret).Build()
+
+	var requested []types.NamespacedName
+	expectedClient := new(mocks.MockClient)
+	factory := func(_ context.Context, _ client.Reader, name, namespace string, _ cloud.ClusterContext, _ *metrics.Manager) (cloud.ClientInterface, error) {
+		key := types.NamespacedName{Name: name, Namespace: namespace}
+		requested = append(requested, key)
+		if key.Name == cluster.Spec.CredentialsRef.Name {
+			return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+		}
+		return expectedClient, nil
+	}
+	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme, clientFactory: factory}
+
+	assert.NoError(t, reconciler.ensureCredentialSecretCopy(context.Background(), cluster))
+	actualClient, err := reconciler.resolveCloudClient(context.Background(), cluster)
+	assert.NoError(t, err)
+	assert.Same(t, expectedClient, actualClient)
+	assert.Equal(t, []types.NamespacedName{
+		{Name: "source-creds", Namespace: "default"},
+		copyKey,
+	}, requested)
 }

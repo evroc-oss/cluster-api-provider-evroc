@@ -35,5 +35,8 @@ func TestSecurityGroupRule(t *testing.T) {
 	assert.Equal(t, "TCP", rule.Protocol)
 	assert.NotNil(t, rule.Port)
 	assert.Equal(t, int32(22), *rule.Port)
+	assert.NotNil(t, rule.EndPort)
+	assert.Equal(t, int32(22), *rule.EndPort)
 	assert.Equal(t, "0.0.0.0/0", rule.RemoteCIDR)
+	assert.Empty(t, rule.RemoteSecurityGroup)
 }

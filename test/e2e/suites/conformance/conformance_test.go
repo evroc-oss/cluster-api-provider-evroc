@@ -50,8 +50,9 @@ var _ = BeforeSuite(func() {
 
 	fmt.Fprintf(GinkgoWriter, "Using repo root: %s\n", repoRoot)
 
-	// Verify CRD directory exists
-	crdDir := filepath.Join(repoRoot, "config", "crd", "bases")
+	// Verify CRD directory exists. Must match crdFilePath: CRDs are generated
+	// into the Helm chart, not config/crd/bases.
+	crdDir := filepath.Join(repoRoot, "helm", "cluster-api-provider-evroc", "crds")
 	Expect(crdDir).To(BeADirectory(),
 		"CRD directory must exist at %s - run 'make manifests' first", crdDir)
 })
@@ -181,7 +182,7 @@ var _ = Describe("[conformance] CAPI Provider Contract", Label("capi-contract"),
 
 	Context("CRD Registration", func() {
 		It("should have all required CRDs generated", func() {
-			By("Verifying all evroc CRDs are present in config/crd/bases/")
+			By("Verifying all evroc CRDs are present in /helm/cluster-api-provider-evroc/crds/")
 			// These CRDs are required for the simplified evroc CAPI provider (v2 inline configuration)
 			// We no longer use separate CRDs for PublicIP, SecurityGroup, PlacementGroup, or Disk
 			// as those are now inline configurations within EvrocCluster and EvrocMachine
@@ -219,7 +220,7 @@ var _ = Describe("[conformance] CAPI Provider Contract", Label("capi-contract"),
 // controller-gen names files as: <group>_<plural>.yaml
 // e.g. "evrocclusters.infrastructure.cluster.x-k8s.io" →
 //
-//	"config/crd/bases/infrastructure.cluster.x-k8s.io_evrocclusters.yaml"
+//	"/helm/cluster-api-provider-evroc/crds//infrastructure.cluster.x-k8s.io_evrocclusters.yaml"
 func crdFilePath(crdName string) string {
 	// Split "<plural>.<group>" on the first "."
 	dotIdx := 0
@@ -232,7 +233,7 @@ func crdFilePath(crdName string) string {
 	plural := crdName[:dotIdx]
 	group := crdName[dotIdx+1:]
 	fileName := group + "_" + plural + ".yaml"
-	return filepath.Join(repoRoot, "config", "crd", "bases", fileName)
+	return filepath.Join(repoRoot, "helm", "cluster-api-provider-evroc", "crds", fileName)
 }
 
 // readCRD reads a CRD file and returns its content as a string.

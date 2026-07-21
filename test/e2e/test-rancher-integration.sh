@@ -6,13 +6,20 @@ set -euo pipefail
 
 # Full Rancher + Turtles + evroc CAPI Provider Integration Test
 # This validates the complete Rancher certification scenario
+#
+# Rancher channel selection:
+#   Stable (default): ./test-rancher-integration.sh
+#   Alpha:  RANCHER_VERSION=2.15.0-alpha21 RANCHER_REPO_NAME=rancher-alpha RANCHER_REPO_URL=https://releases.rancher.com/server-charts/alpha ./test-rancher-integration.sh
+#   Latest: RANCHER_VERSION=2.15.0 RANCHER_REPO_NAME=rancher-latest RANCHER_REPO_URL=https://releases.rancher.com/server-charts/latest ./test-rancher-integration.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Configuration
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-rancher-test-$(date +%s)}"
 RANCHER_HOSTNAME="${RANCHER_HOSTNAME:-rancher.local}"
-RANCHER_VERSION="${RANCHER_VERSION:-2.14.0-rc1}"
+RANCHER_VERSION="${RANCHER_VERSION:-2.14.0}"
+RANCHER_REPO_NAME="${RANCHER_REPO_NAME:-rancher-stable}"
+RANCHER_REPO_URL="${RANCHER_REPO_URL:-https://releases.rancher.com/server-charts/stable}"
 TURTLES_VERSION="${TURTLES_VERSION:-0.26.0}"
 EVROC_PROVIDER_VERSION="${EVROC_PROVIDER_VERSION:-latest}"
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.16.2}"
@@ -111,17 +118,18 @@ install_cert_manager() {
 install_rancher() {
     log_step "Installing Rancher ${RANCHER_VERSION}..."
 
-    # Add Rancher Helm repo
-    helm repo add rancher-stable https://releases.rancher.com/server-charts/stable
+    # Add Rancher Helm repo (supports stable, alpha, latest channels)
+    helm repo add "${RANCHER_REPO_NAME}" "${RANCHER_REPO_URL}"
     helm repo update
 
     # Create cattle-system namespace
     kubectl create namespace cattle-system --dry-run=client -o yaml | kubectl apply -f -
 
     # Install Rancher
-    helm upgrade --install rancher rancher-stable/rancher \
+    helm upgrade --install rancher "${RANCHER_REPO_NAME}/rancher" \
         --namespace cattle-system \
         --version="${RANCHER_VERSION}" \
+        --devel \
         --set hostname="${RANCHER_HOSTNAME}" \
         --set replicas=1 \
         --set bootstrapPassword=admin \
@@ -238,11 +246,19 @@ ensure_capi_core() {
         kubectl get pods -n cattle-provisioning-capi-system || echo "CAPI controllers namespace not found"
     }
 
-    # Wait for CAPI webhook service
+    # Wait for CAPI webhook service (may be in capi-operator-system or cattle-provisioning-capi-system)
     log_info "Waiting for CAPI webhook service..."
     for i in {1..60}; do
-        if kubectl get service -n cattle-provisioning-capi-system capi-webhook-service &>/dev/null 2>&1; then
+        if kubectl get service -A -l cluster.x-k8s.io/provider=cluster-api 2>/dev/null | grep -q webhook 2>/dev/null; then
             log_info "[OK] CAPI core is ready"
+            return 0
+        fi
+        if kubectl get service -n capi-operator-system capi-webhook-service &>/dev/null 2>&1; then
+            log_info "[OK] CAPI core is ready (webhook in capi-operator-system)"
+            return 0
+        fi
+        if kubectl get service -n cattle-provisioning-capi-system capi-webhook-service &>/dev/null 2>&1; then
+            log_info "[OK] CAPI core is ready (webhook in cattle-provisioning-capi-system)"
             return 0
         fi
         sleep 2
@@ -250,7 +266,7 @@ ensure_capi_core() {
 
     log_error "CAPI webhook service not found after 2 minutes"
     log_error "Debugging CAPI core installation:"
-    kubectl get all -n cattle-provisioning-capi-system 2>&1 || echo "Namespace not found"
+    kubectl get svc -A 2>&1 | grep -i capi || echo "No CAPI services found"
     kubectl get coreprovider -A 2>&1 || echo "No CoreProviders found"
     return 1
 }
@@ -313,6 +329,13 @@ create_provider_secret() {
             --namespace=cattle-turtles-system \
             --dry-run=client -o yaml | kubectl apply -f -
     fi
+
+    # Every EvrocCluster names its own credentials, so the test cluster needs a
+    # copy of the secret in its own namespace.
+    kubectl create secret generic evroc-credentials \
+        --from-file=config.yaml="${SCRIPT_DIR}/credentials.yaml" \
+        --namespace=default \
+        --dry-run=client -o yaml | kubectl apply -f -
 
     log_info "[OK] Provider secret created"
 }
@@ -513,6 +536,8 @@ metadata:
 spec:
   project: "${project}"
   region: "${region}"
+  credentialsRef:
+    name: evroc-credentials
   failureDomains:
     - a
 EOF
@@ -602,7 +627,7 @@ main() {
     log_info ""
     log_info "Configuration:"
     log_info "  Cluster: ${KIND_CLUSTER_NAME}"
-    log_info "  Rancher: ${RANCHER_VERSION}"
+    log_info "  Rancher: ${RANCHER_VERSION} (${RANCHER_REPO_NAME})"
     log_info "  Turtles: ${TURTLES_VERSION}"
     log_info "  evroc Provider: ${EVROC_PROVIDER_VERSION}$([ "${USE_LOCAL_PROVIDER:-false}" == "true" ] && echo " (local)" || echo "")"
     log_info ""

@@ -22,6 +22,7 @@ type ClientInterface interface {
 	SecurityGroups() SecurityGroupServiceInterface
 	PlacementGroups() PlacementGroupServiceInterface
 	VirtualMachines() VirtualMachineServiceInterface
+	LoadBalancers() LoadBalancerServiceInterface
 	SDKClient() *evroc.Client
 }
 
@@ -152,6 +153,48 @@ type VirtualMachineServiceInterface interface {
 	WaitForDeleted(ctx context.Context, name string, timeout time.Duration) error
 }
 
+// LoadBalancerServiceInterface defines the interface for load balancer operations.
+// Load balancers distribute traffic across multiple control plane nodes, providing
+// true HA for the Kubernetes API server endpoint.
+type LoadBalancerServiceInterface interface {
+	// Create creates a load balancer and all sub-resources (PublicIP, BackendPool,
+	// BackendService, L4Route). This is idempotent — if any resource already exists,
+	// the conflict is ignored and creation continues with the remaining resources.
+	Create(ctx context.Context, request *LoadBalancerCreateRequest) (*LoadBalancer, error)
+
+	// Get retrieves a load balancer by its evroc resource ID.
+	Get(ctx context.Context, name string) (*LoadBalancer, error)
+
+	// Delete deletes a load balancer and all sub-resources.
+	// This is idempotent — deleting a non-existent resource is a no-op.
+	Delete(ctx context.Context, name string) error
+
+	// List lists all load balancers.
+	List(ctx context.Context) ([]LoadBalancer, error)
+
+	// Exists checks if a load balancer exists.
+	Exists(ctx context.Context, name string) (bool, error)
+
+	// AddBackend registers a VM as a backend target of the load balancer.
+	// This is idempotent — adding a backend that already exists is a no-op.
+	AddBackend(ctx context.Context, lbName string, backend Backend) error
+
+	// RemoveBackend deregisters a VM from the load balancer.
+	// This is idempotent — removing a backend that doesn't exist is a no-op.
+	RemoveBackend(ctx context.Context, lbName string, backendName string) error
+
+	// ListBackends lists all backends registered with the load balancer.
+	ListBackends(ctx context.Context, lbName string) ([]Backend, error)
+
+	// Waiter methods for async operations.
+	WaitForReady(
+		ctx context.Context,
+		name string,
+		timeout time.Duration,
+	) (*LoadBalancer, error)
+	WaitForDeleted(ctx context.Context, name string, timeout time.Duration) error
+}
+
 // Ensure our implementation satisfies the interfaces.
 var _ ClientInterface = (*Client)(nil)
 var _ DiskServiceInterface = (*DiskService)(nil)
@@ -159,3 +202,4 @@ var _ PublicIPServiceInterface = (*PublicIPService)(nil)
 var _ SecurityGroupServiceInterface = (*SecurityGroupService)(nil)
 var _ PlacementGroupServiceInterface = (*PlacementGroupService)(nil)
 var _ VirtualMachineServiceInterface = (*VirtualMachineService)(nil)
+var _ LoadBalancerServiceInterface = (*LoadBalancerService)(nil)

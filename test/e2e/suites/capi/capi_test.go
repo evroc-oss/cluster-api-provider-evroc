@@ -16,15 +16,19 @@ package capi_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	evroc "github.com/evroc-oss/evroc-go-sdk"
+	"github.com/evroc-oss/evroc-go-sdk/compute"
+	"github.com/evroc-oss/evroc-go-sdk/networking"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -170,16 +174,10 @@ var _ = BeforeSuite(func() {
 	By("Running clusterctl init --infrastructure evroc")
 	clusterctlInit(ctx, kubeconfigPath, true)
 
-	// Wait for all provider deployments to become ready.
-	// The kubeadm control plane webhook must be serving before we can apply clusters.
-	By("Waiting for evroc provider deployment to be ready")
-	waitForDeploymentReady(ctx, kubeconfigPath, "capi-evroc-system", "infrastructure-evroc", 10*time.Minute)
-	By("Waiting for CAPI core provider to be ready")
-	waitForDeploymentReady(ctx, kubeconfigPath, "capi-evroc-system", "cluster-api", 5*time.Minute)
-	By("Waiting for kubeadm control plane provider to be ready")
-	waitForDeploymentReady(ctx, kubeconfigPath, "capi-evroc-system", "control-plane-kubeadm", 5*time.Minute)
-	By("Waiting for kubeadm bootstrap provider to be ready")
-	waitForDeploymentReady(ctx, kubeconfigPath, "capi-evroc-system", "bootstrap-kubeadm", 5*time.Minute)
+	// Wait for ALL provider deployments (core CAPI + kubeadm + evroc) to become ready.
+	// All providers share the capi-evroc-system namespace (--target-namespace).
+	By("Waiting for all provider deployments to be ready")
+	waitForAllDeploymentsReady(ctx, kubeconfigPath, "capi-evroc-system", 10*time.Minute)
 })
 
 var _ = AfterSuite(func() {
@@ -241,11 +239,8 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 		})
 	})
 
-	// ClusterctlMove requires a CNI on the single-node workload cluster for
-	// cert-manager to become available. Disabled until the test installs a CNI
-	// or uses a multi-node cluster.
 	Context("ClusterctlMove", Label("clusterctl-move"), func() {
-		PIt("Should pivot a workload cluster to self-management without deleting VMs", func() {
+		It("Should pivot a workload cluster to self-management without deleting VMs", func() {
 			clusterName := fmt.Sprintf("evroc-mv-%s", randomSuffix())
 			namespace := "default"
 
@@ -261,6 +256,13 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			ownerKubeconfig := kubeconfigPath
 			defer func() {
 				collectClusterArtifacts(ctx, ownerKubeconfig, clusterName, namespace)
+
+				if CurrentSpecReport().Failed() && os.Getenv("SKIP_CLEANUP_ON_FAILURE") == "true" {
+					GinkgoWriter.Printf("SKIP_CLEANUP_ON_FAILURE=true and test failed — leaving VMs alive for inspection\n")
+					GinkgoWriter.Printf("  ownerKubeconfig: %s\n", ownerKubeconfig)
+					GinkgoWriter.Printf("  clusterName:     %s\n", clusterName)
+					return
+				}
 
 				By("Deleting workload cluster from current owner")
 				deleteCluster(ctx, ownerKubeconfig, clusterName, namespace)
@@ -283,15 +285,35 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			By("Waiting for workload cluster API server to be reachable")
 			waitForAPIServerReachable(ctx, workloadKubeconfig, 15*time.Minute)
 
-			// ── Phase 3: Snapshot VM IDs before the move ──
+			// ── Phase 2b: Install CNI so pods (especially cert-manager) can schedule ──
+			By("Installing Calico CNI on workload cluster")
+			installCalicoCNI(ctx, workloadKubeconfig)
+
+			By("Waiting for Calico to be ready")
+			waitForCNIReady(ctx, workloadKubeconfig, 5*time.Minute)
+
+			// ── Phase 3: Deploy bastion and pre-load provider image ──
+			bastionName := clusterName + "-bastion"
+			evrocClient := newEvrocSDKClient(ctx)
+
+			By("Creating bastion VM for SSH access to workload cluster nodes")
+			bastionPublicIP := createBastionVM(ctx, evrocClient, bastionName)
+			defer func() {
+				By("Cleaning up bastion VM")
+				deleteBastionVM(ctx, evrocClient, bastionName)
+			}()
+
+			By("Pre-loading provider image into workload cluster")
+			loadProviderImageToRemoteCluster(ctx, kubeconfigPath, clusterName, namespace, bastionPublicIP)
+
+			// Snapshot VM IDs after all machines are ready (loadProviderImageToRemoteCluster
+			// polls until every EvrocMachine has an IP, so providerIDs are guaranteed set).
 			By("Collecting EvrocMachine providerIDs before move")
 			providerIDsBefore := getEvrocMachineProviderIDs(ctx, kubeconfigPath, clusterName, namespace)
 			Expect(providerIDsBefore).NotTo(BeEmpty(), "should have at least one EvrocMachine with providerID")
 			GinkgoWriter.Printf("Provider IDs before move: %v\n", providerIDsBefore)
-
-			// ── Phase 4: Install CAPI + evroc provider on the workload cluster ──
-			By("Pre-loading provider image into workload cluster")
-			loadProviderImageToRemoteCluster(ctx, workloadKubeconfig)
+			loadBalancerIDBefore := getEvrocClusterLoadBalancerID(ctx, kubeconfigPath, clusterName, namespace)
+			GinkgoWriter.Printf("Load balancer ID before move: %s\n", loadBalancerIDBefore)
 
 			By("Pre-creating evroc credentials on workload cluster")
 			applyEvrocCredentials(ctx, workloadKubeconfig)
@@ -302,8 +324,8 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			By("Running clusterctl init on workload cluster")
 			clusterctlInit(ctx, workloadKubeconfig, true)
 
-			By("Waiting for evroc provider deployment on workload cluster")
-			waitForDeploymentReady(ctx, workloadKubeconfig, "capi-evroc-system", "infrastructure-evroc", 10*time.Minute)
+			By("Waiting for all provider deployments on workload cluster")
+			waitForAllDeploymentsReady(ctx, workloadKubeconfig, "capi-evroc-system", 10*time.Minute)
 
 			// ── Phase 5: clusterctl move (pivot) ──
 			By("Running clusterctl move from bootstrap to workload cluster")
@@ -331,9 +353,24 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			By("Verifying resources were removed from source bootstrap cluster")
 			verifyResourceGone(ctx, kubeconfigPath, "cluster", clusterName, namespace)
 
-			By("Verifying cluster is functional after move — machines still Running")
-			waitForMachineProvisioned(ctx, workloadKubeconfig, clusterName, namespace,
+			By("Verifying EvrocCluster is ready on target (controller reconciled after move)")
+			waitForEvrocClusterReady(ctx, workloadKubeconfig, clusterName, namespace,
+				e2eConfig.GetIntervals("default", "wait-cluster")...)
+
+			By("Verifying the managed load balancer was adopted rather than recreated")
+			loadBalancerIDAfter := getEvrocClusterLoadBalancerID(ctx, workloadKubeconfig, clusterName, namespace)
+			Expect(loadBalancerIDAfter).To(Equal(loadBalancerIDBefore),
+				"clusterctl move must preserve the managed load balancer identity")
+
+			By("Verifying EvrocMachines are ready on target (post-move status reconstruction)")
+			waitForEvrocMachineReady(ctx, workloadKubeconfig, clusterName, namespace,
 				e2eConfig.GetIntervals("default", "wait-machines")...)
+
+			// Move ownership back before cleanup. A self-managed cluster cannot
+			// reliably finish deleting its own control plane after its API goes down.
+			By("Moving the cluster back to the bootstrap manager for cleanup")
+			clusterctlMove(ctx, workloadKubeconfig, kubeconfigPath, namespace)
+			ownerKubeconfig = kubeconfigPath
 
 			By("clusterctl move (pivot) completed successfully — ClusterctlMove PASSED")
 		})
@@ -357,8 +394,13 @@ spec: {}
 			out, err := cmd.CombinedOutput()
 			Expect(err).To(HaveOccurred(),
 				"Webhook should reject EvrocCluster without required fields, but kubectl apply succeeded: %s", string(out))
-			Expect(string(out)).To(ContainSubstring("project"),
-				"Rejection message should mention missing project field, got: %s", string(out))
+			// An empty spec is missing several required fields (project,
+			// credentialsRef). The CRD schema rejects credentialsRef before the
+			// webhook reaches project, so accept either required field.
+			Expect(string(out)).To(SatisfyAny(
+				ContainSubstring("project"),
+				ContainSubstring("credentialsRef"),
+			), "Rejection should name a required field, got: %s", string(out))
 
 			GinkgoWriter.Printf("Webhook correctly rejected invalid EvrocCluster: %s\n",
 				strings.TrimSpace(string(out)))
@@ -374,6 +416,8 @@ metadata:
 spec:
   project: test-project
   region: invalid
+  credentialsRef:
+    name: evroc-credentials
   failureDomains: [a]
 `)
 			cmd := exec.CommandContext(ctx, kubectlPath(),
@@ -391,8 +435,8 @@ spec:
 				strings.TrimSpace(string(out)))
 		})
 
-		It("Should default failureDomains when omitted", func() {
-			By("Applying an EvrocCluster without failureDomains and verifying defaults are applied")
+		It("Should default failureDomains when not specified", func() {
+			By("Applying an EvrocCluster with no failureDomains")
 			cluster := []byte(`apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocCluster
 metadata:
@@ -401,6 +445,8 @@ metadata:
 spec:
   project: test-project
   region: se-sto
+  credentialsRef:
+    name: evroc-credentials
 `)
 			cmd := exec.CommandContext(ctx, kubectlPath(),
 				"--kubeconfig", kubeconfigPath,
@@ -408,18 +454,26 @@ spec:
 			)
 			cmd.Stdin = bytes.NewReader(cluster)
 			out, err := cmd.CombinedOutput()
-			Expect(err).NotTo(HaveOccurred(),
-				"EvrocCluster with omitted failureDomains should be accepted (defaulted): %s", string(out))
+			Expect(err).ToNot(HaveOccurred(),
+				"Defaulting webhook should accept EvrocCluster and fill failureDomains: %s", string(out))
 
-			// Verify the default was applied
+			// Verify defaults were applied
 			getCmd := exec.CommandContext(ctx, kubectlPath(),
 				"--kubeconfig", kubeconfigPath,
-				"get", "evroccluster", "fd-default-test", "-n", "default", "-o", "jsonpath={.spec.failureDomains}",
+				"get", "evroccluster", "fd-default-test", "-n", "default",
+				"-o", "jsonpath={.spec.failureDomains}",
 			)
-			getOut, getErr := getCmd.CombinedOutput()
-			Expect(getErr).NotTo(HaveOccurred(), "Failed to get EvrocCluster: %s", string(getOut))
-			Expect(string(getOut)).To(ContainSubstring("a"),
-				"failureDomains should contain default zone 'a', got: %s", string(getOut))
+			fdOut, err := getCmd.Output()
+			Expect(err).ToNot(HaveOccurred(), "Failed to get EvrocCluster failureDomains")
+			Expect(string(fdOut)).To(ContainSubstring("a"),
+				"Defaulting webhook should set failureDomains to [a,b,c], got: %s", string(fdOut))
+
+			// Clean up
+			delCmd := exec.CommandContext(ctx, kubectlPath(),
+				"--kubeconfig", kubeconfigPath,
+				"delete", "evroccluster", "fd-default-test", "-n", "default", "--ignore-not-found",
+			)
+			_ = delCmd.Run()
 		})
 
 		It("Should reject an EvrocCluster with duplicate SG names across sections", func() {
@@ -432,6 +486,8 @@ metadata:
 spec:
   project: test-project
   region: se-sto
+  credentialsRef:
+    name: evroc-credentials
   failureDomains: [a]
   securityGroups:
     common:
@@ -521,6 +577,105 @@ spec:
 		})
 	})
 
+	Context("HA with Load Balancer (kubeadm)", Label("ha-lb"), func() {
+		It("Should create a 3-CP HA cluster behind a load balancer and verify all CPs register as LB backends", func() {
+			clusterName := fmt.Sprintf("evroc-ha-%s", randomSuffix())
+			namespace := "default"
+
+			By("Generating HA cluster manifest with LB (kubeadm, 3 CP)")
+			clusterYAML := generateHALBClusterYAML(clusterName)
+
+			By("Applying cluster resources")
+			applyManifest(ctx, kubeconfigPath, clusterYAML, clusterName)
+
+			defer func() {
+				collectClusterArtifacts(ctx, kubeconfigPath, clusterName, namespace)
+
+				By("Deleting HA workload cluster " + clusterName)
+				deleteCluster(ctx, kubeconfigPath, clusterName, namespace)
+
+				By("Verifying cluster resources are cleaned up after deletion")
+				verifyClusterDeleted(ctx, kubeconfigPath, clusterName, namespace)
+			}()
+
+			By("Waiting for EvrocCluster to become ready")
+			waitForEvrocClusterReady(ctx, kubeconfigPath, clusterName, namespace,
+				e2eConfig.GetIntervals("default", "wait-cluster")...)
+
+			By("Verifying EvrocCluster control plane endpoint (LB address)")
+			verifyControlPlaneEndpoint(ctx, kubeconfigPath, clusterName, namespace)
+
+			By("Waiting for all 3 control plane machines to reach Running")
+			waitForAllMachinesRunning(ctx, kubeconfigPath, clusterName, namespace, 3,
+				e2eConfig.GetIntervals("default", "wait-machines")...)
+
+			By("Verifying LB has all 3 control plane backends registered")
+			verifyLBBackends(ctx, kubeconfigPath, clusterName, namespace, 3)
+
+			By("Verifying API server is reachable through the LB")
+			workloadKubeconfig := filepath.Join(artifactFolder, clusterName+"-kubeconfig.yaml")
+			waitForWorkloadKubeconfig(ctx, kubeconfigPath, clusterName, namespace, workloadKubeconfig,
+				e2eConfig.GetIntervals("default", "wait-machines")...)
+			waitForAPIServerReachable(ctx, workloadKubeconfig, 10*time.Minute)
+
+			By("Verifying EvrocMachine addresses and providerID")
+			verifyMachineStatus(ctx, kubeconfigPath, clusterName, namespace)
+
+			By("HA cluster with LB provisioned successfully — HA-LB PASSED")
+		})
+	})
+
+	Context("HA with Load Balancer (RKE2)", Label("ha-lb-rke2"), func() {
+		It("Should create a 3-CP HA RKE2 cluster behind a load balancer and verify all CPs register as LB backends", func() {
+			clusterName := fmt.Sprintf("evroc-rke2ha-%s", randomSuffix())
+			namespace := "default"
+
+			By("Installing CAPRKE2 bootstrap and control-plane providers")
+			installCAPRKE2(ctx, kubeconfigPath)
+
+			By("Generating HA RKE2 cluster manifest with LB (3 CP)")
+			clusterYAML := generateRKE2HALBClusterYAML(clusterName)
+
+			By("Applying cluster resources")
+			applyManifest(ctx, kubeconfigPath, clusterYAML, clusterName)
+
+			defer func() {
+				collectClusterArtifacts(ctx, kubeconfigPath, clusterName, namespace)
+
+				By("Deleting HA RKE2 workload cluster " + clusterName)
+				deleteCluster(ctx, kubeconfigPath, clusterName, namespace)
+
+				By("Verifying cluster resources are cleaned up after deletion")
+				verifyClusterDeleted(ctx, kubeconfigPath, clusterName, namespace)
+			}()
+
+			By("Waiting for EvrocCluster to become ready")
+			waitForEvrocClusterReady(ctx, kubeconfigPath, clusterName, namespace,
+				e2eConfig.GetIntervals("default", "wait-cluster")...)
+
+			By("Verifying EvrocCluster control plane endpoint (LB address)")
+			verifyControlPlaneEndpoint(ctx, kubeconfigPath, clusterName, namespace)
+
+			By("Waiting for all 3 control plane machines to reach Running")
+			waitForAllMachinesRunning(ctx, kubeconfigPath, clusterName, namespace, 3,
+				e2eConfig.GetIntervals("default", "wait-machines")...)
+
+			By("Verifying LB has all 3 control plane backends registered")
+			verifyLBBackends(ctx, kubeconfigPath, clusterName, namespace, 3)
+
+			By("Verifying API server is reachable through the LB")
+			workloadKubeconfig := filepath.Join(artifactFolder, clusterName+"-kubeconfig.yaml")
+			waitForWorkloadKubeconfig(ctx, kubeconfigPath, clusterName, namespace, workloadKubeconfig,
+				e2eConfig.GetIntervals("default", "wait-machines")...)
+			waitForAPIServerReachable(ctx, workloadKubeconfig, 10*time.Minute)
+
+			By("Verifying EvrocMachine addresses and providerID")
+			verifyMachineStatus(ctx, kubeconfigPath, clusterName, namespace)
+
+			By("HA RKE2 cluster with LB provisioned successfully — HA-LB-RKE2 PASSED")
+		})
+	})
+
 	Context("Provider Installation", func() {
 		It("Should have the evroc provider running and CRDs installed", func() {
 			By("Verifying evroc provider deployment is available")
@@ -591,65 +746,161 @@ func loadProviderImageIntoKind(ctx context.Context, clusterName string) {
 
 // loadProviderImageToRemoteCluster pre-loads the provider image into a remote
 // cluster's containerd by saving the Docker image as a tar and importing it
-// via SSH. This is necessary when the remote cluster has no access to a
-// container registry (e.g. ghcr.io).
-func loadProviderImageToRemoteCluster(ctx context.Context, kubeconfig string) {
+// via SSH on every node. It queries EvrocMachine addresses from the bootstrap
+// cluster. Nodes with ExternalIPs are reached directly; internal-only nodes
+// are reached via SSH ProxyJump through bastionIP (or the first node with an ExternalIP).
+func loadProviderImageToRemoteCluster(ctx context.Context, bootstrapKubeconfig, clusterName, namespace string, bastionIP ...string) {
 	const defaultImage = "ghcr.io/evroc-oss/cluster-api-provider-evroc:latest"
 	image := os.Getenv("E2E_LOCAL_IMAGE")
 	if image == "" {
 		image = defaultImage
 	}
 
-	// Save the Docker image to a tar file.
 	tarPath := filepath.Join(os.TempDir(), "provider-image.tar")
 	saveCmd := exec.CommandContext(ctx, "docker", "save", "-o", tarPath, image)
 	saveOut, err := saveCmd.CombinedOutput()
 	Expect(err).ToNot(HaveOccurred(), "docker save failed: %s", string(saveOut))
 	defer os.Remove(tarPath)
 
-	// Extract the control plane node IP from the kubeconfig's server URL.
-	kubeconfigBytes, err := os.ReadFile(kubeconfig)
-	Expect(err).ToNot(HaveOccurred(), "reading workload kubeconfig")
-
-	var kc struct {
-		Clusters []struct {
-			Cluster struct {
-				Server string `yaml:"server"`
-			} `yaml:"cluster"`
-		} `yaml:"clusters"`
-	}
-	Expect(yaml.Unmarshal(kubeconfigBytes, &kc)).To(Succeed())
-	Expect(kc.Clusters).NotTo(BeEmpty(), "no clusters in workload kubeconfig")
-
-	serverURL, err := url.Parse(kc.Clusters[0].Cluster.Server)
-	Expect(err).ToNot(HaveOccurred(), "parsing server URL")
-	host := serverURL.Hostname()
-
-	GinkgoWriter.Printf("Importing provider image to workload node %s via SSH\n", host)
-
-	// Determine SSH key path: prefer EVROC_SSH_PRIVATE_KEY env, fall back to default.
 	sshKeyPath := os.Getenv("EVROC_SSH_PRIVATE_KEY")
 	if sshKeyPath == "" {
 		homeDir, _ := os.UserHomeDir()
 		sshKeyPath = filepath.Join(homeDir, ".ssh", "id_ed25519")
 	}
 
-	// Pipe the tar file into ctr on the remote node via SSH.
-	sshCmd := exec.CommandContext(ctx, "ssh",
-		"-i", sshKeyPath,
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "ConnectTimeout=30",
-		fmt.Sprintf("evroc-user@%s", host),
-		"sudo", "ctr", "-n", "k8s.io", "images", "import", "-",
-	)
-	tarFile, err := os.Open(tarPath)
-	Expect(err).ToNot(HaveOccurred())
-	defer tarFile.Close()
-	sshCmd.Stdin = tarFile
-	sshOut, err := sshCmd.CombinedOutput()
-	Expect(err).ToNot(HaveOccurred(), "SSH ctr import failed: %s", string(sshOut))
-	GinkgoWriter.Printf("Image imported successfully: %s\n", string(sshOut))
+	type nodeTarget struct {
+		name       string
+		externalIP string
+		internalIP string
+	}
+
+	// Poll until all EvrocMachines have at least an InternalIP.
+	// Workers take longer to provision than CP, so we wait for all.
+	// We use JSON output instead of jsonpath to avoid parsing edge-cases.
+	type evrocMachineList struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Addresses []struct {
+					Type    string `json:"type"`
+					Address string `json:"address"`
+				} `json:"addresses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+
+	var nodes []nodeTarget
+	var jumpHost string
+	if len(bastionIP) > 0 && bastionIP[0] != "" {
+		jumpHost = bastionIP[0]
+	}
+	Eventually(func() error {
+		addrCmd := exec.CommandContext(ctx, kubectlPath(),
+			"--kubeconfig", bootstrapKubeconfig,
+			"get", "evrocmachines", "-n", namespace,
+			"-l", fmt.Sprintf("cluster.x-k8s.io/cluster-name=%s", clusterName),
+			"-o", "json",
+		)
+		addrOut, err := addrCmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("kubectl get evrocmachines failed: %w\noutput: %s", err, string(addrOut))
+		}
+
+		var machineList evrocMachineList
+		if err := json.Unmarshal(addrOut, &machineList); err != nil {
+			return fmt.Errorf("failed to parse evrocmachines JSON: %w\nraw output (first 500 bytes): %s", err, string(addrOut[:min(len(addrOut), 500)]))
+		}
+
+		nodes = nil
+		for _, item := range machineList.Items {
+			n := nodeTarget{name: item.Metadata.Name}
+			for _, addr := range item.Status.Addresses {
+				switch addr.Type {
+				case "ExternalIP":
+					n.externalIP = addr.Address
+				case "InternalIP":
+					n.internalIP = addr.Address
+				}
+			}
+			nodes = append(nodes, n)
+			if n.externalIP != "" && jumpHost == "" {
+				jumpHost = n.externalIP
+			}
+		}
+
+		if len(nodes) == 0 {
+			return fmt.Errorf("no EvrocMachines found for cluster %s", clusterName)
+		}
+		for _, n := range nodes {
+			if n.internalIP == "" && n.externalIP == "" {
+				return fmt.Errorf("machine %s has no IP yet (waiting for VM to be provisioned)", n.name)
+			}
+		}
+		GinkgoWriter.Printf("All %d EvrocMachines have addresses (jumpHost=%s)\n", len(nodes), jumpHost)
+		return nil
+	}, 10*time.Minute, 15*time.Second).Should(Succeed(),
+		"not all EvrocMachines for cluster %s have IP addresses", clusterName)
+
+	GinkgoWriter.Printf("Importing provider image to %d node(s), jumpHost=%s\n", len(nodes), jumpHost)
+
+	for _, n := range nodes {
+		targetIP := n.externalIP
+		useJump := false
+		if targetIP == "" {
+			targetIP = n.internalIP
+			useJump = true
+		}
+		Expect(targetIP).NotTo(BeEmpty(), "no IP for machine %s", n.name)
+
+		GinkgoWriter.Printf("  Loading image on %s (%s, jump=%v)...\n", n.name, targetIP, useJump)
+
+		args := []string{
+			"-i", sshKeyPath,
+			"-o", "StrictHostKeyChecking=no",
+			"-o", "UserKnownHostsFile=/dev/null",
+			"-o", "ConnectTimeout=30",
+		}
+		if useJump && jumpHost != "" {
+			// Use ProxyCommand instead of -J so that the jump-host connection
+			// also honours StrictHostKeyChecking=no / UserKnownHostsFile=/dev/null.
+			// -J passes no extra options to the proxy hop, which causes
+			// "Host key verification failed" on freshly-provisioned VMs.
+			proxyCmd := fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -W %%h:%%p evroc-user@%s", sshKeyPath, jumpHost)
+			args = append(args, "-o", fmt.Sprintf("ProxyCommand=%s", proxyCmd))
+		}
+		args = append(args, fmt.Sprintf("evroc-user@%s", targetIP),
+			"sudo", "ctr", "-n", "k8s.io", "images", "import", "-")
+
+		// Retry SSH import until the node accepts it. A freshly provisioned VM
+		// reports "Permission denied (publickey)" until cloud-init finishes
+		// creating evroc-user and installing its authorized key, which on a
+		// control-plane node can take several minutes. Poll at a fixed 30s
+		// interval long enough (~15min) to outlast cloud-init.
+		var sshOut []byte
+		var sshErr error
+		const maxRetries = 30
+		const retryInterval = 30 * time.Second
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			sshCmd := exec.CommandContext(ctx, "ssh", args...)
+			tarFile, openErr := os.Open(tarPath)
+			Expect(openErr).ToNot(HaveOccurred())
+			sshCmd.Stdin = tarFile
+			sshOut, sshErr = sshCmd.CombinedOutput()
+			tarFile.Close()
+			if sshErr == nil {
+				break
+			}
+			GinkgoWriter.Printf("  SSH attempt %d/%d to %s failed: %s (output: %s)\n",
+				attempt, maxRetries, targetIP, sshErr, strings.TrimSpace(string(sshOut)))
+			if attempt < maxRetries {
+				time.Sleep(retryInterval)
+			}
+		}
+		Expect(sshErr).ToNot(HaveOccurred(), "SSH ctr import to %s (%s) failed after %d attempts: %s", n.name, targetIP, maxRetries, string(sshOut))
+		GinkgoWriter.Printf("  Image imported to %s: %s\n", n.name, strings.TrimSpace(string(sshOut)))
+	}
 }
 
 // applyEvrocCredentials creates the capi-evroc-system namespace and the
@@ -660,10 +911,8 @@ func applyEvrocCredentials(ctx context.Context, kubeconfig string) {
 }
 
 func buildCredentialsYAML() []byte {
-	token := os.Getenv("EVROC_TOKEN")
-	refreshToken := os.Getenv("EVROC_REFRESH_TOKEN")
-	username := os.Getenv("EVROC_USERNAME")
-	password := os.Getenv("EVROC_PASSWORD")
+	saID := os.Getenv("EVROC_SERVICE_ACCOUNT_ID")
+	saSecret := os.Getenv("EVROC_SERVICE_ACCOUNT_SECRET")
 	project := os.Getenv("EVROC_PROJECT")
 	region := os.Getenv("EVROC_REGION")
 	organization := os.Getenv("EVROC_ORGANIZATION")
@@ -671,19 +920,10 @@ func buildCredentialsYAML() []byte {
 		region = "se-sto"
 	}
 
-	authSection := ""
-	if token != "" {
-		authSection += fmt.Sprintf("    token: %q\n", token)
+	if saID == "" || saSecret == "" {
+		Fail("EVROC_SERVICE_ACCOUNT_ID and EVROC_SERVICE_ACCOUNT_SECRET must be set")
 	}
-	if refreshToken != "" {
-		authSection += fmt.Sprintf("    refresh_token: %q\n", refreshToken)
-	}
-	if username != "" {
-		authSection += fmt.Sprintf("    username: %q\n", username)
-	}
-	if password != "" {
-		authSection += fmt.Sprintf("    password: %q\n", password)
-	}
+	authSection := fmt.Sprintf("    service_account_id: %q\n    service_account_secret: %q\n", saID, saSecret)
 
 	configYAML := fmt.Sprintf("auth:\n%scontext:\n  project: %q\n  region: %q\n  organization: %q\n",
 		authSection, project, region, organization)
@@ -701,7 +941,8 @@ metadata:
 type: Opaque
 stringData:
   config.yaml: |
-%s---
+%s
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -725,7 +966,8 @@ func indent(s, prefix string) string {
 
 // applyEvrocCRDs applies the evroc CRDs directly to avoid race conditions.
 func applyEvrocCRDs(ctx context.Context, kubeconfig string) {
-	crdDir := filepath.Join(repoRoot, "config", "crd", "bases")
+	// CRDs are generated into the Helm chart, not config/crd/bases.
+	crdDir := filepath.Join(repoRoot, "helm", "cluster-api-provider-evroc", "crds")
 	kubectlBin := kubectlPath()
 	cmd := exec.CommandContext(ctx, kubectlBin,
 		"--kubeconfig", kubeconfig,
@@ -996,20 +1238,19 @@ func generateKubeadmClusterYAML(clusterName string) []byte {
 	)
 	// Build override map first so we can filter conflicting vars from os.Environ().
 	overrides := map[string]string{
-		"CLUSTER_NAME":                  clusterName,
-		"EVROC_PROJECT":                 e2eConfig.GetVariable("EVROC_PROJECT"),
-		"EVROC_REGION":                  e2eConfig.GetVariable("EVROC_REGION"),
-		"EVROC_AVAILABILITY_ZONE":       e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
-		"KUBERNETES_VERSION":            e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
-		"CONTROL_PLANE_MACHINE_COUNT":   e2eConfig.MustGetVariable("CONTROL_PLANE_MACHINE_COUNT"),
-		"WORKER_MACHINE_COUNT":          e2eConfig.MustGetVariable("WORKER_MACHINE_COUNT"),
-		"EVROC_CONTROL_PLANE_FLAVOR":    e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
-		"EVROC_IMAGE":                   e2eConfig.MustGetVariable("EVROC_IMAGE"),
-		"EVROC_CONTROL_PLANE_DISK_SIZE": e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_DISK_SIZE"),
-		"EVROC_SSH_KEY":                 e2eConfig.GetVariable("EVROC_SSH_KEY"),
-		"EVROC_CREDENTIALS_NAMESPACE":   e2eConfig.GetVariable("EVROC_CREDENTIALS_NAMESPACE"),
-		"EVROC_CREDENTIALS_SECRET":      e2eConfig.GetVariable("EVROC_CREDENTIALS_SECRET"),
-		"XDG_CONFIG_HOME":               filepath.Join(artifactFolder, "xdg"),
+		"CLUSTER_NAME":                        clusterName,
+		"EVROC_PROJECT":                       e2eConfig.GetVariable("EVROC_PROJECT"),
+		"EVROC_REGION":                        e2eConfig.GetVariable("EVROC_REGION"),
+		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
+		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
+		"CONTROL_PLANE_MACHINE_COUNT":         e2eConfig.MustGetVariable("CONTROL_PLANE_MACHINE_COUNT"),
+		"WORKER_MACHINE_COUNT":                e2eConfig.MustGetVariable("WORKER_MACHINE_COUNT"),
+		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
+		"EVROC_IMAGE":                         e2eConfig.MustGetVariable("EVROC_IMAGE"),
+		"EVROC_CONTROL_PLANE_DISK_SIZE":       e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_DISK_SIZE"),
+		"EVROC_SSH_KEY":                       e2eConfig.GetVariable("EVROC_SSH_KEY"),
+		"EVROC_CREDENTIALS_SECRET":            e2eConfig.GetVariable("EVROC_CREDENTIALS_SECRET"),
+		"XDG_CONFIG_HOME":                     filepath.Join(artifactFolder, "xdg"),
 	}
 	// Filter os.Environ() to remove keys that we override, preventing
 	// stale env vars (e.g. KUBERNETES_VERSION from RKE2) from winning.
@@ -1031,6 +1272,168 @@ func generateKubeadmClusterYAML(clusterName string) []byte {
 	outputFile := filepath.Join(artifactFolder, clusterName+".yaml")
 	Expect(os.WriteFile(outputFile, stdout.Bytes(), os.ModePerm)).To(Succeed())
 	return stdout.Bytes()
+}
+
+// generateHALBClusterYAML generates a 3-CP HA cluster manifest using the
+// ha-lb template (kubeadm with load balancer).
+func generateHALBClusterYAML(clusterName string) []byte {
+	templatePath := filepath.Join(repoRoot, "templates", "cluster-template-ha-lb.yaml")
+
+	cmd := exec.CommandContext(ctx, clusterctlPath(),
+		"generate", "cluster", clusterName,
+		"--from", templatePath,
+		"--target-namespace", "default",
+	)
+	overrides := map[string]string{
+		"CLUSTER_NAME":                        clusterName,
+		"EVROC_PROJECT":                       e2eConfig.GetVariable("EVROC_PROJECT"),
+		"EVROC_REGION":                        e2eConfig.GetVariable("EVROC_REGION"),
+		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
+		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
+		"CONTROL_PLANE_MACHINE_COUNT":         "3",
+		"WORKER_MACHINE_COUNT":                "0",
+		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
+		"EVROC_IMAGE":                         e2eConfig.MustGetVariable("EVROC_IMAGE"),
+		"EVROC_CONTROL_PLANE_DISK_SIZE":       e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_DISK_SIZE"),
+		"EVROC_SSH_KEY":                       e2eConfig.GetVariable("EVROC_SSH_KEY"),
+		"EVROC_CREDENTIALS_SECRET":            e2eConfig.GetVariable("EVROC_CREDENTIALS_SECRET"),
+		"XDG_CONFIG_HOME":                     filepath.Join(artifactFolder, "xdg"),
+	}
+	for _, env := range os.Environ() {
+		key := strings.SplitN(env, "=", 2)[0]
+		if _, overridden := overrides[key]; !overridden {
+			cmd.Env = append(cmd.Env, env)
+		}
+	}
+	for k, v := range overrides {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	Expect(cmd.Run()).To(Succeed(), "clusterctl generate cluster (ha-lb) failed: %s", stderr.String())
+
+	outputFile := filepath.Join(artifactFolder, clusterName+".yaml")
+	Expect(os.WriteFile(outputFile, stdout.Bytes(), os.ModePerm)).To(Succeed())
+	return stdout.Bytes()
+}
+
+// generateRKE2HALBClusterYAML generates a 3-CP HA RKE2 cluster manifest using the
+// rke2 template with load balancer (auto-created by EvrocCluster controller).
+func generateRKE2HALBClusterYAML(clusterName string) []byte {
+	templatePath := filepath.Join(repoRoot, "templates", "cluster-template-rke2.yaml")
+
+	cmd := exec.CommandContext(ctx, clusterctlPath(),
+		"generate", "cluster", clusterName,
+		"--from", templatePath,
+		"--target-namespace", "default",
+	)
+	overrides := map[string]string{
+		"CLUSTER_NAME":                        clusterName,
+		"EVROC_PROJECT":                       e2eConfig.GetVariable("EVROC_PROJECT"),
+		"EVROC_REGION":                        e2eConfig.GetVariable("EVROC_REGION"),
+		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
+		"KUBERNETES_VERSION":                  "v1.30.0+rke2r1",
+		"CONTROL_PLANE_MACHINE_COUNT":         "3",
+		"WORKER_MACHINE_COUNT":                "0",
+		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.GetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
+		"EVROC_IMAGE":                         "ubuntu.22-04.1",
+		"EVROC_CONTROL_PLANE_DISK_SIZE":       e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_DISK_SIZE"),
+		"EVROC_SSH_KEY":                       e2eConfig.GetVariable("EVROC_SSH_KEY"),
+		"EVROC_CREDENTIALS_SECRET":            e2eConfig.GetVariable("EVROC_CREDENTIALS_SECRET"),
+		"XDG_CONFIG_HOME":                     filepath.Join(artifactFolder, "xdg"),
+	}
+	for _, env := range os.Environ() {
+		key := strings.SplitN(env, "=", 2)[0]
+		if _, overridden := overrides[key]; !overridden {
+			cmd.Env = append(cmd.Env, env)
+		}
+	}
+	for k, v := range overrides {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	Expect(cmd.Run()).To(Succeed(), "clusterctl generate cluster (rke2 ha) failed: %s", stderr.String())
+
+	outputFile := filepath.Join(artifactFolder, clusterName+".yaml")
+	Expect(os.WriteFile(outputFile, stdout.Bytes(), os.ModePerm)).To(Succeed())
+	return stdout.Bytes()
+}
+
+// installCAPRKE2 downloads and installs the CAPRKE2 bootstrap and control-plane
+// providers from their GitHub release YAMLs. Variable placeholders are replaced
+// with defaults before applying.
+func installCAPRKE2(ctx context.Context, kubeconfig string) {
+	caprke2Version := "v0.24.1"
+	baseURL := "https://github.com/rancher/cluster-api-provider-rke2/releases/download/" + caprke2Version
+
+	varPattern := regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:=([^}]*)\}`)
+
+	for _, comp := range []string{"bootstrap-components.yaml", "control-plane-components.yaml"} {
+		compURL := baseURL + "/" + comp
+		GinkgoWriter.Printf("Downloading CAPRKE2 %s from %s\n", comp, compURL)
+
+		dlCmd := exec.CommandContext(ctx, "curl", "-sL", compURL)
+		body, err := dlCmd.Output()
+		Expect(err).ToNot(HaveOccurred(), "Failed to download %s", comp)
+
+		content := varPattern.ReplaceAllString(string(body), "$1")
+
+		compFile := filepath.Join(artifactFolder, "caprke2-"+comp)
+		Expect(os.WriteFile(compFile, []byte(content), 0600)).To(Succeed())
+
+		applyCmd := exec.CommandContext(ctx, kubectlPath(),
+			"--kubeconfig", kubeconfig,
+			"apply", "-f", compFile,
+		)
+		out, applyErr := applyCmd.CombinedOutput()
+		Expect(applyErr).ToNot(HaveOccurred(), "Failed to apply CAPRKE2 %s: %s", comp, string(out))
+		GinkgoWriter.Printf("Applied CAPRKE2 %s successfully\n", comp)
+	}
+
+	// Wait for CAPRKE2 CRDs to be available.
+	for _, crd := range []string{
+		"rke2controlplanes.controlplane.cluster.x-k8s.io",
+		"rke2configtemplates.bootstrap.cluster.x-k8s.io",
+	} {
+		Eventually(func() error {
+			cmd := exec.CommandContext(ctx, kubectlPath(),
+				"--kubeconfig", kubeconfig,
+				"get", "crd", crd,
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("CRD %s not ready: %s", crd, string(out))
+			}
+			return nil
+		}, 5*time.Minute, 10*time.Second).Should(Succeed(), "CAPRKE2 CRD not established: "+crd)
+	}
+
+	// Wait for webhook endpoints to be serving.
+	for _, svc := range []struct{ name, ns string }{
+		{"rke2-bootstrap-webhook-service", "rke2-bootstrap-system"},
+		{"rke2-control-plane-webhook-service", "rke2-control-plane-system"},
+	} {
+		Eventually(func() error {
+			cmd := exec.CommandContext(ctx, kubectlPath(),
+				"--kubeconfig", kubeconfig,
+				"get", "endpoints", svc.name, "-n", svc.ns,
+				"-o", "jsonpath={.subsets[*].addresses[*].ip}",
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("webhook %s not ready: %s", svc.name, string(out))
+			}
+			if len(strings.TrimSpace(string(out))) < 3 {
+				return fmt.Errorf("webhook %s has no endpoints", svc.name)
+			}
+			return nil
+		}, 5*time.Minute, 10*time.Second).Should(Succeed(), "CAPRKE2 webhook not ready: "+svc.name)
+	}
 }
 
 func applyManifest(ctx context.Context, kubeconfig string, manifest []byte, clusterName string) {
@@ -1065,7 +1468,8 @@ func deleteCluster(ctx context.Context, kubeconfig, clusterName, namespace strin
 // waitForDeploymentReady polls until the named deployment has at least 1 ready replica.
 func waitForDeploymentReady(ctx context.Context, kubeconfig, namespace, labelSelector string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
-	logged := false
+	debugInterval := 30 * time.Second
+	lastDebug := time.Time{}
 	for time.Now().Before(deadline) {
 		cmd := exec.CommandContext(ctx, kubectlPath(),
 			"--kubeconfig", kubeconfig,
@@ -1078,29 +1482,84 @@ func waitForDeploymentReady(ctx context.Context, kubeconfig, namespace, labelSel
 		if err == nil && strings.TrimSpace(string(out)) != "" && strings.TrimSpace(string(out)) != "0" {
 			return
 		}
-		// Log pod status periodically for debugging.
-		if !logged || time.Until(deadline) < 5*time.Minute {
-			podCmd := exec.CommandContext(ctx, kubectlPath(),
+		// Log namespace-wide status periodically for debugging.
+		if time.Since(lastDebug) >= debugInterval {
+			// Show ALL deployments in namespace (not just label-filtered).
+			allDeplCmd := exec.CommandContext(ctx, kubectlPath(),
 				"--kubeconfig", kubeconfig,
-				"get", "pods", "-n", namespace,
-				"-l", "cluster.x-k8s.io/provider="+labelSelector,
-				"-o", "wide",
+				"get", "deployments", "-n", namespace, "-o", "wide",
 			)
-			podOut, _ := podCmd.CombinedOutput()
-			GinkgoWriter.Printf("  [debug] deployment %s pods: %s\n", labelSelector, strings.TrimSpace(string(podOut)))
-			logged = true
+			allDeplOut, _ := allDeplCmd.CombinedOutput()
+			GinkgoWriter.Printf("  [debug] all deployments in %s:\n%s\n", namespace, strings.TrimSpace(string(allDeplOut)))
+
+			// Show ALL pods in namespace.
+			allPodsCmd := exec.CommandContext(ctx, kubectlPath(),
+				"--kubeconfig", kubeconfig,
+				"get", "pods", "-n", namespace, "-o", "wide",
+			)
+			allPodsOut, _ := allPodsCmd.CombinedOutput()
+			GinkgoWriter.Printf("  [debug] all pods in %s:\n%s\n", namespace, strings.TrimSpace(string(allPodsOut)))
+			lastDebug = time.Now()
 		}
 		time.Sleep(10 * time.Second)
 	}
-	// Capture final pod descriptions for debugging before failing.
+	// Capture final state for debugging before failing.
 	descCmd := exec.CommandContext(ctx, kubectlPath(),
 		"--kubeconfig", kubeconfig,
-		"describe", "pods", "-n", namespace,
-		"-l", "cluster.x-k8s.io/provider="+labelSelector,
+		"describe", "deployments,pods", "-n", namespace,
 	)
 	descOut, _ := descCmd.CombinedOutput()
-	GinkgoWriter.Printf("  [debug] final pod describe:\n%s\n", string(descOut))
+	GinkgoWriter.Printf("  [debug] final describe of all deployments/pods in %s:\n%s\n", namespace, string(descOut))
 	Fail(fmt.Sprintf("Deployment with provider label %q in namespace %q not ready after %s", labelSelector, namespace, timeout))
+}
+
+// waitForAllDeploymentsReady polls until every deployment in the given namespace
+// has at least 1 ready replica. This ensures all CAPI providers (core, bootstrap,
+// control-plane, infrastructure) and their webhooks are serving before tests proceed.
+func waitForAllDeploymentsReady(ctx context.Context, kubeconfig, namespace string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Get all deployments and their ready/desired replica counts.
+		cmd := exec.CommandContext(ctx, kubectlPath(),
+			"--kubeconfig", kubeconfig,
+			"get", "deployments", "-n", namespace,
+			"-o", "jsonpath={range .items[*]}{.metadata.name}={.status.readyReplicas}/{.spec.replicas} {end}",
+		)
+		out, err := cmd.Output()
+		if err == nil {
+			fields := strings.Fields(strings.TrimSpace(string(out)))
+			if len(fields) > 0 {
+				allReady := true
+				for _, f := range fields {
+					// Each field is "name=ready/desired"
+					parts := strings.SplitN(f, "=", 2)
+					if len(parts) != 2 {
+						allReady = false
+						break
+					}
+					counts := strings.SplitN(parts[1], "/", 2)
+					if len(counts) != 2 || counts[0] == "" || counts[0] == "<nil>" || counts[0] == "0" {
+						allReady = false
+						break
+					}
+				}
+				if allReady {
+					GinkgoWriter.Printf("All deployments ready in %s: %s\n", namespace, string(out))
+					return
+				}
+			}
+		}
+		GinkgoWriter.Printf("  [debug] deployments in %s: %s\n", namespace, strings.TrimSpace(string(out)))
+		time.Sleep(10 * time.Second)
+	}
+	// Final debug dump before failing.
+	descCmd := exec.CommandContext(ctx, kubectlPath(),
+		"--kubeconfig", kubeconfig,
+		"describe", "deployments,pods", "-n", namespace,
+	)
+	descOut, _ := descCmd.CombinedOutput()
+	GinkgoWriter.Printf("  [debug] final describe of all deployments/pods in %s:\n%s\n", namespace, string(descOut))
+	Fail(fmt.Sprintf("Not all deployments in namespace %q became ready after %s", namespace, timeout))
 }
 
 // waitForEvrocClusterReady polls until the cluster reports Provisioned phase.
@@ -1223,28 +1682,28 @@ func verifyClusterSGStatus(ctx context.Context, kubeconfig, clusterName, namespa
 	Expect(roles).To(ContainElement("controlPlane"),
 		"SG status should contain a security group with role=controlPlane, got: %v", roles)
 
-	// Verify SG names are non-empty
-	nameCmd := exec.CommandContext(ctx, kubectlPath(),
+	// Verify SG IDs are non-empty
+	idCmd := exec.CommandContext(ctx, kubectlPath(),
 		"--kubeconfig", kubeconfig,
 		"get", "evroccluster", clusterName,
 		"-n", namespace,
-		"-o", "jsonpath={.status.resources.securityGroups[*].name}",
+		"-o", "jsonpath={.status.resources.securityGroups[*].id}",
 	)
-	nameOut, err := nameCmd.Output()
-	Expect(err).ToNot(HaveOccurred(), "Failed to get SG names from status")
-	names := strings.Fields(strings.TrimSpace(string(nameOut)))
-	Expect(names).To(HaveLen(len(roles)), "Each SG should have a name")
+	idOut, err := idCmd.Output()
+	Expect(err).ToNot(HaveOccurred(), "Failed to get SG IDs from status")
+	names := strings.Fields(strings.TrimSpace(string(idOut)))
+	Expect(names).To(HaveLen(len(roles)), "Each SG should have an ID")
 	for _, name := range names {
-		Expect(name).ToNot(BeEmpty(), "SG name should not be empty")
+		Expect(name).ToNot(BeEmpty(), "SG ID should not be empty")
 		Expect(name).To(ContainSubstring(clusterName),
-			"SG cloud name should contain the cluster name, got: %s", name)
+			"SG cloud ID should contain the cluster name, got: %s", name)
 	}
 
-	GinkgoWriter.Printf("SG status verified: roles=%v names=%v\n", roles, names)
+	GinkgoWriter.Printf("SG status verified: roles=%v ids=%v\n", roles, names)
 }
 
 // verifyMachineStatus checks that EvrocMachines have populated addresses and
-// a providerID in the expected evroc:/// format.
+// a providerID in the expected evroc://<vm-id> format.
 func verifyMachineStatus(ctx context.Context, kubeconfig, clusterName, namespace string) {
 	// Check providerIDs
 	pidCmd := exec.CommandContext(ctx, kubectlPath(),
@@ -1316,19 +1775,81 @@ func verifyControlPlaneEndpoint(ctx context.Context, kubeconfig, clusterName, na
 	port := strings.TrimSpace(string(portOut))
 	Expect(port).To(Equal("6443"), "controlPlaneEndpoint.port should be 6443, got: %s", port)
 
-	// Verify public IP is tracked in status
-	pipCmd := exec.CommandContext(ctx, kubectlPath(),
+	// Verify LB is tracked in status
+	lbCmd := exec.CommandContext(ctx, kubectlPath(),
 		"--kubeconfig", kubeconfig,
 		"get", "evroccluster", clusterName,
 		"-n", namespace,
-		"-o", "jsonpath={.status.resources.publicIP.name}",
+		"-o", "jsonpath={.status.resources.loadBalancer.id}",
 	)
-	pipOut, err := pipCmd.Output()
-	Expect(err).ToNot(HaveOccurred(), "Failed to get publicIP status")
-	pipName := strings.TrimSpace(string(pipOut))
-	Expect(pipName).ToNot(BeEmpty(), "publicIP.name should be tracked in status")
+	lbOut, err := lbCmd.Output()
+	Expect(err).ToNot(HaveOccurred(), "Failed to get loadBalancer status")
+	lbID := strings.TrimSpace(string(lbOut))
+	Expect(lbID).ToNot(BeEmpty(), "loadBalancer.id should be tracked in status")
 
-	GinkgoWriter.Printf("CP endpoint verified: host=%s port=%s publicIP=%s\n", host, port, pipName)
+	GinkgoWriter.Printf("CP endpoint verified: host=%s port=%s loadBalancer=%s\n", host, port, lbID)
+}
+
+// ─── HA / Load Balancer verification helpers ─────────────────────────────────
+
+// waitForAllMachinesRunning waits until exactly expectedCount machines for the
+// cluster are in Running phase. This is stricter than waitForMachineProvisioned
+// (which only requires at least one).
+func waitForAllMachinesRunning(ctx context.Context, kubeconfig, clusterName, namespace string, expectedCount int, intervals ...interface{}) {
+	timeout, poll := intervalsToTimeDuration(intervals, 30*time.Minute, 30*time.Second)
+
+	Eventually(func() error {
+		cmd := exec.CommandContext(ctx, kubectlPath(),
+			"--kubeconfig", kubeconfig,
+			"get", "machines",
+			"-n", namespace,
+			"-l", "cluster.x-k8s.io/cluster-name="+clusterName+",cluster.x-k8s.io/control-plane",
+			"-o", "jsonpath={.items[*].status.phase}",
+		)
+		out, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("kubectl get machines failed: %w", err)
+		}
+		phases := strings.Fields(string(out))
+		running := 0
+		for _, p := range phases {
+			if p == string(clusterv1.MachinePhaseRunning) {
+				running++
+			}
+		}
+		if running < expectedCount {
+			return fmt.Errorf("cluster %s: %d/%d CP machines Running (phases: %v)", clusterName, running, expectedCount, phases)
+		}
+		return nil
+	}, timeout, poll).Should(Succeed(), "Not all %d CP machines reached Running for cluster %s", expectedCount, clusterName)
+}
+
+// verifyLBBackends checks that the EvrocCluster status reports the expected
+// number of load balancer backends, confirming all CP machines registered.
+func verifyLBBackends(ctx context.Context, kubeconfig, clusterName, namespace string, expectedCount int) {
+	cmd := exec.CommandContext(ctx, kubectlPath(),
+		"--kubeconfig", kubeconfig,
+		"get", "evroccluster", clusterName,
+		"-n", namespace,
+		"-o", "jsonpath={.status.resources.loadBalancer.backends}",
+	)
+	out, err := cmd.Output()
+	Expect(err).ToNot(HaveOccurred(), "Failed to get LB backends from EvrocCluster status")
+
+	backends := strings.TrimSpace(string(out))
+	Expect(backends).ToNot(BeEmpty(), "LB backends list should not be empty")
+
+	// The jsonpath returns a JSON array like ["vm1","vm2","vm3"]
+	// Count the entries by splitting on commas within the array.
+	backendCount := strings.Count(backends, ",") + 1
+	if backends == "[]" {
+		backendCount = 0
+	}
+
+	Expect(backendCount).To(Equal(expectedCount),
+		"Expected %d LB backends but got %d: %s", expectedCount, backendCount, backends)
+
+	GinkgoWriter.Printf("LB backends verified: count=%d backends=%s\n", backendCount, backends)
 }
 
 // ─── clusterctl move helpers ──────────────────────────────────────────────────
@@ -1397,31 +1918,6 @@ func waitForWorkloadKubeconfig(ctx context.Context, mgmtKubeconfig, clusterName,
 	}, timeout, poll).Should(Succeed(), "Workload cluster kubeconfig secret not available for cluster %s", clusterName)
 }
 
-// getWorkloadKubeconfig retrieves the kubeconfig secret for the workload cluster
-// and writes it to the given file path. The secret is named <cluster>-kubeconfig
-// by convention and stored in the same namespace as the Cluster resource.
-func getWorkloadKubeconfig(ctx context.Context, mgmtKubeconfig, clusterName, namespace, outputPath string) {
-	cmd := exec.CommandContext(ctx, kubectlPath(),
-		"--kubeconfig", mgmtKubeconfig,
-		"get", "secret", clusterName+"-kubeconfig",
-		"-n", namespace,
-		"-o", "jsonpath={.data.value}",
-	)
-	out, err := cmd.Output()
-	Expect(err).ToNot(HaveOccurred(), "Failed to get workload cluster kubeconfig secret")
-	Expect(out).NotTo(BeEmpty(), "workload cluster kubeconfig secret is empty")
-
-	// The value is base64-encoded in the secret.
-	decodeCmd := exec.CommandContext(ctx, "base64", "-d")
-	decodeCmd.Stdin = bytes.NewReader(out)
-	decodedBytes, err := decodeCmd.Output()
-	Expect(err).ToNot(HaveOccurred(), "Failed to base64 decode workload kubeconfig")
-
-	Expect(os.WriteFile(outputPath, decodedBytes, 0600)).To(Succeed(),
-		"Failed to write workload kubeconfig to %s", outputPath)
-	GinkgoWriter.Printf("Workload kubeconfig written to %s\n", outputPath)
-}
-
 // waitForAPIServerReachable polls until kubectl cluster-info succeeds against
 // the given kubeconfig, indicating the workload cluster API server is reachable.
 func waitForAPIServerReachable(ctx context.Context, kubeconfig string, timeout time.Duration) {
@@ -1439,6 +1935,55 @@ func waitForAPIServerReachable(ctx context.Context, kubeconfig string, timeout t
 	Fail(fmt.Sprintf("Workload cluster API server not reachable after %s", timeout))
 }
 
+// installCalicoCNI applies Calico's static manifest to the workload cluster.
+// This is required so that pods (especially cert-manager, needed by clusterctl init)
+// can be scheduled on the single-node workload cluster.
+// Calico auto-detects the pod CIDR from kubeadm's cluster configuration.
+func installCalicoCNI(ctx context.Context, kubeconfig string) {
+	calicoURL := "https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/calico.yaml"
+	cmd := exec.CommandContext(ctx, kubectlPath(),
+		"--kubeconfig", kubeconfig,
+		"apply", "-f", calicoURL,
+	)
+	out, err := cmd.CombinedOutput()
+	Expect(err).ToNot(HaveOccurred(), "Failed to install Calico CNI: %s", string(out))
+	GinkgoWriter.Printf("Calico CNI installed successfully\n")
+}
+
+// waitForCNIReady waits for calico-node pods to be running in kube-system,
+// indicating that the CNI is operational and pods can be scheduled.
+func waitForCNIReady(ctx context.Context, kubeconfig string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cmd := exec.CommandContext(ctx, kubectlPath(),
+			"--kubeconfig", kubeconfig,
+			"get", "pods",
+			"-n", "kube-system",
+			"-l", "k8s-app=calico-node",
+			"-o", "jsonpath={.items[*].status.phase}",
+		)
+		out, err := cmd.Output()
+		if err == nil {
+			phases := strings.Fields(strings.TrimSpace(string(out)))
+			if len(phases) > 0 {
+				allRunning := true
+				for _, p := range phases {
+					if p != "Running" {
+						allRunning = false
+						break
+					}
+				}
+				if allRunning {
+					GinkgoWriter.Printf("Calico pods are Running\n")
+					return
+				}
+			}
+		}
+		time.Sleep(15 * time.Second)
+	}
+	Fail(fmt.Sprintf("Calico CNI pods not ready after %s", timeout))
+}
+
 // getEvrocMachineProviderIDs returns the providerID values from all EvrocMachines
 // belonging to the given cluster. These are the evroc VM identifiers and are used
 // to verify VMs survive the clusterctl move.
@@ -1454,6 +1999,23 @@ func getEvrocMachineProviderIDs(ctx context.Context, kubeconfig, clusterName, na
 	Expect(err).ToNot(HaveOccurred(), "Failed to get EvrocMachine providerIDs")
 	ids := strings.Fields(strings.TrimSpace(string(out)))
 	return ids
+}
+
+// getEvrocClusterLoadBalancerID returns the managed load balancer's stable evroc
+// resource ID. A clusterctl move must not replace it when the Kubernetes object
+// receives a new UID in the target management cluster.
+func getEvrocClusterLoadBalancerID(ctx context.Context, kubeconfig, clusterName, namespace string) string {
+	cmd := exec.CommandContext(ctx, kubectlPath(),
+		"--kubeconfig", kubeconfig,
+		"get", "evroccluster", clusterName,
+		"-n", namespace,
+		"-o", "jsonpath={.status.resources.loadBalancer.id}",
+	)
+	out, err := cmd.CombinedOutput()
+	Expect(err).ToNot(HaveOccurred(), "Failed to get EvrocCluster load balancer ID: %s", string(out))
+	id := strings.TrimSpace(string(out))
+	Expect(id).ToNot(BeEmpty(), "EvrocCluster load balancer ID must be recorded in status")
+	return id
 }
 
 // clusterctlMove runs `clusterctl move` to pivot CAPI resources from the source
@@ -1537,6 +2099,120 @@ func parseDuration(v interface{}, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// ─── Bastion VM helpers ──────────────────────────────────────────────────────
+
+// newEvrocSDKClient creates an evroc SDK client from environment variables.
+func newEvrocSDKClient(ctx context.Context) *evroc.Client {
+	client, err := evroc.NewFromEnv(ctx)
+	Expect(err).ToNot(HaveOccurred(), "Failed to create evroc SDK client from env")
+	return client
+}
+
+// createBastionVM creates a small VM with a public IP to use as an SSH jump host.
+// Returns the public IP address of the bastion. The caller must call deleteBastionVM
+// to clean up.
+func createBastionVM(ctx context.Context, client *evroc.Client, bastionName string) string {
+	sshKey := os.Getenv("EVROC_SSH_KEY")
+	zone := e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE")
+	if zone == "" {
+		zone = "a"
+	}
+
+	GinkgoWriter.Printf("Creating bastion VM %s with public IP...\n", bastionName)
+
+	// 1. Create a public IP for the bastion
+	publicIPName := bastionName + "-ip"
+	_, err := networking.NewPublicIPBuilder(publicIPName).
+		WithLabels(map[string]string{"purpose": "e2e-bastion"}).
+		Create(ctx, client.Networking().PublicIPs())
+	Expect(err).ToNot(HaveOccurred(), "Failed to create bastion public IP")
+
+	// 2. Create a boot disk for the bastion
+	diskName := bastionName + "-disk"
+	_, err = compute.NewDiskBuilder(diskName).
+		WithImage("ubuntu-minimal.24-04.1").
+		WithSizeGB(20).
+		WithZone(zone).
+		WithLabels(map[string]string{"purpose": "e2e-bastion"}).
+		Create(ctx, client.Compute().Disks())
+	Expect(err).ToNot(HaveOccurred(), "Failed to create bastion disk")
+
+	// Wait for disk to be ready
+	_, err = client.Compute().Disks().WaitForReady(ctx, diskName, 5*time.Minute)
+	Expect(err).ToNot(HaveOccurred(), "Bastion disk did not become ready")
+
+	// 3. Create a security group for the bastion (SSH in + all egress)
+	sgName := bastionName + "-sg"
+	_, err = networking.NewSecurityGroupBuilder(sgName).
+		AllowIngressRule("allow-ssh", "TCP", 22, 0, "0.0.0.0/0").
+		AllowAllEgress().
+		WithLabels(map[string]string{"purpose": "e2e-bastion"}).
+		Create(ctx, client.Networking().SecurityGroups())
+	if err != nil {
+		GinkgoWriter.Printf("Warning: failed to create bastion SG (may already exist): %v\n", err)
+	}
+
+	// 4. Create the bastion VM
+	vmReq := compute.NewVirtualMachineBuilder(bastionName).
+		WithVMInstanceType("a1a.xs").
+		WithBootDisk(compute.DiskRef(diskName)).
+		WithPublicIP(compute.PublicIPRef(publicIPName)).
+		WithSecurityGroup(compute.SecurityGroupRef(sgName)).
+		WithZone(zone).
+		WithLabels(map[string]string{"purpose": "e2e-bastion"})
+	if sshKey != "" {
+		vmReq = vmReq.WithSSHKey(sshKey)
+	}
+
+	_, err = client.Compute().VirtualMachines().Create(ctx, vmReq.Build())
+	Expect(err).ToNot(HaveOccurred(), "Failed to create bastion VM")
+
+	// 4. Wait for the VM to be ready and get its public IP
+	vm, err := client.Compute().VirtualMachines().WaitForReady(ctx, bastionName, 10*time.Minute)
+	Expect(err).ToNot(HaveOccurred(), "Bastion VM did not become ready")
+
+	Expect(vm.Status.Networking).ToNot(BeNil(), "Bastion VM has no networking status")
+	Expect(vm.Status.Networking.PublicIPv4Address).ToNot(BeNil(), "Bastion VM has no public IP")
+
+	publicIP := *vm.Status.Networking.PublicIPv4Address
+	Expect(publicIP).ToNot(BeEmpty(), "Bastion public IP is empty")
+
+	GinkgoWriter.Printf("Bastion VM %s ready with public IP %s\n", bastionName, publicIP)
+	return publicIP
+}
+
+// deleteBastionVM deletes the bastion VM, its disk, and its public IP. Best effort.
+func deleteBastionVM(ctx context.Context, client *evroc.Client, bastionName string) {
+	GinkgoWriter.Printf("Cleaning up bastion VM %s...\n", bastionName)
+
+	// Delete VM (best effort)
+	if err := client.Compute().VirtualMachines().Delete(ctx, bastionName); err != nil {
+		GinkgoWriter.Printf("Warning: failed to delete bastion VM: %v\n", err)
+	} else {
+		_ = client.Compute().VirtualMachines().WaitForDeleted(ctx, bastionName, 5*time.Minute)
+	}
+
+	// Delete disk (best effort)
+	diskName := bastionName + "-disk"
+	if err := client.Compute().Disks().Delete(ctx, diskName); err != nil {
+		GinkgoWriter.Printf("Warning: failed to delete bastion disk: %v\n", err)
+	}
+
+	// Delete public IP (best effort)
+	publicIPName := bastionName + "-ip"
+	if err := client.Networking().PublicIPs().Delete(ctx, publicIPName); err != nil {
+		GinkgoWriter.Printf("Warning: failed to delete bastion public IP: %v\n", err)
+	}
+
+	// Delete security group (best effort — must wait for VM to be fully gone)
+	sgName := bastionName + "-sg"
+	if err := client.Networking().SecurityGroups().Delete(ctx, sgName); err != nil {
+		GinkgoWriter.Printf("Warning: failed to delete bastion SG: %v\n", err)
+	}
+
+	GinkgoWriter.Printf("Bastion cleanup done\n")
 }
 
 // loadCredentialsFile loads EVROC credentials from a YAML/env file into the

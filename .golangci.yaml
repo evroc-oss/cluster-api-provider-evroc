@@ -43,40 +43,53 @@ linters:
     - forbidigo        # Don't restrict patterns
     - containedctx     # Context in structs OK for reconcilers
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
-    # Allow ignoring errors in specific safe cases
-    exclude-functions:
-      - (io.Closer).Close
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      # Allow ignoring errors in specific safe cases
+      exclude-functions:
+        - (io.Closer).Close
 
-  staticcheck:
-    checks: ["all", "-ST1000", "-SA1019"]  # Disable package comment requirement, allow v1beta1
+    staticcheck:
+      checks: ["all", "-ST1000", "-SA1019"]  # Disable package comment requirement, allow v1beta1
 
-  govet:
-    enable-all: true
-    disable:
-      - shadow       # Shadow variables sometimes OK
-      - fieldalignment  # Struct field alignment - too pedantic
+    govet:
+      enable-all: true
+      disable:
+        - shadow       # Shadow variables sometimes OK
+        - fieldalignment  # Struct field alignment - too pedantic
+
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+    rules:
+      # Exclude generated code
+      - linters:
+          - all
+        path: zz_generated\.deepcopy\.go
+
+      # Allow test helpers to ignore errors
+      - linters:
+          - errcheck
+          - noctx
+        path: _test\.go
+
+      # Mocks are test scaffolding. check-type-assertions forces a full
+      # comma-ok block around every `args.Get(0).(T)`, which triples the
+      # size of each method for no safety gain: a mis-programmed mock
+      # already fails loudly in the test that set it up.
+      - linters:
+          - errcheck
+        path: internal/cloud/mocks/
+
+      # Allow globals in scheme registration and webhooks
+      - linters:
+          - gochecknoglobals
+        path: (groupversion_info|webhook|main)\.go
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
   new: false
-  exclude-rules:
-    # Exclude generated code
-    - linters:
-        - all
-      path: zz_generated\.deepcopy\.go
-
-    # Allow test helpers to ignore errors
-    - linters:
-        - errcheck
-        - noctx
-      path: _test\.go
-
-    # Allow globals in scheme registration and webhooks
-    - linters:
-        - gochecknoglobals
-      path: (groupversion_info|webhook|main)\.go

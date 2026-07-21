@@ -1,18 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 evroc
 
-# High Availability Cluster Template (--flavor ha)
+# High Availability Cluster Template with Load Balancer (--flavor ha-lb)
 #
-# This is a quickstart template. It provisions a working cluster but does NOT
-# install a CNI. You must install a CNI (e.g., Calico, Cilium) after the
-# control plane is up for pods to become Ready.
+# This template provides HA for the Kubernetes API server by placing a
+# cloud L4 load balancer in front of all control plane nodes:
+# - Traffic distribution across all CP nodes
+# - Automatic failover when a CP node dies (LB routes around it)
 #
 # Technical configuration:
-# - HA control plane with etcd quorum
+# - Load-balanced control plane with etcd quorum
 # - All 3 availability zones (a, b, c)
 # - Automatic zone distribution via failureDomains
-# - Inline configuration (no separate CRDs)
-# - Separate placement groups for control plane and workers
+# - TCP health checks on port 6443 (10s interval, 3 unhealthy threshold)
 #
 # Required environment variables:
 #   CLUSTER_NAME: Name of the cluster
@@ -24,23 +24,10 @@
 #   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
 #   WORKER_MACHINE_COUNT: Number of worker nodes (default: 3)
 #   KUBERNETES_VERSION: Kubernetes version (default: v1.28.0)
-#   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.l)
-#   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.m)
+#   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM flavor (default: a1a.l)
+#   EVROC_WORKER_COMPUTE_PROFILE: Worker VM flavor (default: a1a.m)
 #   EVROC_IMAGE: OS image (default: ubuntu.22-04.1)
 #   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access (default: 0.0.0.0/0)
-#
-# Note: This template uses failureDomains [a, b, c] for multi-zone
-# distribution. Control plane machines receive zones via CAPI's
-# failureDomain assignment. Worker machines (MachineDeployment) do NOT
-# receive failureDomains from CAPI — the controller automatically assigns
-# a zone from the EvrocCluster's failureDomains list using deterministic
-# hashing of the machine name, ensuring even zone distribution.
-#
-# Region labels are set via kubeletExtraArgs, but zone labels are NOT set
-# because CAPI assigns zones dynamically via failureDomains. Zone labels
-# require an evroc Cloud Controller Manager (CCM). If your CSI driver
-# needs zone labels, use per-zone MachineDeployments
-# (see README.md "Topology Labels" section).
 
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
@@ -70,19 +57,12 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: ${EVROC_REGION:=se-sto}
-  # Per-cluster credentials (recommended). Create a Secret with evroc API
-  # credentials and set the name here. When empty, falls back to the
-  # globally mounted config file.
   credentialsRef:
-    name: "${EVROC_CREDENTIALS_SECRET:=}"
-    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+    name: "${EVROC_CREDENTIALS_SECRET}"
   failureDomains:
   - a
   - b
   - c
-  controlPlaneConfig:
-    publicIP:
-      enabled: true
   securityGroups:
     common:
       inlineSecurityGroups:
@@ -97,19 +77,18 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 10250
-          remoteCIDR: "10.0.0.0/8"
-        # Broad internal rule — covers all intra-cluster traffic (pods, services, etc.)
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         - name: cluster-internal
           direction: Ingress
           protocol: All
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         - name: allow-all-egress
           direction: Egress
           protocol: All
           remoteCIDR: "0.0.0.0/0"
     controlPlane:
       inlineSecurityGroups:
-      - name: ha-cp-sg
+      - name: ha-lb-cp-sg
         rules:
         - name: k8s-api
           direction: Ingress
@@ -121,7 +100,7 @@ spec:
           protocol: TCP
           port: 2379
           endPort: 2380
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlane
@@ -176,6 +155,11 @@ spec:
         kubeletExtraArgs:
         - name: node-labels
           value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+    postKubeadmCommands:
+      - |
+        if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
+        if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
     clusterConfiguration:
       apiServer:
         certSANs:

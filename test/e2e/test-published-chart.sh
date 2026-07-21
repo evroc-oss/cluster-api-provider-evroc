@@ -191,7 +191,6 @@ install_chart() {
             "${SCRIPT_DIR}/../../helm/cluster-api-provider-evroc" \
             --namespace="${TEST_NAMESPACE}" \
             --create-namespace \
-            --set evroc.existingConfigSecret=evroc-credentials \
             --set controller.image.tag="v${chart_app_version}" \
             --set controller.image.pullPolicy=IfNotPresent \
             --wait \
@@ -204,7 +203,6 @@ install_chart() {
             --version="${CHART_VERSION}" \
             --namespace="${TEST_NAMESPACE}" \
             --create-namespace \
-            --set evroc.existingConfigSecret=evroc-credentials \
             --set controller.image.pullPolicy=Always \
             --wait \
             --timeout=5m
@@ -294,6 +292,8 @@ metadata:
 spec:
   project: "${project}"
   region: "${region}"
+  credentialsRef:
+    name: evroc-credentials
   failureDomains:
     - a
     - b

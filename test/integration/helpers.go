@@ -25,17 +25,15 @@ import (
 	"sigs.k8s.io/yaml"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
-	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/controller"
 )
 
 // TestEnvironment holds the test environment
 type TestEnvironment struct {
-	Client      client.Client
-	CloudClient cloud.ClientInterface
-	Env         *envtest.Environment
-	Scheme      *runtime.Scheme
-	cancelMgr   context.CancelFunc
+	Client    client.Client
+	Env       *envtest.Environment
+	Scheme    *runtime.Scheme
+	cancelMgr context.CancelFunc
 }
 
 // SetupTestEnvironmentForSuite creates a test environment for the entire test suite
@@ -51,21 +49,22 @@ func SetupTestEnvironmentForSuite() *TestEnvironment {
 		}
 	}
 
-	// Either USERNAME/PASSWORD or TOKEN must be set
-	hasUsernameAuth := os.Getenv("EVROC_USERNAME") != "" && os.Getenv("EVROC_PASSWORD") != ""
-	hasTokenAuth := os.Getenv("EVROC_TOKEN") != ""
-	if !hasUsernameAuth && !hasTokenAuth {
-		panic("Either EVROC_USERNAME/EVROC_PASSWORD or EVROC_TOKEN must be set")
+	if os.Getenv("EVROC_SERVICE_ACCOUNT_ID") == "" || os.Getenv("EVROC_SERVICE_ACCOUNT_SECRET") == "" {
+		panic("EVROC_SERVICE_ACCOUNT_ID and EVROC_SERVICE_ACCOUNT_SECRET must be set")
 	}
 
 	// Create scheme
 	scheme := runtime.NewScheme()
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = infrav1.AddToScheme(scheme)
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("adding client-go scheme: %v", err))
+	}
+	if err := infrav1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("adding infrastructure scheme: %v", err))
+	}
 
 	// Setup envtest
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths: []string{"../../config/crd/bases"},
+		CRDDirectoryPaths: []string{"../../helm/cluster-api-provider-evroc/crds/"},
 	}
 
 	cfg, err := testEnv.Start()
@@ -82,14 +81,6 @@ func SetupTestEnvironmentForSuite() *TestEnvironment {
 		panic(fmt.Sprintf("Failed to create Kubernetes client: %v", err))
 	}
 
-	// Create evroc cloud client with background context
-	// Use Background() instead of a timeout context so the SDK can use it
-	// for token refresh throughout the test
-	cloudClient, err := cloud.NewClient(context.Background(), nil)
-	if err != nil {
-		panic(fmt.Sprintf("Failed to create evroc cloud client: %v", err))
-	}
-
 	// Start controller manager with reconcilers
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
@@ -103,7 +94,7 @@ func SetupTestEnvironmentForSuite() *TestEnvironment {
 	}
 
 	// Setup controllers
-	if err := setupControllers(mgr, cloudClient); err != nil {
+	if err := setupControllers(mgr); err != nil {
 		panic(fmt.Sprintf("Failed to setup controllers: %v", err))
 	}
 
@@ -116,11 +107,10 @@ func SetupTestEnvironmentForSuite() *TestEnvironment {
 	}()
 
 	return &TestEnvironment{
-		Client:      k8sClient,
-		CloudClient: cloudClient,
-		Env:         testEnv,
-		Scheme:      scheme,
-		cancelMgr:   cancel,
+		Client:    k8sClient,
+		Env:       testEnv,
+		Scheme:    scheme,
+		cancelMgr: cancel,
 	}
 }
 
@@ -143,21 +133,22 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 		}
 	}
 
-	// Either USERNAME/PASSWORD or TOKEN must be set
-	hasUsernameAuth := os.Getenv("EVROC_USERNAME") != "" && os.Getenv("EVROC_PASSWORD") != ""
-	hasTokenAuth := os.Getenv("EVROC_TOKEN") != ""
-	if !hasUsernameAuth && !hasTokenAuth {
-		t.Fatal("Either EVROC_USERNAME/EVROC_PASSWORD or EVROC_TOKEN must be set")
+	if os.Getenv("EVROC_SERVICE_ACCOUNT_ID") == "" || os.Getenv("EVROC_SERVICE_ACCOUNT_SECRET") == "" {
+		t.Fatal("EVROC_SERVICE_ACCOUNT_ID and EVROC_SERVICE_ACCOUNT_SECRET must be set")
 	}
 
 	// Create scheme
 	scheme := runtime.NewScheme()
-	_ = clientgoscheme.AddToScheme(scheme)
-	_ = infrav1.AddToScheme(scheme)
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding client-go scheme: %v", err)
+	}
+	if err := infrav1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding infrastructure scheme: %v", err)
+	}
 
 	// Setup envtest
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths: []string{"../../config/crd/bases"},
+		CRDDirectoryPaths: []string{"../../helm/cluster-api-provider-evroc/crds/"},
 	}
 
 	cfg, err := testEnv.Start()
@@ -174,14 +165,6 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 		t.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
-	// Create evroc cloud client with background context
-	// Use Background() instead of a timeout context so the SDK can use it
-	// for token refresh throughout the test
-	cloudClient, err := cloud.NewClient(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("Failed to create evroc cloud client: %v", err)
-	}
-
 	// Start controller manager with reconcilers
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme,
@@ -195,7 +178,7 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 	}
 
 	// Setup controllers
-	if err := setupControllers(mgr, cloudClient); err != nil {
+	if err := setupControllers(mgr); err != nil {
 		t.Fatalf("Failed to setup controllers: %v", err)
 	}
 
@@ -207,14 +190,13 @@ func SetupTestEnvironment(t *testing.T) *TestEnvironment {
 	}()
 
 	return &TestEnvironment{
-		Client:      k8sClient,
-		CloudClient: cloudClient,
-		Env:         testEnv,
-		Scheme:      scheme,
+		Client: k8sClient,
+		Env:    testEnv,
+		Scheme: scheme,
 	}
 }
 
-// TeardownTestEnvironment cleans up the test environment
+// Teardown cleans up the test environment
 func (te *TestEnvironment) Teardown(t *testing.T) {
 	t.Helper()
 	if err := te.Env.Stop(); err != nil {
@@ -299,22 +281,21 @@ func GenerateTestResourceName(prefix string) string {
 	return fmt.Sprintf("capi-test-%s-%d", prefix, time.Now().Unix())
 }
 
-// setupControllers registers all reconcilers with the manager
-func setupControllers(mgr ctrl.Manager, cloudClient cloud.ClientInterface) error {
+// setupControllers registers all reconcilers with the manager.
+// Reconcilers build their own cloud clients from each cluster's credentialsRef.
+func setupControllers(mgr ctrl.Manager) error {
 	// Setup EvrocMachine controller
 	if err := (&controller.EvrocMachineReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		CloudClient: cloudClient,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to setup EvrocMachine controller: %w", err)
 	}
 
 	// Setup EvrocCluster controller
 	if err := (&controller.EvrocClusterReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		CloudClient: cloudClient,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(context.Background(), mgr); err != nil {
 		return fmt.Errorf("failed to setup EvrocCluster controller: %w", err)
 	}
@@ -354,7 +335,9 @@ func loadCredentialsFromE2EConfig() {
 
 	for key, val := range cfg["variables"] {
 		if strings.HasPrefix(key, "EVROC_") && os.Getenv(key) == "" && val != "" {
-			_ = os.Setenv(key, val)
+			if err := os.Setenv(key, val); err != nil {
+				panic(fmt.Sprintf("setting %s from e2e config: %v", key, err))
+			}
 		}
 	}
 }

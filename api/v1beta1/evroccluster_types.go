@@ -18,17 +18,18 @@ type EvrocClusterSpec struct {
 	// +optional
 	Region string `json:"region,omitempty"`
 
-	// CredentialsRef is a reference to a Secret containing evroc API credentials.
-	// The secret must contain a "config.yaml" key with the evroc SDK config format:
-	//   auth:
-	//     token: "..."
-	//     refresh_token: "..."
-	//   context:
-	//     project: "..."
-	//     region: "..."
-	// When omitted the controller falls back to the globally mounted config file.
-	// +optional
-	CredentialsRef *SecretReference `json:"credentialsRef,omitempty"`
+	// CredentialsRef is a reference to a Secret in the EvrocCluster namespace
+	// containing evroc service account credentials. Cross-namespace references
+	// are intentionally unsupported.
+	// Required: every cluster must name the credentials it uses.
+	// The secret must use one of two formats:
+	//  1. A "config.yaml" key with the evroc SDK config:
+	//       auth:
+	//         service_account_id: "my-sa"
+	//         service_account_secret: "<base64-jwk-or-path>"
+	//  2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
+	// +kubebuilder:validation:Required
+	CredentialsRef *SecretReference `json:"credentialsRef"`
 
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
 	// +optional
@@ -52,8 +53,9 @@ type EvrocClusterSpec struct {
 	// +optional
 	AdditionalLabels map[string]string `json:"additionalLabels,omitempty"`
 
-	// ControlPlaneConfig defines networking configuration for control plane nodes.
-	// Currently holds public IP configuration for the control plane endpoint.
+	// ControlPlaneConfig defines configuration for the control plane endpoint.
+	// A load balancer is always created for the control plane.
+	// Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
 	// +optional
 	ControlPlaneConfig *ControlPlaneConfig `json:"controlPlaneConfig,omitempty"`
 
@@ -80,16 +82,11 @@ type InfrastructureClusterInitialization struct {
 	InfrastructureProvisioned *bool `json:"infrastructureProvisioned,omitempty"`
 }
 
-// SecretReference is a reference to a Secret in a given namespace.
+// SecretReference identifies a Secret in the EvrocCluster's namespace.
 type SecretReference struct {
 	// Name is the name of the Secret.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-
-	// Namespace is the namespace of the Secret. Defaults to the namespace of the
-	// EvrocCluster if omitted.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
 }
 
 // NetworkSpec defines network configuration for the cluster
@@ -103,12 +100,37 @@ type NetworkSpec struct {
 	SubnetRef *string `json:"subnetRef,omitempty"`
 }
 
-// ControlPlaneConfig defines networking configuration for control plane nodes.
+// ControlPlaneConfig defines configuration for the control plane endpoint.
 type ControlPlaneConfig struct {
-	// PublicIP configuration for the control plane endpoint.
-	// When enabled, a public IP will be auto-created and used for ControlPlaneEndpoint.Host.
+	// LoadBalancer allows overriding the auto-created control plane load balancer.
+	// If omitted, the controller auto-creates a managed LB with default settings.
 	// +optional
-	PublicIP *PublicIPConfig `json:"publicIP,omitempty"`
+	LoadBalancer *LoadBalancerConfig `json:"loadBalancer,omitempty"`
+}
+
+// GetLoadBalancer safely returns the LoadBalancer config, or nil.
+func (c *ControlPlaneConfig) GetLoadBalancer() *LoadBalancerConfig {
+	if c == nil {
+		return nil
+	}
+	return c.LoadBalancer
+}
+
+// LoadBalancerConfig allows customizing the control plane load balancer.
+// A load balancer is always auto-created — this config overrides defaults.
+type LoadBalancerConfig struct {
+	// ExistingPublicIPID references a pre-existing public IP to attach to the managed LB.
+	// If omitted, a new public IP is auto-created alongside the LB.
+	// +optional
+	ExistingPublicIPID *string `json:"existingPublicIPID,omitempty"`
+
+	// AdditionalPorts specifies extra TCP ports to forward through the public LB.
+	// Each port gets its own BackendService + L4Route with TCP health check.
+	// The API server port (6443) is always included and does not need to be listed here.
+	// Node registration (e.g. RKE2 supervisor on 9345) happens cluster-internally over
+	// private IPs and does not belong here — open it via an inline security group instead.
+	// +optional
+	AdditionalPorts []int32 `json:"additionalPorts,omitempty"`
 }
 
 // ClusterSecurityGroupsConfig defines security groups by node role.
@@ -128,21 +150,22 @@ type ClusterSecurityGroupsConfig struct {
 	Worker *SecurityGroupsConfig `json:"worker,omitempty"`
 }
 
-// PublicIPConfig defines how to configure a public IP.
-// Only one of Enabled or ExistingName should be set.
+// PublicIPConfig defines how to configure a public IP for a VM.
+// Only one of Enabled or ExistingID should be set.
+// Used by MachineNetworkingConfig for per-machine public IPs.
 type PublicIPConfig struct {
 	// Enabled auto-creates a public IP managed by the controller.
-	// The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
-	// When the cluster is deleted, the IP is automatically cleaned up.
+	// The IP will be named "<machine-name>-ip" and tracked in machine.status.resources.
+	// When the machine is deleted, the IP is automatically cleaned up.
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
 
-	// ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
+	// ExistingID references a pre-existing public IP by its evroc resource ID (e.g., created by Terraform).
 	// The IP is looked up in the evroc project configured via the controller's credentials.
 	// This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
 	// Mutually exclusive with Enabled.
 	// +optional
-	ExistingName *string `json:"existingName,omitempty"`
+	ExistingID *string `json:"existingID,omitempty"`
 }
 
 // SecurityGroupsConfig defines security group configuration.
@@ -153,10 +176,10 @@ type SecurityGroupsConfig struct {
 	// +optional
 	InlineSecurityGroups []InlineSecurityGroup `json:"inlineSecurityGroups,omitempty"`
 
-	// ExistingNames references pre-existing security groups by name (e.g., created by Terraform).
+	// ExistingIDs references pre-existing security groups by their evroc resource ID (e.g., created by Terraform).
 	// These groups will be attached but NOT managed by CAPI - CAPI will not create or delete them.
 	// +optional
-	ExistingNames []string `json:"existingNames,omitempty"`
+	ExistingIDs []string `json:"existingIDs,omitempty"`
 }
 
 // InlineSecurityGroup defines a security group with inline rules for auto-creation.
@@ -217,26 +240,42 @@ type NetworkStatus struct {
 // ClusterResources tracks cloud resources created or referenced by the cluster controller.
 // These are direct cloud resources, not Kubernetes CRDs.
 type ClusterResources struct {
-	// PublicIP information for the control plane endpoint.
-	// Only populated when using inline publicIP configuration (enabled or existingName).
+	// LoadBalancer tracks the L4 load balancer for the control plane API endpoint.
+	// Always populated — CAPI auto-creates an LB for every cluster.
 	// +optional
-	PublicIP *ManagedPublicIP `json:"publicIP,omitempty"`
+	LoadBalancer *ManagedLoadBalancer `json:"loadBalancer,omitempty"`
 
 	// SecurityGroups created or used for this cluster.
 	// +optional
 	SecurityGroups []ManagedSecurityGroup `json:"securityGroups,omitempty"`
 }
 
-// ManagedPublicIP tracks a public IP resource used by the cluster.
-type ManagedPublicIP struct {
-	// ID is the cloud resource ID (e.g., "my-cluster-cp-ip").
+// ManagedLoadBalancer tracks a load balancer resource used by the cluster.
+type ManagedLoadBalancer struct {
+	// ID is the evroc resource identifier (metadata.id in the evroc API).
 	ID string `json:"id"`
+
+	// UID is the system-generated UUID (metadata.uid in the evroc API).
+	UID string `json:"uid"`
+
+	// Address is the LB's public IPv4 address (used as ControlPlaneEndpoint.Host).
+	Address string `json:"address"`
+
+	// Backends lists the evroc resource IDs (metadata.id) of VMs registered as backends.
+	// +optional
+	Backends []string `json:"backends,omitempty"`
+}
+
+// ManagedPublicIP tracks a public IP resource used by a machine.
+type ManagedPublicIP struct {
+	// ID is the evroc resource identifier (metadata.id in the evroc API).
+	ID string `json:"id"`
+
+	// UID is the system-generated UUID (metadata.uid in the evroc API).
+	UID string `json:"uid"`
 
 	// Address is the allocated IPv4 address.
 	Address string `json:"address"`
-
-	// Name is the cloud resource name.
-	Name string `json:"name"`
 
 	// Managed indicates whether CAPI created and owns this resource.
 	// True: CAPI created it, will delete it on cluster deletion.
@@ -246,11 +285,11 @@ type ManagedPublicIP struct {
 
 // ManagedSecurityGroup tracks a security group resource used by the cluster.
 type ManagedSecurityGroup struct {
-	// ID is the cloud resource ID.
+	// ID is the evroc resource identifier (metadata.id in the evroc API).
 	ID string `json:"id"`
 
-	// Name is the cloud resource name.
-	Name string `json:"name"`
+	// UID is the system-generated UUID (metadata.uid in the evroc API).
+	UID string `json:"uid"`
 
 	// Managed indicates whether CAPI created and owns this resource.
 	// True: CAPI created it, will delete it on cluster deletion.
@@ -267,6 +306,7 @@ type ManagedSecurityGroup struct {
 // +kubebuilder:resource:path=evrocclusters,scope=Namespaced,categories=cluster-api
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta1"
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels['cluster\\.x-k8s\\.io/cluster-name']",description="Cluster"
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Cluster infrastructure is ready"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".spec.controlPlaneEndpoint.host",description="Control plane endpoint"

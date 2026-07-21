@@ -90,6 +90,9 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: se-sto
+  # Credentials for this cluster (required).
+  credentialsRef:
+    name: evroc-credentials
   failureDomains:
   - a
   # Future: Reference Terraform-created VPC/network
@@ -146,7 +149,7 @@ spec:
 
       # Alternative: Mix BYOI and CAPI-managed resources
       # existingPublicIpName: customer-123-control-plane-ip  # Terraform
-      # networkingConfig.securityGroups.existingNames:       # CAPI-managed
+      # networkingConfig.securityGroups.existingIDs:          # CAPI-managed
       # - name: my-cluster-sg
 ---
 # Worker MachineDeployment

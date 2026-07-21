@@ -82,11 +82,8 @@ spec:
           {{- toYaml .Values.controller.resources | nindent 10 }}
         securityContext:
           {{- toYaml .Values.controller.containerSecurityContext | nindent 10 }}
-        volumeMounts:
-        - name: config
-          mountPath: /etc/evroc
-          readOnly: true
         {{- if .Values.webhook.enabled }}
+        volumeMounts:
         - mountPath: {{ .Values.webhook.certDir }}
           name: cert
           readOnly: true
@@ -104,11 +101,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       terminationGracePeriodSeconds: 10
-      volumes:
-      - name: config
-        secret:
-          secretName: {{ include "cluster-api-provider-evroc.configSecretName" . }}
       {{- if .Values.webhook.enabled }}
+      volumes:
       - name: cert
         secret:
           defaultMode: 420
