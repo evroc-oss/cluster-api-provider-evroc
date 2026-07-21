@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.2.0] - 2026-07-21
+
+### Added
+
+- Managed load balancers, Cluster API move support, custom VPC configuration,
+  and a load-balancer-enabled HA template.
+- ArtifactHub repository metadata for Helm chart discovery.
+
+### Removed
+- **BREAKING:** Global controller credentials were removed; the provider no longer reads `/etc/evroc/config.yaml`, and the Helm chart no longer accepts `evroc.existingConfigSecret`.
+
+### Changed
+
+- **BREAKING:** `EvrocCluster.spec.credentialsRef` is now required. Clusters that
+  previously omitted it and inherited the controller's credentials are rejected at
+  apply time and must name their credentials explicitly.
+- Upgraded `evroc-go-sdk` to v0.7.1 and Go to 1.25.
+
+### Fixed
+
+- Hardened load balancer, credential, RKE2, and cluster-move reconciliation,
+  with expanded manifest and end-to-end validation.
+- Modernized GitHub Actions and added Sigstore bundles for all release assets.
+
 ## [0.1.2] - 2026-02-11
 
 ### Fixed
@@ -36,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://gitlab.evroc.dev/engineering/public-cluster-api/-/tags/v0.1.2
 [0.1.1]: https://gitlab.evroc.dev/engineering/public-cluster-api/-/tags/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.2.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -53,3 +79,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.26]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.26
 [0.1.27]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.27
 [0.1.28]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.28
+[0.2.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.0

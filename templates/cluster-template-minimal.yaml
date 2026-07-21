@@ -60,17 +60,11 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: ${EVROC_REGION:=se-sto}
-  # Per-cluster credentials (recommended). Create a Secret with evroc API
-  # credentials and set the name here. When empty, falls back to the
-  # globally mounted config file.
+  # The credential Secret must be in the same namespace as this EvrocCluster.
   credentialsRef:
-    name: "${EVROC_CREDENTIALS_SECRET:=}"
-    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+    name: "${EVROC_CREDENTIALS_SECRET}"
   failureDomains:
   - a
-  controlPlaneConfig:
-    publicIP:
-      enabled: true
   securityGroups:
     common:
       inlineSecurityGroups:
@@ -85,7 +79,7 @@ spec:
         - name: cluster-internal
           direction: Ingress
           protocol: All
-          remoteCIDR: "10.0.0.0/8"
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         - name: allow-all-egress
           direction: Egress
           protocol: All
@@ -148,6 +142,11 @@ spec:
         kubeletExtraArgs:
         - name: node-labels
           value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto},topology.kubernetes.io/zone=${EVROC_AVAILABILITY_ZONE:=a}"
+    postKubeadmCommands:
+      - |
+        if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
+        if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
     clusterConfiguration:
       apiServer:
         certSANs:

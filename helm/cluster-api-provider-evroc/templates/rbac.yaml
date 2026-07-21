@@ -66,9 +66,11 @@ rules:
   resources:
   - secrets
   verbs:
+  - create
   - get
   - list
   - watch
+  - update
 - apiGroups:
   - cluster.x-k8s.io
   resources:

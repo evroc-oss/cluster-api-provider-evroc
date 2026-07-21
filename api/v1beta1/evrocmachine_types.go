@@ -90,19 +90,19 @@ type MachineSecurityGroupsConfig struct {
 	// +optional
 	InlineSecurityGroups []InlineSecurityGroup `json:"inlineSecurityGroups,omitempty"`
 
-	// ExistingNames references pre-existing security groups by name.
+	// ExistingIDs references pre-existing security groups by their evroc resource ID.
 	// +optional
-	ExistingNames []string `json:"existingNames,omitempty"`
+	ExistingIDs []string `json:"existingIDs,omitempty"`
 }
 
 // PlacementConfig defines placement group configuration.
 // Placement groups must be pre-created and shared across VMs — CAPI does not
 // auto-create them because a per-VM placement group has no anti-affinity benefit.
 type PlacementConfig struct {
-	// ExistingGroupName references a pre-existing placement group by name.
+	// ExistingGroupID references a pre-existing placement group by its evroc resource ID.
 	// The group will be used but NOT managed (created/deleted) by CAPI.
 	// +optional
-	ExistingGroupName *string `json:"existingGroupName,omitempty"`
+	ExistingGroupID *string `json:"existingGroupID,omitempty"`
 }
 
 // AdditionalDiskSpec defines an additional disk to attach to a machine.
@@ -191,11 +191,11 @@ type MachineResources struct {
 
 // ManagedPlacementGroup tracks a placement group resource.
 type ManagedPlacementGroup struct {
-	// ID is the cloud resource ID.
+	// ID is the evroc resource identifier (metadata.id in the evroc API).
 	ID string `json:"id"`
 
-	// Name is the cloud resource name.
-	Name string `json:"name"`
+	// UID is the system-generated UUID (metadata.uid in the evroc API).
+	UID string `json:"uid"`
 
 	// Strategy is the placement strategy. EVROC only supports spread.
 	Strategy string `json:"strategy"`
@@ -206,11 +206,11 @@ type ManagedPlacementGroup struct {
 
 // ManagedDisk tracks a disk resource.
 type ManagedDisk struct {
-	// ID is the cloud resource ID.
+	// ID is the evroc resource identifier (metadata.id in the evroc API).
 	ID string `json:"id"`
 
-	// Name is the cloud resource name.
-	Name string `json:"name"`
+	// UID is the system-generated UUID (metadata.uid in the evroc API).
+	UID string `json:"uid"`
 
 	// SizeGB is the size in gigabytes.
 	SizeGB int `json:"sizeGB"`
@@ -224,6 +224,7 @@ type ManagedDisk struct {
 // +kubebuilder:resource:path=evrocmachines,scope=Namespaced,categories=cluster-api
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta1"
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Machine is ready"
 // +kubebuilder:printcolumn:name="MachineID",type="string",JSONPath=".status.machineID",description="evroc Machine ID"
 // +kubebuilder:printcolumn:name="ComputeProfile",type="string",JSONPath=".spec.computeProfile",description="VM compute profile"

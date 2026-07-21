@@ -45,6 +45,9 @@ metadata:
 spec:
   project: YOUR_PROJECT_ID_HERE  # CHANGE THIS to your project ID
   region: se-sto
+  # Credentials for this cluster (required).
+  credentialsRef:
+    name: evroc-credentials
   failureDomains:
   - a
   - b
@@ -171,6 +174,7 @@ spec:
       region: se-sto
       image: sl-micro.6-1.1
       computeProfile: a1a.m
+      rootDiskSize: 100
       sshKey: YOUR_SSH_PUBLIC_KEY_HERE  # CHANGE THIS to your SSH public key
       # Inherit security groups from EvrocCluster (common + controlPlane sections)
       networkingConfig:
@@ -245,6 +249,7 @@ spec:
       region: se-sto
       image: sl-micro.6-1.1
       computeProfile: a1a.m
+      rootDiskSize: 100
       sshKey: YOUR_SSH_PUBLIC_KEY_HERE  # CHANGE THIS to your SSH public key
       networkingConfig:
         securityGroups:

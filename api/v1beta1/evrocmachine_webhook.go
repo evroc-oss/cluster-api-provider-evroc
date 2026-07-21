@@ -71,7 +71,7 @@ func (d *EvrocMachineDefaulter) Default(_ context.Context, obj runtime.Object) e
 	}
 	if !r.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster &&
 		len(r.Spec.NetworkingConfig.SecurityGroups.InlineSecurityGroups) == 0 &&
-		len(r.Spec.NetworkingConfig.SecurityGroups.ExistingNames) == 0 {
+		len(r.Spec.NetworkingConfig.SecurityGroups.ExistingIDs) == 0 {
 		r.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster = true
 	}
 
@@ -171,33 +171,33 @@ func (v *EvrocMachineValidator) ValidateDelete(_ context.Context, _ runtime.Obje
 
 // validateEvrocMachine performs common validation for EvrocMachine.
 // Returns field.ErrorList so callers can append individual errors without losing field paths.
-func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorList) {
+func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorList) {
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 
 	// Validate required fields
-	if r.Spec.Project == "" {
+	if m.Spec.Project == "" {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec", "project"),
 			"project must be specified",
 		))
 	}
 
-	if r.Spec.Region == "" {
+	if m.Spec.Region == "" {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec", "region"),
 			"region must be specified",
 		))
 	}
 
-	if r.Spec.ComputeProfile == "" {
+	if m.Spec.ComputeProfile == "" {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec", "computeProfile"),
 			"compute profile must be specified",
 		))
 	}
 
-	if r.Spec.Image == "" {
+	if m.Spec.Image == "" {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec", "image"),
 			"image must be specified",
@@ -205,45 +205,45 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	}
 
 	// Validate compute profile using SDK
-	if r.Spec.ComputeProfile != "" && !compute.IsValidVMSize(r.Spec.ComputeProfile) {
+	if m.Spec.ComputeProfile != "" && !compute.IsValidVMSize(m.Spec.ComputeProfile) {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "computeProfile"),
-			r.Spec.ComputeProfile,
+			m.Spec.ComputeProfile,
 			fmt.Sprintf("must be a valid compute profile. Valid options: %s", compute.GetValidVMSizesString()),
 		))
 	}
 
 	// Validate disk image using SDK
-	if r.Spec.Image != "" && !compute.IsValidDiskImage(r.Spec.Image) {
+	if m.Spec.Image != "" && !compute.IsValidDiskImage(m.Spec.Image) {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "image"),
-			r.Spec.Image,
+			m.Spec.Image,
 			fmt.Sprintf("must be a valid disk image. Valid options: %s", compute.GetValidDiskImagesString()),
 		))
 	}
 
 	// Validate region format
-	if r.Spec.Region != "" && !regionPattern.MatchString(r.Spec.Region) {
+	if m.Spec.Region != "" && !regionPattern.MatchString(m.Spec.Region) {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "region"),
-			r.Spec.Region,
+			m.Spec.Region,
 			"region must be in format xx-xxx (e.g., se-sto)",
 		))
 	}
 
 	// Validate root disk size
-	if r.Spec.RootDiskSize < 10 {
+	if m.Spec.RootDiskSize < 10 {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "rootDiskSize"),
-			r.Spec.RootDiskSize,
+			m.Spec.RootDiskSize,
 			"rootDiskSize must be at least 10 GB",
 		))
 	}
 
-	if r.Spec.RootDiskSize > 10000 {
+	if m.Spec.RootDiskSize > 10000 {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "rootDiskSize"),
-			r.Spec.RootDiskSize,
+			m.Spec.RootDiskSize,
 			"rootDiskSize must not exceed 10000 GB (10 TB)",
 		))
 	}
@@ -251,43 +251,43 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	// Validate machine name length for derived evroc resource names.
 	// The longest built-in suffix is "-boot-disk" or "-public-ip" (10 chars).
 	machineResourceOverhead := 10 // len("-boot-disk") or len("-public-ip")
-	if len(r.Name)+machineResourceOverhead > evrocMaxResourceNameLen {
+	if len(m.Name)+machineResourceOverhead > evrocMaxResourceNameLen {
 		allErrs = append(allErrs, field.TooLong(
 			field.NewPath("metadata", "name"),
-			r.Name,
+			m.Name,
 			evrocMaxResourceNameLen-machineResourceOverhead,
 		))
 	}
 
 	// Warn about GPU compute profiles
-	if gpuComputeProfilePattern.MatchString(r.Spec.ComputeProfile) {
+	if gpuComputeProfilePattern.MatchString(m.Spec.ComputeProfile) {
 		warnings = append(warnings, "GPU-enabled compute profiles may have limited availability and higher costs")
 	}
 
 	// Warn about small disk sizes for production
-	if r.Spec.RootDiskSize < 50 && r.Spec.RootDiskSize >= 10 {
+	if m.Spec.RootDiskSize < 50 && m.Spec.RootDiskSize >= 10 {
 		warnings = append(warnings, "rootDiskSize less than 50 GB is not recommended for production workloads")
 	}
 
 	// Validate additionalLabels for evroc compatibility
-	if len(r.Spec.AdditionalLabels) > 0 {
-		allErrs = append(allErrs, validateAdditionalLabels(r.Spec.AdditionalLabels, field.NewPath("spec", "additionalLabels"))...)
+	if len(m.Spec.AdditionalLabels) > 0 {
+		allErrs = append(allErrs, validateAdditionalLabels(m.Spec.AdditionalLabels, field.NewPath("spec", "additionalLabels"))...)
 	}
 
-	// Inline config validation: Prevent mixing enabled and existingName
-	if r.Spec.NetworkingConfig != nil && r.Spec.NetworkingConfig.PublicIP != nil {
-		if r.Spec.NetworkingConfig.PublicIP.Enabled && r.Spec.NetworkingConfig.PublicIP.ExistingName != nil {
+	// Inline config validation: Prevent mixing enabled and existingID
+	if m.Spec.NetworkingConfig != nil && m.Spec.NetworkingConfig.PublicIP != nil {
+		if m.Spec.NetworkingConfig.PublicIP.Enabled && m.Spec.NetworkingConfig.PublicIP.ExistingID != nil {
 			allErrs = append(allErrs, field.Forbidden(
 				field.NewPath("spec", "networkingConfig", "publicIP"),
-				"cannot specify both enabled (auto-create) and existingName (external)",
+				"cannot specify both enabled (auto-create) and existingID (external)",
 			))
 		}
 	}
 
 	// Validate additional disk name uniqueness and derived name length
-	if len(r.Spec.AdditionalDisks) > 0 {
+	if len(m.Spec.AdditionalDisks) > 0 {
 		seenDiskNames := make(map[string]bool)
-		for i, disk := range r.Spec.AdditionalDisks {
+		for i, disk := range m.Spec.AdditionalDisks {
 			diskPath := field.NewPath("spec", "additionalDisks").Index(i)
 			if seenDiskNames[disk.Name] {
 				allErrs = append(allErrs, field.Duplicate(diskPath.Child("name"), disk.Name))
@@ -295,10 +295,10 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 			seenDiskNames[disk.Name] = true
 
 			// Derived name: "{machine.Name}-{disk.Name}" <= 63
-			if len(r.Name) > 0 {
-				derivedLen := len(r.Name) + 1 + len(disk.Name)
+			if len(m.Name) > 0 {
+				derivedLen := len(m.Name) + 1 + len(disk.Name)
 				if derivedLen > evrocMaxResourceNameLen {
-					maxDiskName := evrocMaxResourceNameLen - len(r.Name) - 1
+					maxDiskName := evrocMaxResourceNameLen - len(m.Name) - 1
 					allErrs = append(allErrs, field.TooLong(diskPath.Child("name"), disk.Name, maxDiskName))
 				}
 			}
@@ -306,9 +306,9 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	}
 
 	// Validate inline security group rules, name uniqueness, and derived name length
-	if r.Spec.NetworkingConfig != nil && r.Spec.NetworkingConfig.SecurityGroups != nil {
+	if m.Spec.NetworkingConfig != nil && m.Spec.NetworkingConfig.SecurityGroups != nil {
 		seenSGNames := make(map[string]bool)
-		for i, sg := range r.Spec.NetworkingConfig.SecurityGroups.InlineSecurityGroups {
+		for i, sg := range m.Spec.NetworkingConfig.SecurityGroups.InlineSecurityGroups {
 			sgPath := field.NewPath("spec", "networkingConfig", "securityGroups", "inlineSecurityGroups").Index(i)
 
 			if seenSGNames[sg.Name] {
@@ -317,10 +317,10 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 			seenSGNames[sg.Name] = true
 
 			// Derived name: "{machine.Name}-{sg.Name}" <= 63
-			if len(r.Name) > 0 {
-				derivedLen := len(r.Name) + 1 + len(sg.Name)
+			if len(m.Name) > 0 {
+				derivedLen := len(m.Name) + 1 + len(sg.Name)
 				if derivedLen > evrocMaxResourceNameLen {
-					maxSGName := evrocMaxResourceNameLen - len(r.Name) - 1
+					maxSGName := evrocMaxResourceNameLen - len(m.Name) - 1
 					allErrs = append(allErrs, field.TooLong(sgPath.Child("name"), sg.Name, maxSGName))
 				}
 			}
@@ -331,9 +331,9 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 			}
 		}
 
-		// Check for duplicates in existingNames, and cross-check against inline names.
-		for i, name := range r.Spec.NetworkingConfig.SecurityGroups.ExistingNames {
-			sgPath := field.NewPath("spec", "networkingConfig", "securityGroups", "existingNames").Index(i)
+		// Check for duplicates in existingIDs, and cross-check against inline names.
+		for i, name := range m.Spec.NetworkingConfig.SecurityGroups.ExistingIDs {
+			sgPath := field.NewPath("spec", "networkingConfig", "securityGroups", "existingIDs").Index(i)
 			if seenSGNames[name] {
 				allErrs = append(allErrs, field.Duplicate(sgPath, name))
 			}
@@ -342,10 +342,10 @@ func (r *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	}
 
 	// Warn control plane machines about missing inheritFromCluster configuration
-	if _, isControlPlane := r.Labels["cluster.x-k8s.io/control-plane"]; isControlPlane {
-		inheritsFromCluster := r.Spec.NetworkingConfig != nil &&
-			r.Spec.NetworkingConfig.SecurityGroups != nil &&
-			r.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster
+	if _, isControlPlane := m.Labels["cluster.x-k8s.io/control-plane"]; isControlPlane {
+		inheritsFromCluster := m.Spec.NetworkingConfig != nil &&
+			m.Spec.NetworkingConfig.SecurityGroups != nil &&
+			m.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster
 
 		if !inheritsFromCluster {
 			warnings = append(warnings,

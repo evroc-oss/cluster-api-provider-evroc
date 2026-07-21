@@ -7,6 +7,7 @@ metadata:
   labels:
     cluster.x-k8s.io/v1beta1: v1beta1
     cluster.x-k8s.io/v1beta2: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
   name: evrocmachines.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
@@ -114,12 +115,12 @@ spec:
                       enabled:
                         description: |-
                           Enabled auto-creates a public IP managed by the controller.
-                          The IP will be named "<cluster-name>-cp-ip" and tracked in cluster.status.resources.
-                          When the cluster is deleted, the IP is automatically cleaned up.
+                          The IP will be named "<machine-name>-ip" and tracked in machine.status.resources.
+                          When the machine is deleted, the IP is automatically cleaned up.
                         type: boolean
-                      existingName:
+                      existingID:
                         description: |-
-                          ExistingName references a pre-existing public IP by name (e.g., created by Terraform).
+                          ExistingID references a pre-existing public IP by its evroc resource ID (e.g., created by Terraform).
                           The IP is looked up in the evroc project configured via the controller's credentials.
                           This IP will be used but NOT managed by CAPI - CAPI will not create or delete it.
                           Mutually exclusive with Enabled.
@@ -128,9 +129,9 @@ spec:
                   securityGroups:
                     description: SecurityGroups configuration for this machine.
                     properties:
-                      existingNames:
-                        description: ExistingNames references pre-existing security
-                          groups by name.
+                      existingIDs:
+                        description: ExistingIDs references pre-existing security
+                          groups by their evroc resource ID.
                         items:
                           type: string
                         type: array
@@ -217,9 +218,9 @@ spec:
                   PlacementConfig defines placement group configuration for this machine.
                   This is the simplified v1.1 approach - specify strategy inline or reference existing resources.
                 properties:
-                  existingGroupName:
+                  existingGroupID:
                     description: |-
-                      ExistingGroupName references a pre-existing placement group by name.
+                      ExistingGroupID references a pre-existing placement group by its evroc resource ID.
                       The group will be used but NOT managed (created/deleted) by CAPI.
                     type: string
                 type: object
@@ -353,69 +354,75 @@ spec:
                       description: ManagedDisk tracks a disk resource.
                       properties:
                         id:
-                          description: ID is the cloud resource ID.
+                          description: ID is the evroc resource identifier (metadata.id
+                            in the evroc API).
                           type: string
                         managed:
                           description: Managed indicates whether CAPI created and
                             owns this resource.
                           type: boolean
-                        name:
-                          description: Name is the cloud resource name.
-                          type: string
                         sizeGB:
                           description: SizeGB is the size in gigabytes.
                           type: integer
+                        uid:
+                          description: UID is the system-generated UUID (metadata.uid
+                            in the evroc API).
+                          type: string
                       required:
                       - id
                       - managed
-                      - name
                       - sizeGB
+                      - uid
                       type: object
                     type: array
                   bootDisk:
                     description: BootDisk is the boot disk created for this machine.
                     properties:
                       id:
-                        description: ID is the cloud resource ID.
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
                       managed:
                         description: Managed indicates whether CAPI created and owns
                           this resource.
                         type: boolean
-                      name:
-                        description: Name is the cloud resource name.
-                        type: string
                       sizeGB:
                         description: SizeGB is the size in gigabytes.
                         type: integer
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
+                        type: string
                     required:
                     - id
                     - managed
-                    - name
                     - sizeGB
+                    - uid
                     type: object
                   placementGroup:
                     description: PlacementGroup used for this machine.
                     properties:
                       id:
-                        description: ID is the cloud resource ID.
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
                       managed:
                         description: Managed indicates whether CAPI created and owns
                           this resource.
                         type: boolean
-                      name:
-                        description: Name is the cloud resource name.
-                        type: string
                       strategy:
                         description: Strategy is the placement strategy. EVROC only
                           supports spread.
                         type: string
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
+                        type: string
                     required:
                     - id
                     - managed
-                    - name
                     - strategy
+                    - uid
                     type: object
                   publicIP:
                     description: PublicIP information for this machine.
@@ -424,7 +431,8 @@ spec:
                         description: Address is the allocated IPv4 address.
                         type: string
                       id:
-                        description: ID is the cloud resource ID (e.g., "my-cluster-cp-ip").
+                        description: ID is the evroc resource identifier (metadata.id
+                          in the evroc API).
                         type: string
                       managed:
                         description: |-
@@ -432,14 +440,15 @@ spec:
                           True: CAPI created it, will delete it on cluster deletion.
                           False: External resource (e.g., Terraform), CAPI only uses it.
                         type: boolean
-                      name:
-                        description: Name is the cloud resource name.
+                      uid:
+                        description: UID is the system-generated UUID (metadata.uid
+                          in the evroc API).
                         type: string
                     required:
                     - address
                     - id
                     - managed
-                    - name
+                    - uid
                     type: object
                   securityGroups:
                     description: SecurityGroups created or used for this machine.
@@ -448,7 +457,8 @@ spec:
                         used by the cluster.
                       properties:
                         id:
-                          description: ID is the cloud resource ID.
+                          description: ID is the evroc resource identifier (metadata.id
+                            in the evroc API).
                           type: string
                         managed:
                           description: |-
@@ -456,19 +466,20 @@ spec:
                             True: CAPI created it, will delete it on cluster deletion.
                             False: External resource (e.g., Terraform), CAPI only uses it.
                           type: boolean
-                        name:
-                          description: Name is the cloud resource name.
-                          type: string
                         role:
                           description: |-
                             Role indicates which section this SG belongs to: "common", "controlPlane", or "worker".
                             Used by the machine controller to select the right SGs based on node role.
                           type: string
+                        uid:
+                          description: UID is the system-generated UUID (metadata.uid
+                            in the evroc API).
+                          type: string
                       required:
                       - id
                       - managed
-                      - name
                       - role
+                      - uid
                       type: object
                     type: array
                 type: object

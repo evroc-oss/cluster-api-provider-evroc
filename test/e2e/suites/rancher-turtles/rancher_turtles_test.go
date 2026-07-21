@@ -129,7 +129,7 @@ var _ = BeforeSuite(func() {
 		By(fmt.Sprintf("Loading local provider image %s into kind", localImage))
 		kindCluster := os.Getenv("BOOTSTRAP_CLUSTER_NAME")
 		if kindCluster == "" {
-			kindCluster = e2eConfig.ManagementClusterName
+			kindCluster = setupResult.BootstrapClusterProxy.GetName()
 		}
 		loadCmd := exec.CommandContext(ctx, "kind", "load", "docker-image", localImage, "--name", kindCluster)
 		out, err := loadCmd.CombinedOutput()
@@ -152,7 +152,8 @@ var _ = BeforeSuite(func() {
 	if repoRoot == "" {
 		repoRoot = filepath.Join("..", "..", "..", "..")
 	}
-	crdDir := filepath.Join(repoRoot, "config", "crd", "bases")
+	// CRDs are generated into the Helm chart, not config/crd/bases.
+	crdDir := filepath.Join(repoRoot, "helm", "cluster-api-provider-evroc", "crds")
 	applyCmd := exec.CommandContext(ctx, kubectlBin,
 		"--kubeconfig", setupResult.BootstrapClusterProxy.GetKubeconfigPath(),
 		"apply", "-f", crdDir,
@@ -329,8 +330,8 @@ var _ = Describe("[evroc] Rancher Turtles Integration", Label("rancher-turtles")
 		Expect(setupResult.BootstrapClusterProxy).ToNot(BeNil())
 	})
 
-	Context("GitOps Workflow", func() {
-		It("Should successfully provision and import an evroc cluster", func() {
+	Context("Shared Cluster Lifecycle", func() {
+		It("Should import, scale, remediate, and delete an evroc cluster", func() {
 			clusterName := fmt.Sprintf("evroc-e2e-%s", randomSuffix())
 
 			By("Creating cluster resources via clusterctl generate")
@@ -346,10 +347,30 @@ var _ = Describe("[evroc] Rancher Turtles Integration", Label("rancher-turtles")
 			turtlesframework.VerifyCluster(ctx, turtlesframework.VerifyClusterInput{
 				BootstrapClusterProxy:   setupResult.BootstrapClusterProxy,
 				Name:                    clusterName,
-				DeleteAfterVerification: true,
+				DeleteAfterVerification: false,
 			})
 
 			By(fmt.Sprintf("Cluster %s successfully provisioned and imported into Rancher", clusterName))
+
+			By("Scaling MachineDeployment to 1 worker")
+			patchMachineDeploymentReplicas(ctx, clusterName, "default", 1)
+			waitForMachineDeploymentReady(ctx, clusterName, "default", 1)
+
+			originalMachine := getMachineDeploymentMachineNames(ctx, clusterName, "default")
+			Expect(originalMachine).To(HaveLen(1), "Expected exactly 1 worker machine")
+
+			By(fmt.Sprintf("Deleting worker Machine %s to trigger remediation", originalMachine[0]))
+			deleteMachine(ctx, originalMachine[0], "default")
+			waitForMachineReplacement(ctx, clusterName, "default", originalMachine[0], 1)
+			waitForMachineDeploymentReady(ctx, clusterName, "default", 1)
+
+			By("Scaling MachineDeployment back to 0 workers")
+			patchMachineDeploymentReplicas(ctx, clusterName, "default", 0)
+			waitForMachineDeploymentReady(ctx, clusterName, "default", 0)
+
+			By("Deleting the shared workload cluster")
+			deleteCluster(ctx, clusterName, "default")
+			waitForClusterResourcesDeleted(ctx, clusterName, "default")
 		})
 	})
 
@@ -380,96 +401,6 @@ var _ = Describe("[evroc] Rancher Turtles Integration", Label("rancher-turtles")
 		})
 	})
 
-	Context("Cluster Lifecycle", func() {
-		It("Should create a minimal cluster and handle deletion cleanly", func() {
-			clusterName := fmt.Sprintf("evroc-minimal-%s", randomSuffix())
-
-			By("Creating minimal cluster via clusterctl template")
-			clusterYAML := generateClusterYAML(clusterName)
-
-			By("Applying minimal cluster resources")
-			Expect(applyYAML(setupResult.BootstrapClusterProxy, clusterYAML)).To(Succeed())
-
-			By("Waiting for minimal cluster to be provisioned")
-			waitForClusterControlPlaneReady(ctx, clusterName, "default")
-
-			turtlesframework.VerifyCluster(ctx, turtlesframework.VerifyClusterInput{
-				BootstrapClusterProxy:   setupResult.BootstrapClusterProxy,
-				Name:                    clusterName,
-				DeleteAfterVerification: true,
-			})
-
-			By("Waiting for CAPI and Evroc resources to be fully deleted")
-			waitForClusterResourcesDeleted(ctx, clusterName, "default")
-
-			By("Cluster deleted and cleaned up successfully")
-		})
-	})
-
-	Context("Worker Scaling", func() {
-		It("Should scale MachineDeployment workers from 0 to 1 and back to 0", func() {
-			clusterName := fmt.Sprintf("evroc-scale-%s", randomSuffix())
-
-			By("Creating cluster with 0 workers")
-			clusterYAML := generateClusterYAML(clusterName) // WORKER_MACHINE_COUNT=0
-			Expect(applyYAML(setupResult.BootstrapClusterProxy, clusterYAML)).To(Succeed())
-
-			By("Waiting for control plane to be ready")
-			waitForClusterControlPlaneReady(ctx, clusterName, "default")
-
-			By("Scaling MachineDeployment to 1 worker")
-			patchMachineDeploymentReplicas(ctx, clusterName, "default", 1)
-
-			By("Waiting for worker Machine to be provisioned")
-			waitForMachineDeploymentReady(ctx, clusterName, "default", 1)
-
-			By("Scaling MachineDeployment back to 0 workers")
-			patchMachineDeploymentReplicas(ctx, clusterName, "default", 0)
-
-			By("Waiting for worker Machines to be fully removed")
-			waitForMachineDeploymentReady(ctx, clusterName, "default", 0)
-
-			By("Deleting cluster")
-			deleteCluster(ctx, clusterName, "default")
-			waitForClusterResourcesDeleted(ctx, clusterName, "default")
-
-			By("Cluster scaled and cleaned up successfully")
-		})
-	})
-
-	Context("Machine Remediation", func() {
-		It("Should replace a deleted Machine automatically", func() {
-			clusterName := fmt.Sprintf("evroc-remediate-%s", randomSuffix())
-
-			By("Creating cluster with 1 worker")
-			clusterYAML := generateClusterYAMLWithWorkers(clusterName, 1)
-			Expect(applyYAML(setupResult.BootstrapClusterProxy, clusterYAML)).To(Succeed())
-
-			By("Waiting for control plane and worker to be ready")
-			waitForClusterControlPlaneReady(ctx, clusterName, "default")
-			waitForMachineDeploymentReady(ctx, clusterName, "default", 1)
-
-			By("Recording the current worker Machine name")
-			originalMachine := getMachineDeploymentMachineNames(ctx, clusterName, "default")
-			Expect(originalMachine).To(HaveLen(1), "Expected exactly 1 worker machine")
-
-			By(fmt.Sprintf("Deleting worker Machine %s to trigger remediation", originalMachine[0]))
-			deleteMachine(ctx, originalMachine[0], "default")
-
-			By("Waiting for CAPI to create a replacement Machine")
-			waitForMachineReplacement(ctx, clusterName, "default", originalMachine[0], 1)
-
-			By("Verifying new Machine is ready")
-			waitForMachineDeploymentReady(ctx, clusterName, "default", 1)
-
-			By("Deleting cluster")
-			deleteCluster(ctx, clusterName, "default")
-			waitForClusterResourcesDeleted(ctx, clusterName, "default")
-
-			By("Machine remediation completed successfully")
-		})
-	})
-
 	Context("Webhook Validation", func() {
 		It("Should reject an EvrocCluster with an invalid region", func() {
 			By("Applying an EvrocCluster with region 'invalid-region-format'")
@@ -482,6 +413,8 @@ metadata:
 spec:
   project: %s
   region: invalid-region-format
+  credentialsRef:
+    name: evroc-credentials
   failureDomains: ["a"]
 `, randomSuffix(), os.Getenv("EVROC_PROJECT")))
 
@@ -570,30 +503,16 @@ func loadCredentialsFile() {
 }
 
 // buildEvrocCredentialsSecret returns the YAML for a secret holding evroc API credentials.
-// The secret contains a config.yaml key with the SDK YAML config, which the provider pod
-// mounts at /etc/evroc/config.yaml.
+// The secret contains a config.yaml key with the SDK YAML config, referenced by an
+// EvrocCluster's spec.credentialsRef.
 func buildEvrocCredentialsSecret() []byte {
-	token := os.Getenv("EVROC_TOKEN")
-	refreshToken := os.Getenv("EVROC_REFRESH_TOKEN")
-	username := os.Getenv("EVROC_USERNAME")
-	password := os.Getenv("EVROC_PASSWORD")
+	saID := os.Getenv("EVROC_SERVICE_ACCOUNT_ID")
+	saSecret := os.Getenv("EVROC_SERVICE_ACCOUNT_SECRET")
 	project := os.Getenv("EVROC_PROJECT")
 	region := os.Getenv("EVROC_REGION")
 	organization := os.Getenv("EVROC_ORGANIZATION")
 
-	authSection := ""
-	if token != "" {
-		authSection += fmt.Sprintf("    token: %q\n", token)
-	}
-	if refreshToken != "" {
-		authSection += fmt.Sprintf("    refresh_token: %q\n", refreshToken)
-	}
-	if username != "" {
-		authSection += fmt.Sprintf("    username: %q\n", username)
-	}
-	if password != "" {
-		authSection += fmt.Sprintf("    password: %q\n", password)
-	}
+	authSection := fmt.Sprintf("    service_account_id: %q\n    service_account_secret: %q\n", saID, saSecret)
 
 	configYAML := fmt.Sprintf("auth:\n%scontext:\n  project: %q\n  region: %q\n  organization: %q\n",
 		authSection, project, region, organization)
@@ -605,12 +524,6 @@ func buildEvrocCredentialsSecret() []byte {
 		} else {
 			indented += "\n"
 		}
-	}
-
-	// Credentials namespace where the EvrocCluster credentialsRef points (usually "default").
-	credNS := os.Getenv("EVROC_CREDENTIALS_NAMESPACE")
-	if credNS == "" {
-		credNS = "default"
 	}
 
 	return []byte(fmt.Sprintf(`
@@ -636,7 +549,7 @@ metadata:
 type: Opaque
 stringData:
   config.yaml: |
-%s`, indented, credNS, indented))
+%s`, indented, "default", indented))
 }
 
 // buildProviderComponentsYAML reads the infrastructure-components.yaml, strips

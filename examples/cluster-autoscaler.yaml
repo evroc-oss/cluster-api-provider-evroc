@@ -83,6 +83,9 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: ${EVROC_REGION:=se-sto}
+  # Credentials for this cluster (required).
+  credentialsRef:
+    name: evroc-credentials
   failureDomains:
   - a
   - b

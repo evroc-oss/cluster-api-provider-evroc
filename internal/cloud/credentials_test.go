@@ -7,137 +7,103 @@ import (
 	"context"
 	"testing"
 
-	evroc "github.com/evroc-oss/evroc-go-sdk"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestConfigFromFlatKeys(t *testing.T) {
+func TestConfigFromServiceAccountKeys(t *testing.T) {
+	clusterCtx := ClusterContext{Project: "spec-project", Region: "se-sto"}
+
 	tests := []struct {
 		name      string
 		data      map[string][]byte
-		expectOK  bool
-		expectCfg bool
+		expectErr bool
 	}{
 		{
-			name: "token auth",
+			name: "valid service account keys",
 			data: map[string][]byte{
-				"evroccredentialConfig-token":   []byte("my-token"),
-				"evroccredentialConfig-project": []byte("my-project"),
-				"evroccredentialConfig-region":  []byte("se-sto"),
+				"serviceAccountID":     []byte("my-sa"),
+				"serviceAccountSecret": []byte("base64-jwk-data"),
 			},
-			expectOK:  true,
-			expectCfg: true,
 		},
 		{
-			name: "refresh token auth",
+			name: "with optional organization",
 			data: map[string][]byte{
-				"evroccredentialConfig-refreshToken": []byte("my-refresh"),
-				"evroccredentialConfig-project":      []byte("my-project"),
+				"serviceAccountID":     []byte("my-sa"),
+				"serviceAccountSecret": []byte("base64-jwk-data"),
+				"organization":         []byte("my-org"),
 			},
-			expectOK:  true,
-			expectCfg: true,
 		},
 		{
-			name: "password auth",
+			name: "missing service account ID",
 			data: map[string][]byte{
-				"evroccredentialConfig-username": []byte("user"),
-				"evroccredentialConfig-password": []byte("pass"),
-				"evroccredentialConfig-project":  []byte("my-project"),
+				"serviceAccountSecret": []byte("base64-jwk-data"),
 			},
-			expectOK:  true,
-			expectCfg: true,
+			expectErr: true,
 		},
 		{
-			name: "case insensitive keys",
+			name: "missing service account secret",
 			data: map[string][]byte{
-				"evroccredentialconfig-token":   []byte("my-token"),
-				"evroccredentialconfig-project": []byte("my-project"),
+				"serviceAccountID": []byte("my-sa"),
 			},
-			expectOK:  true,
-			expectCfg: true,
+			expectErr: true,
 		},
 		{
-			name: "no auth keys returns false",
-			data: map[string][]byte{
-				"evroccredentialConfig-project": []byte("my-project"),
-				"evroccredentialConfig-region":  []byte("se-sto"),
-			},
-			expectOK: false,
-		},
-		{
-			name:     "empty data returns false",
-			data:     map[string][]byte{},
-			expectOK: false,
-		},
-		{
-			name: "password without username returns false",
-			data: map[string][]byte{
-				"evroccredentialConfig-password": []byte("pass"),
-			},
-			expectOK: false,
-		},
-		{
-			name: "includes organization",
-			data: map[string][]byte{
-				"evroccredentialConfig-token":        []byte("my-token"),
-				"evroccredentialConfig-organization": []byte("my-org"),
-			},
-			expectOK:  true,
-			expectCfg: true,
+			name:      "empty data",
+			data:      map[string][]byte{},
+			expectErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, ok := configFromFlatKeys(tt.data)
-			assert.Equal(t, tt.expectOK, ok)
-			if tt.expectCfg {
+			cfg, err := configFromServiceAccountKeys(tt.data, clusterCtx)
+			if tt.expectErr {
+				assert.Error(t, err)
+				assert.Nil(t, cfg)
+			} else {
+				assert.NoError(t, err)
 				assert.NotNil(t, cfg)
 			}
 		})
 	}
 }
 
-func TestConfigFromFlatKeys_Values(t *testing.T) {
+func TestConfigFromServiceAccountKeys_Values(t *testing.T) {
+	clusterCtx := ClusterContext{Project: "spec-project", Region: "se-sto"}
 	data := map[string][]byte{
-		"evroccredentialConfig-token":        []byte("my-token"),
-		"evroccredentialConfig-refreshToken": []byte("my-refresh"),
-		"evroccredentialConfig-project":      []byte("my-project"),
-		"evroccredentialConfig-region":       []byte("se-sto"),
-		"evroccredentialConfig-organization": []byte("my-org"),
+		"serviceAccountID":     []byte("my-sa"),
+		"serviceAccountSecret": []byte("base64-jwk-data"),
+		"organization":         []byte("my-org"),
 	}
 
-	cfg, ok := configFromFlatKeys(data)
-	assert.True(t, ok)
-	assert.Equal(t, "my-token", cfg.Auth.Token)
-	assert.Equal(t, "my-refresh", cfg.Auth.RefreshToken)
-	assert.Equal(t, "my-project", cfg.Context.Project)
+	cfg, err := configFromServiceAccountKeys(data, clusterCtx)
+	assert.NoError(t, err)
+	assert.Equal(t, "my-sa", cfg.Auth.ServiceAccountID)
+	assert.Equal(t, "base64-jwk-data", cfg.Auth.ServiceAccountSecret)
+	assert.Equal(t, "spec-project", cfg.Context.Project)
 	assert.Equal(t, "se-sto", cfg.Context.Region)
 	assert.Equal(t, "my-org", cfg.Context.Organization)
 }
 
-func TestClientForCluster_NoSecret_WithFallback(t *testing.T) {
-	// When no secret name is provided and a fallback exists, return fallback
-	fallback := &mockClientInterface{}
-	client, err := ClientForCluster(context.Background(), nil, fallback, "", "", nil)
+func TestConfigFromServiceAccountKeys_IgnoresLegacyProjectRegion(t *testing.T) {
+	clusterCtx := ClusterContext{Project: "spec-project", Region: "se-sto"}
+	data := map[string][]byte{
+		"serviceAccountID":     []byte("my-sa"),
+		"serviceAccountSecret": []byte("base64-jwk-data"),
+		"project":              []byte("secret-project-ignored"),
+		"region":               []byte("secret-region-ignored"),
+	}
+
+	cfg, err := configFromServiceAccountKeys(data, clusterCtx)
 	assert.NoError(t, err)
-	assert.Equal(t, fallback, client)
+	assert.Equal(t, "spec-project", cfg.Context.Project)
+	assert.Equal(t, "se-sto", cfg.Context.Region)
 }
 
-func TestClientForCluster_NoSecret_NoFallback(t *testing.T) {
-	// When no secret name and no fallback, return error
-	client, err := ClientForCluster(context.Background(), nil, nil, "", "", nil)
+// credentialsRef is mandatory: an empty secret name has no credential source.
+func TestClientForCluster_NoSecret(t *testing.T) {
+	client, err := ClientForCluster(context.Background(), nil, "", "", ClusterContext{}, nil)
 	assert.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "no credentialsRef")
 }
-
-// mockClientInterface is a minimal mock for testing ClientForCluster fallback logic
-type mockClientInterface struct{}
-
-func (m *mockClientInterface) Disks() DiskServiceInterface                     { return nil }
-func (m *mockClientInterface) PublicIPs() PublicIPServiceInterface             { return nil }
-func (m *mockClientInterface) SecurityGroups() SecurityGroupServiceInterface   { return nil }
-func (m *mockClientInterface) PlacementGroups() PlacementGroupServiceInterface { return nil }
-func (m *mockClientInterface) VirtualMachines() VirtualMachineServiceInterface { return nil }
-func (m *mockClientInterface) SDKClient() *evroc.Client                        { return nil }

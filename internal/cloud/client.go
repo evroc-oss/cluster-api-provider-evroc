@@ -30,27 +30,12 @@ func (c *Client) SDKClient() *evroc.Client {
 	return c.client
 }
 
-// ConfigPath is the default path for the mounted evroc config file.
-const ConfigPath = "/etc/evroc/config.yaml"
-
 // sdkOpts returns evroc.Option slice with metrics if a manager is provided.
 func sdkOpts(m *metrics.Manager) []evroc.Option {
 	if m != nil {
 		return []evroc.Option{evroc.WithMetrics(m)}
 	}
 	return nil
-}
-
-// NewClient creates a new evroc cloud client from the mounted config file.
-func NewClient(ctx context.Context, m *metrics.Manager) (*Client, error) {
-	evrocClient, err := evroc.NewFromFile(ctx, ConfigPath, sdkOpts(m)...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create evroc SDK client: %w", err)
-	}
-
-	return &Client{
-		client: evrocClient,
-	}, nil
 }
 
 // NewClientFromConfig creates a new evroc cloud client from explicit configuration.
@@ -224,6 +209,11 @@ func (c *Client) VirtualMachines() VirtualMachineServiceInterface {
 	return &VirtualMachineService{client: c}
 }
 
+// LoadBalancers returns the load balancer service.
+func (c *Client) LoadBalancers() LoadBalancerServiceInterface {
+	return &LoadBalancerService{client: c}
+}
+
 // Create creates a new public IP using the SDK builder pattern.
 // Note: The SDK client is already configured with project/region from environment.
 func (ps *PublicIPService) Create(ctx context.Context, name string, labels map[string]string) (*networkingtypes.PublicIP, error) {
@@ -303,7 +293,8 @@ func (sg *SecurityGroupService) Create(
 	rules []networkingtypes.SecurityGroupSpecRulesItem,
 	labels map[string]string,
 ) (*networkingtypes.SecurityGroup, error) {
-	builder := networking.NewSecurityGroupBuilder(name)
+	builder := networking.NewSecurityGroupBuilder(name).
+		WithVPCRef(sg.client.Networking().DefaultVPCRef())
 
 	// Add rules using builder methods based on rule properties.
 	for _, rule := range rules {
@@ -336,13 +327,13 @@ func (sg *SecurityGroupService) Create(
 
 		// Add ingress or egress rule.
 		switch rule.Direction {
-		case networkingtypes.SecurityGroupSpecRulesItemDirectionIngress:
+		case networkingtypes.Ingress:
 			if rule.Remote.SecurityGroupRef != nil {
 				builder = builder.AllowIngressFromSecurityGroup(ruleName, protocol, port, endPort, *rule.Remote.SecurityGroupRef)
 			} else {
 				builder = builder.AllowIngressRule(ruleName, protocol, port, endPort, remote)
 			}
-		case networkingtypes.SecurityGroupSpecRulesItemDirectionEgress:
+		case networkingtypes.Egress:
 			builder = builder.AllowEgressRule(ruleName, protocol, port, endPort, remote)
 		}
 	}
@@ -437,4 +428,9 @@ func IsNotFoundError(err error) bool {
 // isNotFoundError is the internal alias for backward compatibility.
 func isNotFoundError(err error) bool {
 	return IsNotFoundError(err)
+}
+
+// isConflictError checks if an error indicates a resource already exists (409 Conflict).
+func isConflictError(err error) bool {
+	return errors.Is(err, evroc.ErrConflict)
 }

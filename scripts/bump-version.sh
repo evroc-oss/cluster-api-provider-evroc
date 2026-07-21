@@ -60,7 +60,6 @@ if command -v helm >/dev/null 2>&1; then
     helm template cluster-api-provider-evroc helm/cluster-api-provider-evroc \
         --namespace capi-evroc-system \
         --set controller.image.tag="$NEW_TAG" \
-        --set evroc.existingConfigSecret=evroc-credentials \
         --set fullnameOverride=cluster-api-provider-evroc \
         --include-crds \
         > "templates/infrastructure-components.yaml"
