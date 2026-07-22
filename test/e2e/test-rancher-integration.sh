@@ -312,6 +312,12 @@ verify_credentials() {
 }
 
 # Create evroc provider secret
+# Extract service-account fields from credentials.yaml (SDK format) and
+# create the secret with the individual keys the provider expects.
+read_sa_field() {
+    sed -n "s/.*$1:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" "${SCRIPT_DIR}/credentials.yaml" | head -1
+}
+
 create_provider_secret() {
     log_step "Creating evroc provider credentials..."
 
@@ -319,13 +325,17 @@ create_provider_secret() {
         # Local mode: create namespace and secret in capi-evroc-system
         kubectl create namespace capi-evroc-system --dry-run=client -o yaml | kubectl apply -f -
         kubectl create secret generic evroc-credentials \
-            --from-file=config.yaml="${SCRIPT_DIR}/credentials.yaml" \
+            --from-literal=serviceAccountID="$(read_sa_field service_account_id)" \
+        --from-literal=serviceAccountSecret="$(read_sa_field service_account_secret)" \
+        --from-literal=organization="$(read_sa_field organization)" \
             --namespace=capi-evroc-system \
             --dry-run=client -o yaml | kubectl apply -f -
     else
         # CAPIProvider mode: create in cattle-turtles-system
         kubectl create secret generic evroc-credentials \
-            --from-file=config.yaml="${SCRIPT_DIR}/credentials.yaml" \
+            --from-literal=serviceAccountID="$(read_sa_field service_account_id)" \
+        --from-literal=serviceAccountSecret="$(read_sa_field service_account_secret)" \
+        --from-literal=organization="$(read_sa_field organization)" \
             --namespace=cattle-turtles-system \
             --dry-run=client -o yaml | kubectl apply -f -
     fi
@@ -333,7 +343,9 @@ create_provider_secret() {
     # Every EvrocCluster names its own credentials, so the test cluster needs a
     # copy of the secret in its own namespace.
     kubectl create secret generic evroc-credentials \
-        --from-file=config.yaml="${SCRIPT_DIR}/credentials.yaml" \
+        --from-literal=serviceAccountID="$(read_sa_field service_account_id)" \
+        --from-literal=serviceAccountSecret="$(read_sa_field service_account_secret)" \
+        --from-literal=organization="$(read_sa_field organization)" \
         --namespace=default \
         --dry-run=client -o yaml | kubectl apply -f -
 

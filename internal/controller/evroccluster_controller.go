@@ -40,6 +40,8 @@ const (
 	clusterResourcePrefixAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/resource-prefix"
 )
 
+var errCloudResourcesDeleting = errors.New("cloud resources still deleting")
+
 // EvrocClusterReconciler reconciles an EvrocCluster object
 type EvrocClusterReconciler struct {
 	client.Client
@@ -99,12 +101,17 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		func(ctx context.Context) error {
 			return r.cleanupResources(ctx, evrocCluster, cloudClient)
 		}); deleting {
+		if errors.Is(err, errCloudResourcesDeleting) {
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
 	// Ensure finalizer using helper
-	if requeue, err := helpers.EnsureFinalizer(ctx, r.Client, evrocCluster, clusterFinalizer); err != nil || requeue {
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, err
+	if requeue, err := helpers.EnsureFinalizer(ctx, r.Client, evrocCluster, clusterFinalizer); err != nil {
+		return ctrl.Result{}, err
+	} else if requeue {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	// Handle normal reconciliation
@@ -574,7 +581,7 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 	}
 
 	var errs []error
-	stillDeleting := 0
+	var stillDeleting []string
 
 	// Delete managed LoadBalancer (and its sub-resources: PublicIP, BackendPool, BackendService, L4Route).
 	if lb := cluster.Status.Resources.LoadBalancer; lb != nil {
@@ -587,7 +594,7 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 		if exists, err := cloudClient.LoadBalancers().Exists(ctx, lb.ID); err != nil {
 			errs = append(errs, fmt.Errorf("failed to check LoadBalancer %s existence: %w", lb.ID, err))
 		} else if exists {
-			stillDeleting++
+			stillDeleting = append(stillDeleting, "LoadBalancer/"+lb.ID)
 		}
 	}
 
@@ -606,15 +613,16 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 		if exists, err := cloudClient.SecurityGroups().Exists(ctx, sg.ID); err != nil {
 			errs = append(errs, fmt.Errorf("failed to check SecurityGroup %s existence: %w", sg.ID, err))
 		} else if exists {
-			stillDeleting++
+			stillDeleting = append(stillDeleting, "SecurityGroup/"+sg.ID)
 		}
 	}
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
-	if stillDeleting > 0 {
-		return fmt.Errorf("%d cloud resource(s) still being deleted, will requeue", stillDeleting)
+	if len(stillDeleting) > 0 {
+		log.Info("Waiting for cloud resources to finish deleting", "resources", stillDeleting)
+		return fmt.Errorf("%w: %s", errCloudResourcesDeleting, strings.Join(stillDeleting, ", "))
 	}
 
 	return nil

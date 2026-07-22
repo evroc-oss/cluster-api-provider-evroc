@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-21
+
+### Removed
+
+- **BREAKING:** The `config.yaml` credentials Secret format was removed.
+  Credentials Secrets must use the `serviceAccountID` / `serviceAccountSecret`
+  (and optional `organization`) keys; Secrets containing only a `config.yaml`
+  key are rejected with a migration hint. This also removes the bug where the
+  YAML path derived an OAuth client ID with an empty project suffix, causing
+  `401 invalid_client` on every token request.
+- The Helm chart no longer templates the release Namespace, fixing first
+  installs: `helm install` previously failed with either "namespace already
+  exists" (with `--create-namespace`) or "namespace not found" (without).
+  Create the namespace up front or pass `--create-namespace`.
+- The unused `installCRDs` and `namespace` chart values were removed. CRDs ship
+  in the chart's `crds/` directory (installed on first install; apply manually
+  on upgrades).
+
+### Fixed
+
+- kubeadm cloud-init now installs `conntrack`, which `kubeadm init` requires;
+  without it every kubeadm-flavor cluster failed bootstrap with the API
+  endpoint resetting connections.
+- The default cluster template now installs Calico like the other kubeadm
+  flavors; previously its nodes stayed `NotReady` (`cni plugin not
+  initialized`).
+- Cloud-resource deletion now requeues on a fixed 10s interval instead of
+  feeding controller-runtime's exponential backoff, and logs which resources
+  it is still waiting on.
+- Removed the placeholder `0.0.0.0` API-server certSAN from kubeadm templates
+  (kubeadm includes the control-plane endpoint automatically).
+- `sync-to-github.sh` now requires an explicit `--branch`/`--tag` and pushes to
+  the named ref, instead of deriving a `sync/snapshot-<version>` branch that
+  could collide with existing branches.
+
+### Added
+
+- `AGENTS.md`: first-contact guide for AI agents and new contributors,
+  including an evroc CLI cheat sheet and known pitfalls.
+- Chart README documents the GHCR image pull secret requirement and the CRD
+  upgrade procedure.
+- README troubleshooting for `401 invalid_client` and API-endpoint
+  connection-reset diagnosis.
+
 ## [0.2.0] - 2026-07-21
 
 ### Added
@@ -80,3 +124,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.27]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.27
 [0.1.28]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.28
 [0.2.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.0
+[0.2.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.1

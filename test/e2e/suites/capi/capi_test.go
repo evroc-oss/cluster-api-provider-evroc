@@ -1455,7 +1455,7 @@ func deleteCluster(ctx context.Context, kubeconfig, clusterName, namespace strin
 		"--kubeconfig", kubeconfig,
 		"delete", "cluster", clusterName,
 		"-n", namespace,
-		"--timeout", "15m",
+		"--wait=false",
 		"--ignore-not-found",
 	)
 	cmd.Stdout = GinkgoWriter
@@ -1625,7 +1625,7 @@ func verifyCRDExists(ctx context.Context, kubeconfig, crdName string) {
 // verifyClusterDeleted waits for the EvrocCluster and EvrocMachines to be fully
 // removed after cluster deletion, confirming finalizers completed cleanup.
 func verifyClusterDeleted(ctx context.Context, kubeconfig, clusterName, namespace string) {
-	timeout, poll := 10*time.Minute, 15*time.Second
+	timeout, poll := 5*time.Minute, 10*time.Second
 
 	// Wait for EvrocCluster to be gone
 	Eventually(func() bool {

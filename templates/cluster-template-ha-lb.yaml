@@ -128,7 +128,7 @@ spec:
         EOF
       - sysctl --system
       - apt-get update -y
-      - apt-get install -y apt-transport-https ca-certificates curl gpg containerd
+      - apt-get install -y apt-transport-https ca-certificates curl gpg containerd conntrack
       - mkdir -p /etc/containerd
       - containerd config default > /etc/containerd/config.toml
       - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
@@ -160,10 +160,6 @@ spec:
         if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
         if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
         kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
-    clusterConfiguration:
-      apiServer:
-        certSANs:
-          - "0.0.0.0"
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachineTemplate
@@ -244,7 +240,7 @@ spec:
           EOF
         - sysctl --system
         - apt-get update -y
-        - apt-get install -y apt-transport-https ca-certificates curl gpg containerd
+        - apt-get install -y apt-transport-https ca-certificates curl gpg containerd conntrack
         - mkdir -p /etc/containerd
         - containerd config default > /etc/containerd/config.toml
         - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml

@@ -8,6 +8,11 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestConfigFromServiceAccountKeys(t *testing.T) {
@@ -106,4 +111,19 @@ func TestClientForCluster_NoSecret(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "no credentialsRef")
+}
+
+func TestClientForCluster_LegacyConfigYAMLRejected(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: "default"},
+		Data:       map[string][]byte{"config.yaml": []byte("auth:\n  service_account_id: sa\n")},
+	}).Build()
+
+	client, err := ClientForCluster(context.Background(), k8sClient, "creds", "default", ClusterContext{Project: "p"}, nil)
+	assert.Error(t, err)
+	assert.Nil(t, client)
+	assert.Contains(t, err.Error(), "removed config.yaml format")
+	assert.Contains(t, err.Error(), "serviceAccountID")
 }

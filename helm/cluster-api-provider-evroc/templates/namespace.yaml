@@ -1,6 +1,16 @@
+{{- /*
+The namespace object is only rendered when explicitly requested. Helm installs
+should use `helm install --create-namespace` (or a pre-existing namespace) and
+leave this off, so Helm owns the namespace lifecycle. It is enabled when
+generating templates/infrastructure-components.yaml for clusterctl, which infers
+the provider's target namespace from a Namespace object in the manifest and
+fails with "target namespace can't be defaulted" without one.
+*/ -}}
+{{- if .Values.namespace.create }}
 apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ .Release.Namespace }}
   labels:
     {{- include "cluster-api-provider-evroc.labels" . | nindent 4 }}
+{{- end }}

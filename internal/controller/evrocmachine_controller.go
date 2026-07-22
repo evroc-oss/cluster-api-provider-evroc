@@ -139,8 +139,10 @@ func (r *EvrocMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Ensure finalizer using helper
-	if requeue, err := helpers.EnsureFinalizer(ctx, r.Client, machine, machineFinalizer); err != nil || requeue {
-		return ctrl.Result{RequeueAfter: requeueImmediately}, err
+	if requeue, err := helpers.EnsureFinalizer(ctx, r.Client, machine, machineFinalizer); err != nil {
+		return ctrl.Result{}, err
+	} else if requeue {
+		return ctrl.Result{RequeueAfter: requeueImmediately}, nil
 	}
 
 	return r.reconcileNormal(ctx, machine, cloudClient, evrocCluster)
