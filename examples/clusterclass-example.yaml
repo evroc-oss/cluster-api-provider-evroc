@@ -46,7 +46,6 @@ spec:
       # be spelled out explicitly here.
       credentialsRef:
         name: evroc-credentials
-        namespace: default
       failureDomains:
       - a
       - b

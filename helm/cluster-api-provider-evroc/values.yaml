@@ -5,6 +5,14 @@
 # This is a YAML-formatted file.
 # Declare variables to be passed into your templates.
 
+# Namespace object rendering.
+# Leave `create: false` for Helm installs and rely on
+# `helm install --create-namespace`. It is set to true when generating
+# templates/infrastructure-components.yaml so clusterctl can infer the provider
+# target namespace from the manifest.
+namespace:
+  create: false
+
 # Controller configuration
 controller:
   # Number of controller replicas (only 1 is active, others are standby)
@@ -12,7 +20,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/cluster-api-provider-evroc
-    tag: v0.2.0
+    tag: v0.2.1
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -118,9 +126,6 @@ serviceAccount:
   # Name of service account (auto-generated if not specified)
   name: ""
 
-# Namespace to deploy the provider
-namespace: capi-evroc-system
-
 # Image pull secrets
 imagePullSecrets: []
 
@@ -135,10 +140,6 @@ podAnnotations: {}
 
 # Pod labels
 podLabels: {}
-
-# Install CRDs with the Helm chart
-# Set to false if you want to manage CRDs separately
-installCRDs: true
 
 # Logging configuration
 logging:

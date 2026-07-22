@@ -503,28 +503,16 @@ func loadCredentialsFile() {
 }
 
 // buildEvrocCredentialsSecret returns the YAML for a secret holding evroc API credentials.
-// The secret contains a config.yaml key with the SDK YAML config, referenced by an
-// EvrocCluster's spec.credentialsRef.
+// The secret uses the service-account keys (serviceAccountID, serviceAccountSecret,
+// organization) referenced by an EvrocCluster's spec.credentialsRef. Project and
+// region come from the EvrocCluster spec, not the secret.
 func buildEvrocCredentialsSecret() []byte {
 	saID := os.Getenv("EVROC_SERVICE_ACCOUNT_ID")
 	saSecret := os.Getenv("EVROC_SERVICE_ACCOUNT_SECRET")
-	project := os.Getenv("EVROC_PROJECT")
-	region := os.Getenv("EVROC_REGION")
 	organization := os.Getenv("EVROC_ORGANIZATION")
 
-	authSection := fmt.Sprintf("    service_account_id: %q\n    service_account_secret: %q\n", saID, saSecret)
-
-	configYAML := fmt.Sprintf("auth:\n%scontext:\n  project: %q\n  region: %q\n  organization: %q\n",
-		authSection, project, region, organization)
-
-	indented := ""
-	for _, l := range strings.Split(configYAML, "\n") {
-		if l != "" {
-			indented += "    " + l + "\n"
-		} else {
-			indented += "\n"
-		}
-	}
+	stringData := fmt.Sprintf("  serviceAccountID: %q\n  serviceAccountSecret: %q\n  organization: %q\n",
+		saID, saSecret, organization)
 
 	return []byte(fmt.Sprintf(`
 apiVersion: v1
@@ -539,7 +527,6 @@ metadata:
   namespace: capi-evroc-system
 type: Opaque
 stringData:
-  config.yaml: |
 %s---
 apiVersion: v1
 kind: Secret
@@ -548,8 +535,7 @@ metadata:
   namespace: %s
 type: Opaque
 stringData:
-  config.yaml: |
-%s`, indented, "default", indented))
+%s`, stringData, "default", stringData))
 }
 
 // buildProviderComponentsYAML reads the infrastructure-components.yaml, strips

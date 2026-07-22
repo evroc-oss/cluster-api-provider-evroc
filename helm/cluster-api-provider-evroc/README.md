@@ -11,38 +11,28 @@ Cluster API infrastructure provider for [evroc Cloud](https://evroc.com). Deploy
 
 ## Installation
 
-### 1. Create the credentials secret
-
-The controller needs an evroc API configuration file. Create a Kubernetes secret with the credentials before installing the chart:
+### 1. Install the chart
 
 ```bash
-kubectl create namespace capi-evroc-system
-
-kubectl create secret generic evroc-credentials \
-  --namespace capi-evroc-system \
-  --from-file=config.yaml=/path/to/your/evroc-config.yaml
+helm install capi-evroc oci://ghcr.io/evroc-oss/charts/cluster-api-provider-evroc \
+  --namespace capi-evroc-system --create-namespace
 ```
 
-The `config.yaml` file should contain evroc SDK credentials:
+### 2. Create per-cluster credentials
 
-```yaml
-auth:
-  token: "your-access-token"
-  refresh_token: "your-refresh-token"
+The controller holds **no global credentials**. Each `EvrocCluster` names a
+Secret in **its own namespace** via `spec.credentialsRef`, containing
+`serviceAccountID` and `serviceAccountSecret` keys (and optionally
+`organization`). See the [README](../../README.md) "Create evroc credentials
+secret" for details.
 
-context:
-  project: "your-project-id"
-  region: "se-sto"
-  organization: "your-organization-id"
-```
+### Upgrading
 
-See the [README](../../README.md) for all credential options (username/password, per-cluster credentials).
-
-### 2. Install the chart
+Helm installs the `crds/` directory on first install but **never upgrades
+CRDs**. Before `helm upgrade` across provider versions, apply them manually:
 
 ```bash
-helm install capi-evroc ./helm/cluster-api-provider-evroc \
-  --namespace capi-evroc-system
+kubectl apply --server-side -f helm/cluster-api-provider-evroc/crds/
 ```
 
 ## Configuration
@@ -76,7 +66,6 @@ helm install capi-evroc ./helm/cluster-api-provider-evroc \
 | `metrics.serviceMonitor.additionalLabels` | Labels to match your Prometheus `serviceMonitorSelector` | `{}` |
 | `logging.level` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 | `logging.format` | Log format (`json` or `text`) | `json` |
-| `installCRDs` | Install CRDs with the chart | `true` |
 | `debug` | Enable debug mode | `false` |
 
 ## Uninstallation

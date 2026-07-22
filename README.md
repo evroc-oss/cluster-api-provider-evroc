@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![CI](https://github.com/evroc-oss/cluster-api-provider-evroc/actions/workflows/ci.yml/badge.svg)](https://github.com/evroc-oss/cluster-api-provider-evroc/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/evroc-oss/cluster-api-provider-evroc)](https://goreportcard.com/report/github.com/evroc-oss/cluster-api-provider-evroc)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/evroc-oss/cluster-api-provider-evroc)](./go.mod)
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](./go.mod)
 
 This repository provides the evroc infrastructure provider for Kubernetes Cluster API (CAPI).
 
@@ -120,18 +120,22 @@ evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/loadB
 Create a secret with the service account credentials. Each `EvrocCluster` references its credentials via `spec.credentialsRef`:
 
 ```bash
-cat > /tmp/evroc-config.yaml <<EOF
-auth:
-  service_account_id: "my-capi-sa"
-  service_account_secret: "<base64-encoded-jwk-private-key>"
-EOF
-
-kubectl create secret generic evroc-credentials \
-  --from-file=config.yaml=/tmp/evroc-config.yaml \
-  -n default
-
-rm /tmp/evroc-config.yaml
+kubectl create secret generic evroc-credentials -n default \
+  --from-literal=serviceAccountID=my-capi-sa \
+  --from-literal=serviceAccountSecret="<base64-encoded-jwk-private-key>" \
+  --from-literal=organization="<your-organization-id>"   # optional
 ```
+
+> **Important:** `serviceAccountID` is the plain service-account name
+> (e.g. `my-capi-sa`) — do **not** append the project ID. The SDK derives the
+> OAuth client ID as `<serviceAccountID>_<project>` automatically, using the
+> project from the `EvrocCluster` spec. The `serviceAccountSecret` value is the
+> base64 JWK exactly as printed by
+> `evroc iam serviceaccount credential create` — paste it verbatim; do not
+> decode or re-encode it, and make sure no trailing newline is introduced.
+>
+> The pre-v0.2.1 `config.yaml` Secret format has been **removed**. Secrets
+> containing only a `config.yaml` key are rejected with a migration hint.
 
 > **Note:** The secret contains only authentication material. Project and region
 > come from the `EvrocCluster` spec (`spec.project` / `spec.region`), which is
@@ -162,14 +166,19 @@ export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 
 **Option A: Using `clusterctl generate cluster` (recommended)**
 
-`clusterctl` handles variable substitution natively, including `${VAR:=default}` syntax:
+`clusterctl` handles variable substitution natively. It applies `${VAR:=default}`
+defaults **only for variables it has no value for**; any variable it knows about
+(including ones you export as empty) is substituted as-is, so the `:=default` is
+skipped. Replica counts in particular have no working default — see the note
+under **Available flavors** below and always pass `--control-plane-machine-count`
+/ `--worker-machine-count`.
 
 ```bash
 export CLUSTER_NAME="my-cluster"
 export EVROC_PROJECT="your-project-id"
 export EVROC_REGION="se-sto"
 export KUBERNETES_VERSION="v1.28.0"
-export EVROC_SSH_KEY="your-ssh-public-key"  # optional, enables SSH to nodes
+export EVROC_SSH_KEY="your-ssh-public-key"  # may be empty (""), but MUST be exported — clusterctl errors on unset variables even when the template declares a default
 
 clusterctl generate cluster "${CLUSTER_NAME}" \
   --infrastructure evroc \
@@ -200,9 +209,26 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 
 **Available flavors:**
 - `minimal` - 1 control plane, 1 worker, Calico CNI pre-installed (dev/test)
-- `default` - 3 control planes, 3 workers, Calico CNI via ClusterResourceSet (production)
-- `ha` - 3 control planes, 5 workers, multi-zone with spread placement (high availability)
+- `default` - multi-zone, Cilium CNI (eBPF) via `postKubeadmCommands` (production)
+- `calico` - same topology as `default`, with Calico CNI instead of Cilium (opt-in)
+- `ha-lb` - multi-zone control plane behind an L4 load balancer, Calico CNI (high availability)
 - `rke2` - RKE2 (SUSE enterprise-hardened Kubernetes) with Canal CNI
+
+> **Replica counts:** the `default`, `ha-lb`, and `rke2` templates leave
+> `spec.replicas` bound to `${CONTROL_PLANE_MACHINE_COUNT}` /
+> `${WORKER_MACHINE_COUNT}` **without a substituted default** — `clusterctl`
+> renders an unset count as empty, which yields 1 control plane / 0 workers, not
+> 3 / 3. Always pass the counts explicitly (they must be odd for the control
+> plane):
+>
+> ```bash
+> clusterctl generate cluster "${CLUSTER_NAME}" \
+>   --infrastructure evroc --flavor default \
+>   --kubernetes-version "${KUBERNETES_VERSION}" \
+>   --control-plane-machine-count 3 \
+>   --worker-machine-count 3 \
+>   | kubectl apply -f -
+> ```
 
 See [templates/](./templates/) for all flavor variables and defaults.
 
@@ -241,7 +267,7 @@ kubectl get evrocmachine -o wide
 ssh evroc-user@<PUBLIC_IP>
 ```
 
-**CNI note:** The `minimal` and `ha` flavors install Calico automatically via `postKubeadmCommands`. The `default` flavor installs Calico via ClusterResourceSet. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
+**CNI note:** The `minimal` and `ha-lb` flavors install Calico automatically via `postKubeadmCommands`. The `default` flavor installs Calico via ClusterResourceSet. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
 
 ```bash
 # Only needed for custom templates without built-in CNI:
@@ -257,7 +283,7 @@ kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" wait \
 
 The **single-zone** template (`minimal`) sets both `topology.kubernetes.io/region` and `topology.kubernetes.io/zone` labels on nodes at bootstrap time from `EVROC_REGION` and `EVROC_AVAILABILITY_ZONE`.
 
-The **multi-zone** templates (`default`, `ha`, `rke2`) set only the `topology.kubernetes.io/region` label. Zone labels require either per-zone MachineDeployments (each with its own bootstrap config specifying the zone) or a Cloud Controller Manager (CCM). These templates include a note that nodes will **not** have zone labels until a CCM is available.
+The **multi-zone** templates (`default`, `ha-lb`, `rke2`) set only the `topology.kubernetes.io/region` label. Zone labels require either per-zone MachineDeployments (each with its own bootstrap config specifying the zone) or a Cloud Controller Manager (CCM). These templates include a note that nodes will **not** have zone labels until a CCM is available.
 
 These labels are required by the [evroc CSI driver](https://github.com/evroc-oss/evroc-csi-driver) for topology-aware volume placement. If you need per-zone volume placement with a multi-zone template, create separate MachineDeployments per zone:
 
@@ -482,7 +508,17 @@ kubectl get evrocmachine -A -o yaml
 **Credentials errors (`secret not found`, `credentialsRef must be specified`):**
 - `spec.credentialsRef` is required on every EvrocCluster. A cluster without it is rejected at apply time.
 - Ensure the referenced secret exists in the **same namespace as the EvrocCluster**, not in `capi-evroc-system`. If `clusterctl generate cluster ... | kubectl apply -f -` creates the cluster in `default`, the secret must also be in `default`.
-- Verify the secret contains a `config.yaml` key.
+- Verify the secret contains the `serviceAccountID` and `serviceAccountSecret` keys (step 7). The old `config.yaml` format is rejected.
+
+**`401 invalid_client` in controller logs:**
+- `serviceAccountID` must be the plain SA name — the SDK appends `_<project>` itself. A doubled or missing project suffix produces exactly this error.
+- Verify the credential is not expired and the JWK was pasted verbatim (no re-encoding, no trailing newline).
+
+**API endpoint refuses connections (`connection reset by peer` on 6443):**
+- A *reset* (not timeout) means the LB is up but nothing is listening on the node — bootstrap failed. It is not a firewall problem.
+- SSH to the node (via a jump host in the same VPC if nodes have no public IP) and check:
+  - `/run/cluster-api/bootstrap-success.complete` — absent means bootstrap did not finish
+  - `/var/log/cloud-init-output.log` — the failing command's output is here
 
 **Machines stuck in Provisioning:**
 - Check evroc credentials are valid and not expired (token refresh)
@@ -495,7 +531,7 @@ kubectl get evrocmachine -A -o yaml
 - If the control plane machine is `Running` but workers are `Pending`, check that the control plane API is reachable (port 6443 open in security groups)
 
 **Nodes NotReady:**
-- Ensure CNI is installed — the `minimal` and `ha` flavors install Calico automatically; for custom templates you must install a CNI manually
+- Ensure CNI is installed — the `minimal` and `ha-lb` flavors install Calico automatically; for custom templates you must install a CNI manually
 - Check kubelet logs on workload nodes: `ssh evroc-user@<PUBLIC_IP> sudo journalctl -u kubelet`
 
 **Control plane timeout:**

@@ -1,20 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 evroc
 
-# Default cluster template for evroc CAPI provider (kubeadm)
+# Calico cluster template for evroc CAPI provider (kubeadm, --flavor calico)
 #
-# This is a starter template. The default kubeadm flavor ships Cilium as the CNI
-# with simple, reliable defaults for a cloud VPC: VXLAN tunnel routing, which
-# works across VPC subnets and zones without coordinating a native-routing pod
-# CIDR. kube-proxy is left in place. Advanced tuning (e.g. kube-proxy
-# replacement, native routing) belongs in your own manifests once you outgrow
-# the starter template.
-#
-# Cilium is installed automatically via postKubeadmCommands on the first control
-# plane node using the pinned Cilium CLI. To pin a different Cilium version set
-# CILIUM_VERSION; the CLI version is CILIUM_CLI_VERSION.
-#
-# Prefer Calico instead? Use --flavor calico (cluster-template-calico.yaml).
+# Same topology as the default kubeadm flavor, but ships Calico as the CNI
+# instead of Cilium. Calico v3.28.0 is installed automatically via
+# postKubeadmCommands on the first control plane node. Use this flavor if you
+# specifically want Calico (e.g. existing network-policy tooling); otherwise the
+# default flavor (Cilium) is recommended.
 #
 # Required environment variables:
 #   CLUSTER_NAME: Name of the cluster
@@ -176,27 +169,9 @@ spec:
           value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
     postKubeadmCommands:
       - |
-        # Install Cilium once, from the first control plane node only.
         if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
-        export KUBECONFIG=/etc/kubernetes/admin.conf
-        if kubectl get daemonset -n kube-system cilium 2>/dev/null; then exit 0; fi
-
-        CILIUM_CLI_VERSION="${CILIUM_CLI_VERSION:=v0.16.24}"
-        CILIUM_VERSION="${CILIUM_VERSION:=1.16.5}"
-        CLI_ARCH=amd64
-        curl -fsSL --retry 5 -o /tmp/cilium.tar.gz \
-          "https://github.com/cilium/cilium-cli/releases/download/$CILIUM_CLI_VERSION/cilium-linux-$CLI_ARCH.tar.gz"
-        tar -C /usr/local/bin -xzf /tmp/cilium.tar.gz
-        rm -f /tmp/cilium.tar.gz
-
-        # Starter defaults: kube-proxy stays in place and Cilium uses VXLAN tunnel
-        # routing, which works across VPC subnets/zones without a native-routing
-        # pod CIDR. Tune (e.g. kube-proxy replacement) in your own manifests once
-        # you outgrow the starter template.
-        cilium install --version "$CILIUM_VERSION" \
-          --set routingMode=tunnel \
-          --set tunnelProtocol=vxlan \
-          --set ipam.mode=kubernetes
+        if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachineTemplate

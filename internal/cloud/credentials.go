@@ -9,7 +9,6 @@ import (
 
 	"github.com/evroc-oss/evroc-go-sdk/config"
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -17,13 +16,13 @@ import (
 
 // Secret keys for service account credentials.
 const (
-	// configKey is the secret key for the full evroc SDK config YAML.
-	configKey = "config.yaml"
-
-	// Individual secret keys for service account auth.
 	keyServiceAccountID     = "serviceAccountID"
 	keyServiceAccountSecret = "serviceAccountSecret"
 	keyOrganization         = "organization"
+
+	// legacyConfigKey is the removed pre-v0.2.1 YAML format, detected only to
+	// give migrating users an actionable error.
+	legacyConfigKey = "config.yaml"
 )
 
 // ClusterContext carries the project and region from the EvrocCluster spec.
@@ -38,11 +37,9 @@ type ClusterContext struct {
 // Credentials are read from the Secret referenced by the cluster's credentialsRef,
 // which is mandatory. Project and region come from the EvrocCluster spec (not the secret).
 //
-// The secret must use one of two formats:
-//  1. A "config.yaml" key containing the full evroc SDK config YAML with service account auth.
-//  2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
-//
-// Only service account authentication is supported.
+// The secret must contain the keys serviceAccountID and serviceAccountSecret
+// (and optionally organization). Only service account authentication is
+// supported.
 func ClientForCluster(
 	ctx context.Context,
 	k8sClient client.Reader,
@@ -60,35 +57,15 @@ func ClientForCluster(
 		return nil, fmt.Errorf("failed to get credentials secret %s/%s: %w", secretNamespace, secretName, err)
 	}
 
-	// Format 1: full YAML config (must use service account auth)
-	if data, ok := secret.Data[configKey]; ok {
-		return newClientFromYAMLWithContext(ctx, data, clusterCtx, m)
-	}
-
-	// Format 2: individual keys for service account auth
 	cfg, err := configFromServiceAccountKeys(secret.Data, clusterCtx)
 	if err != nil {
+		if _, hasLegacy := secret.Data[legacyConfigKey]; hasLegacy {
+			return nil, fmt.Errorf("credentials secret %s/%s uses the removed config.yaml format; recreate it with the %s and %s keys (see README step 7)",
+				secretNamespace, secretName, keyServiceAccountID, keyServiceAccountSecret)
+		}
 		return nil, fmt.Errorf("credentials secret %s/%s: %w", secretNamespace, secretName, err)
 	}
 	return NewClientFromConfig(ctx, cfg, m)
-}
-
-// newClientFromYAMLWithContext parses YAML credentials and overrides
-// project/region from the EvrocCluster spec.
-func newClientFromYAMLWithContext(ctx context.Context, data []byte, clusterCtx ClusterContext, m *metrics.Manager) (ClientInterface, error) {
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse credentials YAML: %w", err)
-	}
-	cfg.SetDefaults()
-	cfg.Context.Project = clusterCtx.Project
-	if clusterCtx.Region != "" {
-		cfg.Context.Region = clusterCtx.Region
-	}
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid credentials: %w", err)
-	}
-	return NewClientFromConfig(ctx, &cfg, m)
 }
 
 // configFromServiceAccountKeys builds an SDK Config from individual secret keys.

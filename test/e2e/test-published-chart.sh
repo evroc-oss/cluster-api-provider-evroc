@@ -136,12 +136,20 @@ create_namespace() {
 }
 
 # Create config secret
+# Extract service-account fields from credentials.yaml (SDK format) and
+# create the secret with the individual keys the provider expects.
+read_sa_field() {
+    sed -n "s/.*$1:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" "${SCRIPT_DIR}/credentials.yaml" | head -1
+}
+
 create_config_secret() {
     log_info "Creating evroc credentials secret..."
 
     # Create secret directly from credentials.yaml (already in SDK format)
     kubectl create secret generic evroc-credentials \
-        --from-file=config.yaml="${SCRIPT_DIR}/credentials.yaml" \
+        --from-literal=serviceAccountID="$(read_sa_field service_account_id)" \
+        --from-literal=serviceAccountSecret="$(read_sa_field service_account_secret)" \
+        --from-literal=organization="$(read_sa_field organization)" \
         --namespace="${TEST_NAMESPACE}" \
         --dry-run=client -o yaml | kubectl apply -f -
 

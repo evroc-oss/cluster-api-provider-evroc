@@ -43,6 +43,7 @@ generate-templates: ## Generate templates/infrastructure-components.yaml from He
 		--namespace capi-evroc-system \
 		--set controller.image.tag="$(shell cat VERSION)" \
 		--set fullnameOverride=cluster-api-provider-evroc \
+		--set namespace.create=true \
 		--include-crds \
 		> templates/infrastructure-components.yaml
 
