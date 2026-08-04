@@ -3,7 +3,7 @@ module github.com/evroc-oss/cluster-api-provider-evroc/test/e2e
 go 1.25.8
 
 require (
-	github.com/evroc-oss/evroc-go-sdk v0.7.1
+	github.com/evroc-oss/evroc-go-sdk v0.7.3
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
 	github.com/rancher/turtles/test v0.26.0
@@ -96,9 +96,9 @@ require (
 	github.com/pjbgf/sha1cd v0.3.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/prometheus/client_golang v1.23.0 // indirect
+	github.com/prometheus/client_golang v1.23.2 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.65.0 // indirect
+	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/rancher/turtles v0.25.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect

@@ -46,6 +46,14 @@ func (m *MockPublicIPService) List(ctx context.Context) ([]networkingtypes.Publi
 	return args.Get(0).([]networkingtypes.PublicIP), args.Error(1)
 }
 
+func (m *MockPublicIPService) ListByOwner(ctx context.Context, machineID string) ([]string, error) {
+	args := m.Called(ctx, machineID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]string), args.Error(1)
+}
+
 func (m *MockPublicIPService) Exists(ctx context.Context, name string) (bool, error) {
 	args := m.Called(ctx, name)
 	return args.Bool(0), args.Error(1)

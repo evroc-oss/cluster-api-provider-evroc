@@ -119,24 +119,24 @@ func TestResourceLabels(t *testing.T) {
 	tests := []struct {
 		name             string
 		clusterName      string
-		clusterUID       string
+		clusterID        string
 		additionalLabels []map[string]string
 		expectedLabels   map[string]string
 	}{
 		{
 			name:        "ownership labels only",
 			clusterName: "my-cluster",
-			clusterUID:  "abc-123",
+			clusterID:   "my-cluster-abc12345",
 			expectedLabels: map[string]string{
 				"capi_cluster-name": "my-cluster",
-				"capi_cluster-uid":  "abc-123",
+				"capi_cluster-id":   "my-cluster-abc12345",
 				"capi_managed-by":   "cluster-api-provider-evroc",
 			},
 		},
 		{
 			name:        "cluster-level additional labels",
 			clusterName: "my-cluster",
-			clusterUID:  "abc-123",
+			clusterID:   "my-cluster-abc12345",
 			additionalLabels: []map[string]string{
 				{"department": "analytics", "cost-center": "42"},
 			},
@@ -144,14 +144,14 @@ func TestResourceLabels(t *testing.T) {
 				"department":        "analytics",
 				"cost-center":       "42",
 				"capi_cluster-name": "my-cluster",
-				"capi_cluster-uid":  "abc-123",
+				"capi_cluster-id":   "my-cluster-abc12345",
 				"capi_managed-by":   "cluster-api-provider-evroc",
 			},
 		},
 		{
 			name:        "machine labels override cluster labels",
 			clusterName: "my-cluster",
-			clusterUID:  "abc-123",
+			clusterID:   "my-cluster-abc12345",
 			additionalLabels: []map[string]string{
 				{"department": "analytics", "env": "staging"}, // cluster
 				{"department": "ml-team", "workload": "gpu"},  // machine overrides
@@ -161,18 +161,18 @@ func TestResourceLabels(t *testing.T) {
 				"env":               "staging",
 				"workload":          "gpu",
 				"capi_cluster-name": "my-cluster",
-				"capi_cluster-uid":  "abc-123",
+				"capi_cluster-id":   "my-cluster-abc12345",
 				"capi_managed-by":   "cluster-api-provider-evroc",
 			},
 		},
 		{
 			name:        "ownership labels cannot be overridden",
 			clusterName: "real-cluster",
-			clusterUID:  "real-uid",
+			clusterID:   "real-cluster-realuid1",
 			additionalLabels: []map[string]string{
 				{
 					"capi_cluster-name": "hacked",
-					"capi_cluster-uid":  "fake-uid",
+					"capi_cluster-id":   "fake-id",
 					"capi_managed-by":   "terraform",
 					"department":        "analytics",
 				},
@@ -180,14 +180,14 @@ func TestResourceLabels(t *testing.T) {
 			expectedLabels: map[string]string{
 				"department":        "analytics",
 				"capi_cluster-name": "real-cluster",               // ownership wins
-				"capi_cluster-uid":  "real-uid",                   // ownership wins
+				"capi_cluster-id":   "real-cluster-realuid1",      // ownership wins
 				"capi_managed-by":   "cluster-api-provider-evroc", // ownership wins
 			},
 		},
 		{
 			name:        "nil maps in variadic args are safe",
 			clusterName: "my-cluster",
-			clusterUID:  "abc-123",
+			clusterID:   "my-cluster-abc12345",
 			additionalLabels: []map[string]string{
 				nil,
 				{"env": "prod"},
@@ -196,7 +196,7 @@ func TestResourceLabels(t *testing.T) {
 			expectedLabels: map[string]string{
 				"env":               "prod",
 				"capi_cluster-name": "my-cluster",
-				"capi_cluster-uid":  "abc-123",
+				"capi_cluster-id":   "my-cluster-abc12345",
 				"capi_managed-by":   "cluster-api-provider-evroc",
 			},
 		},
@@ -204,7 +204,7 @@ func TestResourceLabels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ResourceLabels(tt.clusterName, tt.clusterUID, tt.additionalLabels...)
+			result := ResourceLabels(tt.clusterName, tt.clusterID, tt.additionalLabels...)
 
 			if len(result) != len(tt.expectedLabels) {
 				t.Errorf("expected %d labels, got %d: %v", len(tt.expectedLabels), len(result), result)

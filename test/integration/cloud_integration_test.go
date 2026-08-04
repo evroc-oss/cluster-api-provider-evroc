@@ -168,7 +168,7 @@ func TestCloudClient_SecurityGroupLifecycle(t *testing.T) {
 		},
 	}
 
-	sg, err := client.SecurityGroups().Create(ctx, sgName, rules, nil)
+	sg, err := client.SecurityGroups().Create(ctx, sgName, rules, nil, "")
 	require.NoError(t, err, "creating security group should succeed")
 	require.NotNil(t, sg)
 	t.Logf("Created security group: %s", sg.Metadata.Id)

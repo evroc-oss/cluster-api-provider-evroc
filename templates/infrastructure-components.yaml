@@ -124,12 +124,8 @@ spec:
                   containing evroc service account credentials. Cross-namespace references
                   are intentionally unsupported.
                   Required: every cluster must name the credentials it uses.
-                  The secret must use one of two formats:
-                   1. A "config.yaml" key with the evroc SDK config:
-                        auth:
-                          service_account_id: "my-sa"
-                          service_account_secret: "<base64-jwk-or-path>"
-                   2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
+                  The secret must contain serviceAccountID and serviceAccountSecret, with
+                  organization optionally specifying the evroc organization.
                 properties:
                   name:
                     description: Name is the name of the Secret.
@@ -147,16 +143,49 @@ spec:
                 type: array
               network:
                 description: |-
-                  NetworkSpec defines the network configuration for the cluster.
-                  Currently unused; reserved for future VPC/Subnet integration.
+                  Network defines the VPC, subnet, and IP stack configuration for the cluster.
+                  When omitted, the project's default VPC with default subnets and dual-stack
+                  networking is used.
                 properties:
-                  subnetRef:
-                    description: SubnetRef is a reference to an EvrocSubnet resource
-                      (future implementation)
+                  stackType:
+                    default: dual-stack
+                    description: |-
+                      StackType is the IP stack type for the internal cluster network.
+                      When "dual-stack", VMs and pods get both IPv4 and IPv6 addresses.
+                      When "ipv6-only", VMs get only IPv6 addresses; the LB uses
+                      ipProtocolSelection to reach backends over IPv6.
+                      The control plane endpoint (load balancer frontend) is always IPv4.
+                      Defaults to "dual-stack" if not specified.
+                    enum:
+                    - ipv4-only
+                    - dual-stack
+                    - ipv6-only
                     type: string
+                  subnetRefs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      SubnetRefs maps availability zone letters to subnets within the VPC.
+                      Key is the zone letter (e.g., "a", "b", "c"), value is the subnet.
+                      When VPCRef is set, SubnetRefs should map every zone in FailureDomains to
+                      the appropriate subnet. When omitted, the default subnet for each zone is
+                      used (default-{region}-{zone}).
+
+                      Each value accepts either a bare subnet name (e.g. "my-subnet-a"),
+                      resolved to an FQID within this cluster's project and region, or an
+                      already fully-qualified ref, i.e.
+                      "/networking/projects/{project}/regions/{region}/subnets/my-subnet-a".
+                    type: object
                   vpcRef:
-                    description: VPCRef is a reference to an EvrocVPC resource (future
-                      implementation)
+                    description: |-
+                      VPCRef references a pre-existing VPC to place all cluster resources in
+                      (security groups, VMs, load balancers). The VPC must already exist in the
+                      evroc project. When omitted, the project's default VPC is used.
+
+                      Accepts either a bare VPC name (e.g. "my-vpc"), which is resolved to an
+                      FQID within this cluster's project and region, or an already
+                      fully-qualified ref, i.e.
+                      "/networking/projects/{project}/regions/{region}/virtualPrivateClouds/my-vpc".
                     type: string
                 type: object
               project:
@@ -522,11 +551,18 @@ spec:
                 description: Network contains information about the cluster's network
                   configuration
                 properties:
-                  subnetId:
-                    description: SubnetID is the ID of the subnet (when implemented)
+                  stackType:
+                    description: StackType is the resolved IP stack type for VMs in
+                      this cluster.
                     type: string
+                  subnetIds:
+                    additionalProperties:
+                      type: string
+                    description: SubnetIDs maps zone letters to the resolved subnet
+                      names in use.
+                    type: object
                   vpcId:
-                    description: VPCID is the ID of the VPC (when implemented)
+                    description: VPCID is the name of the VPC in use by this cluster.
                     type: string
                 type: object
               ready:
@@ -729,12 +765,8 @@ spec:
                           containing evroc service account credentials. Cross-namespace references
                           are intentionally unsupported.
                           Required: every cluster must name the credentials it uses.
-                          The secret must use one of two formats:
-                           1. A "config.yaml" key with the evroc SDK config:
-                                auth:
-                                  service_account_id: "my-sa"
-                                  service_account_secret: "<base64-jwk-or-path>"
-                           2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
+                          The secret must contain serviceAccountID and serviceAccountSecret, with
+                          organization optionally specifying the evroc organization.
                         properties:
                           name:
                             description: Name is the name of the Secret.
@@ -752,16 +784,49 @@ spec:
                         type: array
                       network:
                         description: |-
-                          NetworkSpec defines the network configuration for the cluster.
-                          Currently unused; reserved for future VPC/Subnet integration.
+                          Network defines the VPC, subnet, and IP stack configuration for the cluster.
+                          When omitted, the project's default VPC with default subnets and dual-stack
+                          networking is used.
                         properties:
-                          subnetRef:
-                            description: SubnetRef is a reference to an EvrocSubnet
-                              resource (future implementation)
+                          stackType:
+                            default: dual-stack
+                            description: |-
+                              StackType is the IP stack type for the internal cluster network.
+                              When "dual-stack", VMs and pods get both IPv4 and IPv6 addresses.
+                              When "ipv6-only", VMs get only IPv6 addresses; the LB uses
+                              ipProtocolSelection to reach backends over IPv6.
+                              The control plane endpoint (load balancer frontend) is always IPv4.
+                              Defaults to "dual-stack" if not specified.
+                            enum:
+                            - ipv4-only
+                            - dual-stack
+                            - ipv6-only
                             type: string
+                          subnetRefs:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              SubnetRefs maps availability zone letters to subnets within the VPC.
+                              Key is the zone letter (e.g., "a", "b", "c"), value is the subnet.
+                              When VPCRef is set, SubnetRefs should map every zone in FailureDomains to
+                              the appropriate subnet. When omitted, the default subnet for each zone is
+                              used (default-{region}-{zone}).
+
+                              Each value accepts either a bare subnet name (e.g. "my-subnet-a"),
+                              resolved to an FQID within this cluster's project and region, or an
+                              already fully-qualified ref, i.e.
+                              "/networking/projects/{project}/regions/{region}/subnets/my-subnet-a".
+                            type: object
                           vpcRef:
-                            description: VPCRef is a reference to an EvrocVPC resource
-                              (future implementation)
+                            description: |-
+                              VPCRef references a pre-existing VPC to place all cluster resources in
+                              (security groups, VMs, load balancers). The VPC must already exist in the
+                              evroc project. When omitted, the project's default VPC is used.
+
+                              Accepts either a bare VPC name (e.g. "my-vpc"), which is resolved to an
+                              FQID within this cluster's project and region, or an already
+                              fully-qualified ref, i.e.
+                              "/networking/projects/{project}/regions/{region}/virtualPrivateClouds/my-vpc".
                             type: string
                         type: object
                       project:
@@ -1798,11 +1863,11 @@ kind: Namespace
 metadata:
   name: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1817,11 +1882,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1831,11 +1896,11 @@ kind: ClusterRole
 metadata:
   name: cluster-api-provider-evroc-manager-role
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -1945,11 +2010,11 @@ kind: ClusterRoleBinding
 metadata:
   name: cluster-api-provider-evroc-manager-rolebinding
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -1968,11 +2033,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-role
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2015,11 +2080,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-rolebinding
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2038,11 +2103,11 @@ metadata:
   name: cluster-api-provider-evroc-metrics
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2068,11 +2133,11 @@ metadata:
   name: cluster-api-provider-evroc-webhook-service
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2097,11 +2162,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2128,7 +2193,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.2.1"
+        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.3.0"
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect
@@ -2207,11 +2272,11 @@ metadata:
   name: cluster-api-provider-evroc-serving-cert
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2230,11 +2295,11 @@ metadata:
   name: cluster-api-provider-evroc-selfsigned-issuer
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2250,11 +2315,11 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-mutating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:
@@ -2311,11 +2376,11 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-validating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.2.1
+    helm.sh/chart: cluster-api-provider-evroc-0.3.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.2.1"
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:

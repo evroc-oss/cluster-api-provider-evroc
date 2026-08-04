@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
 )
 
 // MergeLabels merges cluster-level and machine-level labels.
@@ -55,7 +56,9 @@ func MergeLabels(cluster *infrav1.EvrocCluster, machine *infrav1.EvrocMachine, r
 // level and have them trickle down to every cloud resource.
 //
 // evroc does not allow "/" in label keys, so we use "_" as separator.
-func ResourceLabels(clusterName string, clusterUID string, additionalLabels ...map[string]string) map[string]string {
+// clusterID is the immutable annotation-backed ownership ID that survives
+// clusterctl move.
+func ResourceLabels(clusterName, clusterID string, additionalLabels ...map[string]string) map[string]string {
 	labels := make(map[string]string)
 
 	// Apply user-provided labels in order (cluster first, machine second)
@@ -66,9 +69,9 @@ func ResourceLabels(clusterName string, clusterUID string, additionalLabels ...m
 	}
 
 	// Ownership labels always win — users cannot override these
-	labels["capi_cluster-name"] = clusterName
-	labels["capi_cluster-uid"] = clusterUID
-	labels["capi_managed-by"] = "cluster-api-provider-evroc"
+	labels[cloud.LabelClusterName] = clusterName
+	labels[cloud.LabelClusterID] = clusterID
+	labels[cloud.LabelManagedBy] = cloud.ManagedByValue
 
 	return labels
 }

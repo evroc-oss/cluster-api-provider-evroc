@@ -68,6 +68,35 @@ func TestClusterResourcePrefixPreservedAcrossClusterctlMove(t *testing.T) {
 	assert.Equal(t, "moved-cluster-olduid00-cp-lb", lbName)
 }
 
+// The ownership label used to select resources for teardown must be stable
+// across clusterctl move. Selecting on the live UID would miss every resource
+// created before the move (they carry the old UID) and orphan them — including
+// the additional-port backend services/routes the label scheme exists to catch.
+func TestClusterOwnershipIDStableAcrossClusterctlMove(t *testing.T) {
+	source := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "moved-cluster",
+			UID:  types.UID("olduid00-0000-0000-0000-000000000000"),
+		},
+	}
+	initialized, err := ensureOwnershipID(source, clusterOwnershipIDAnnotation)
+	assert.NoError(t, err)
+	assert.True(t, initialized)
+	assert.NotEmpty(t, clusterOwnershipID(source))
+
+	// clusterctl move recreates the object with a NEW UID but preserves annotations.
+	target := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        source.Name,
+			UID:         types.UID("newuid00-0000-0000-0000-000000000000"),
+			Annotations: source.Annotations,
+		},
+	}
+
+	assert.Equal(t, clusterOwnershipID(source), clusterOwnershipID(target))
+	assert.NotEqual(t, string(target.UID), clusterOwnershipID(target))
+}
+
 // mockHTTPTransport is a mock HTTP transport that doesn't make real requests
 type mockHTTPTransport struct{}
 
@@ -400,8 +429,13 @@ func TestEvrocClusterReconciler_Delete(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              clusterName,
 			Namespace:         "default",
+			UID:               types.UID("test-uid"),
 			DeletionTimestamp: &now,
 			Finalizers:        []string{clusterFinalizer},
+			Annotations: map[string]string{
+				clusterOwnershipIDAnnotation:    "test-cluster-delete-test-uid",
+				clusterResourcePrefixAnnotation: "test-cluster-delete-test-uid",
+			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: clusterv1.GroupVersion.String(),
@@ -441,10 +475,15 @@ func TestEvrocClusterReconciler_Delete(t *testing.T) {
 	// Create mock cloud client with LB cleanup expectations
 	mockClient := new(mocks.MockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	// Teardown derives the LB name (not from status) and the stable clusterID.
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
-	mockLB.On("Delete", mock.Anything, "test-lb").Return(nil)
-	mockLB.On("Exists", mock.Anything, "test-lb").Return(false, nil)
+	mockLB.On("Delete", mock.Anything, "test-cluster-delete-test-uid-cp-lb", "test-cluster-delete-test-uid", true).Return(nil)
+	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-delete-test-uid-cp-lb", "test-cluster-delete-test-uid", true).Return(true, nil)
+	// SGs are cleaned up by ownership label; none owned here.
+	mockSG := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSG)
+	mockSG.On("ListByOwner", mock.Anything, "test-cluster-delete-test-uid").Return([]string{}, nil)
 
 	// Create reconciler
 	reconciler := &EvrocClusterReconciler{
@@ -717,6 +756,10 @@ func TestCleanupResources_DeletesLB(t *testing.T) {
 			Name:      "test-cluster",
 			Namespace: "default",
 			UID:       "abcd1234-0000-0000-0000-000000000000",
+			Annotations: map[string]string{
+				clusterOwnershipIDAnnotation:    "test-cluster-abcd1234",
+				clusterResourcePrefixAnnotation: "test-cluster-abcd1234",
+			},
 		},
 		Spec: infrav1.EvrocClusterSpec{
 			Project: "test-project",
@@ -735,10 +778,13 @@ func TestCleanupResources_DeletesLB(t *testing.T) {
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	mockSGCleanup := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
 
 	// Expect delete and exists check
-	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb").Return(nil)
-	mockLB.On("Exists", mock.Anything, "test-cluster-abcd1234-cp-lb").Return(false, nil)
+	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(nil)
+	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(true, nil)
 
 	reconciler := &EvrocClusterReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
@@ -747,7 +793,59 @@ func TestCleanupResources_DeletesLB(t *testing.T) {
 
 	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
 	assert.NoError(t, err)
-	mockLB.AssertCalled(t, "Delete", mock.Anything, "test-cluster-abcd1234-cp-lb")
+	mockLB.AssertCalled(t, "Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true)
+}
+
+func TestCleanupResources_PreservesExistingLBPublicIP(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+	existingPublicIP := "user-managed-ip"
+
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+			UID:       "kubernetes-object-uid",
+			Annotations: map[string]string{
+				clusterOwnershipIDAnnotation:    "test-cluster-abcd1234",
+				clusterResourcePrefixAnnotation: "test-cluster-abcd1234",
+			},
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			ControlPlaneConfig: &infrav1.ControlPlaneConfig{
+				LoadBalancer: &infrav1.LoadBalancerConfig{
+					ExistingPublicIPID: &existingPublicIP,
+				},
+			},
+		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-cluster-abcd1234-cp-lb",
+				},
+			},
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	mockSGCleanup := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
+	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", false).Return(nil)
+	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", false).Return(true, nil)
+
+	reconciler := &EvrocClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+	assert.NoError(t, err)
+	mockLB.AssertExpectations(t)
 }
 
 func TestCleanupResources_LBDeleteError(t *testing.T) {
@@ -759,7 +857,11 @@ func TestCleanupResources_LBDeleteError(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster",
 			Namespace: "default",
-			UID:       "abcd1234-0000-0000-0000-000000000000",
+			UID:       "kubernetes-object-uid",
+			Annotations: map[string]string{
+				clusterOwnershipIDAnnotation:    "test-cluster-abcd1234",
+				clusterResourcePrefixAnnotation: "test-cluster-abcd1234",
+			},
 		},
 		Spec: infrav1.EvrocClusterSpec{
 			Project: "test-project",
@@ -778,10 +880,13 @@ func TestCleanupResources_LBDeleteError(t *testing.T) {
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	mockSGCleanup := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
 
-	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb").
+	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).
 		Return(fmt.Errorf("cloud API error"))
-	mockLB.On("Exists", mock.Anything, "test-cluster-abcd1234-cp-lb").Return(true, nil)
+	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(false, nil)
 
 	reconciler := &EvrocClusterReconciler{
 		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
@@ -791,6 +896,49 @@ func TestCleanupResources_LBDeleteError(t *testing.T) {
 	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "cloud API error")
+}
+
+func TestCleanupResources_WaitsForLBDeletion(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+			UID:       "kubernetes-object-uid",
+			Annotations: map[string]string{
+				clusterOwnershipIDAnnotation:    "test-cluster-abcd1234",
+				clusterResourcePrefixAnnotation: "test-cluster-abcd1234",
+			},
+		},
+		Status: infrav1.EvrocClusterStatus{
+			Resources: &infrav1.ClusterResources{
+				LoadBalancer: &infrav1.ManagedLoadBalancer{
+					ID: "test-cluster-abcd1234-cp-lb",
+				},
+			},
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	mockSGCleanup := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
+	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(nil)
+	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(false, nil)
+
+	reconciler := &EvrocClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+	assert.ErrorIs(t, err, errCloudResourcesDeleting)
 }
 
 func TestCleanupResources(t *testing.T) {
@@ -805,31 +953,51 @@ func TestCleanupResources(t *testing.T) {
 		expectError bool
 	}{
 		{
+			// Teardown is status-independent: it deletes the deterministically
+			// named LB and sweeps SGs by ownership label. With nothing owned,
+			// both come back empty and cleanup succeeds.
 			name: "no managed resources",
 			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-			},
-			setupMocks: func(mc *mocks.MockClient, pip *mocks.MockPublicIPService, sg *mocks.MockSecurityGroupService) {
-			},
-			expectError: false,
-		},
-		{
-			name: "deletes managed security groups",
-			cluster: &infrav1.EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
-				Status: infrav1.EvrocClusterStatus{
-					Resources: &infrav1.ClusterResources{
-						SecurityGroups: []infrav1.ManagedSecurityGroup{
-							{ID: "test-sg", Managed: true},
-							{ID: "external-sg", Managed: false},
-						},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test", Namespace: "default", UID: "test-uid",
+					Annotations: map[string]string{
+						clusterOwnershipIDAnnotation:    "test-test-uid",
+						clusterResourcePrefixAnnotation: "test-test-uid",
 					},
 				},
 			},
 			setupMocks: func(mc *mocks.MockClient, pip *mocks.MockPublicIPService, sg *mocks.MockSecurityGroupService) {
+				mockLB := new(mocks.MockLoadBalancerService)
+				mc.On("LoadBalancers").Return(mockLB)
+				mockLB.On("Delete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(nil)
+				mockLB.On("DeletionComplete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(true, nil)
 				mc.On("SecurityGroups").Return(sg)
+				sg.On("ListByOwner", mock.Anything, "test-test-uid").Return([]string{}, nil)
+			},
+			expectError: false,
+		},
+		{
+			// SGs are found and deleted by ownership label, not from status.
+			name: "deletes managed security groups by label",
+			cluster: &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test", Namespace: "default", UID: "test-uid",
+					Annotations: map[string]string{
+						clusterOwnershipIDAnnotation:    "test-test-uid",
+						clusterResourcePrefixAnnotation: "test-test-uid",
+					},
+				},
+			},
+			setupMocks: func(mc *mocks.MockClient, pip *mocks.MockPublicIPService, sg *mocks.MockSecurityGroupService) {
+				mockLB := new(mocks.MockLoadBalancerService)
+				mc.On("LoadBalancers").Return(mockLB)
+				mockLB.On("Delete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(nil)
+				mockLB.On("DeletionComplete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(true, nil)
+				mc.On("SecurityGroups").Return(sg)
+				// First call returns the owned SG; after Delete, the recheck is empty.
+				sg.On("ListByOwner", mock.Anything, "test-test-uid").Return([]string{"test-sg"}, nil).Once()
 				sg.On("Delete", mock.Anything, "test-sg").Return(nil)
-				sg.On("Exists", mock.Anything, "test-sg").Return(false, nil)
+				sg.On("ListByOwner", mock.Anything, "test-test-uid").Return([]string{}, nil).Once()
 			},
 			expectError: false,
 		},
@@ -856,6 +1024,54 @@ func TestCleanupResources(t *testing.T) {
 			mockSG.AssertExpectations(t)
 		})
 	}
+}
+
+// After clusterctl move (or for an orphaned cluster) the EvrocCluster has no
+// status, so a status-based teardown would delete nothing and leak the security
+// groups. Verify cleanup still finds and deletes them by the capi_cluster-id
+// ownership label when status is empty.
+func TestCleanupResources_DeletesSecurityGroupsWithoutStatus(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	// No Status.Resources at all — the post-move / orphan case. The stable
+	// cluster ID comes from the preserved resource-prefix annotation.
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "moved",
+			Namespace: "default",
+			UID:       "newuid00-0000-0000-0000-000000000000",
+			Annotations: map[string]string{
+				clusterResourcePrefixAnnotation: "moved-olduid00",
+				clusterOwnershipIDAnnotation:    "moved-olduid00",
+			},
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockLB := new(mocks.MockLoadBalancerService)
+	mockClient.On("LoadBalancers").Return(mockLB)
+	mockLB.On("Delete", mock.Anything, "moved-olduid00-cp-lb", "moved-olduid00", true).Return(nil)
+	mockLB.On("DeletionComplete", mock.Anything, "moved-olduid00-cp-lb", "moved-olduid00", true).Return(true, nil)
+
+	mockSG := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSG)
+	// Selection is by the stable prefix (annotation), NOT the new UID.
+	mockSG.On("ListByOwner", mock.Anything, "moved-olduid00").Return([]string{"moved-olduid00-common-sg", "moved-olduid00-cp-sg"}, nil).Once()
+	mockSG.On("Delete", mock.Anything, "moved-olduid00-common-sg").Return(nil)
+	mockSG.On("Delete", mock.Anything, "moved-olduid00-cp-sg").Return(nil)
+	mockSG.On("ListByOwner", mock.Anything, "moved-olduid00").Return([]string{}, nil).Once()
+
+	reconciler := &EvrocClusterReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+	assert.NoError(t, err)
+	mockSG.AssertExpectations(t)
+	mockLB.AssertExpectations(t)
 }
 
 func TestMachineToCluster(t *testing.T) {
@@ -1001,7 +1217,7 @@ func TestReconcileSecurityGroups_CreateInline(t *testing.T) {
 
 	// SG doesn't exist yet — name now includes UID prefix
 	mockSG.On("Exists", mock.Anything, "test-cluster-abcd1234-api-server").Return(false, nil)
-	mockSG.On("Create", mock.Anything, "test-cluster-abcd1234-api-server", mock.Anything, mock.Anything).Return(&networkingtypes.SecurityGroup{}, nil)
+	mockSG.On("Create", mock.Anything, "test-cluster-abcd1234-api-server", mock.Anything, mock.Anything, "").Return(&networkingtypes.SecurityGroup{}, nil)
 
 	err := reconciler.reconcileSecurityGroups(context.Background(), cluster, mockClient)
 	assert.NoError(t, err)
@@ -1507,4 +1723,78 @@ func TestCredentialSecretCopyUsedWhenSourceIsMissing(t *testing.T) {
 		{Name: "source-creds", Namespace: "default"},
 		copyKey,
 	}, requested)
+}
+
+func TestResolveVPCName(t *testing.T) {
+	vpc := "custom-vpc"
+	tests := []struct {
+		name    string
+		cluster *infrav1.EvrocCluster
+		want    string
+	}{
+		{
+			name:    "unset falls back to default VPC (empty ref)",
+			cluster: &infrav1.EvrocCluster{},
+			want:    "",
+		},
+		{
+			name: "explicit VPCRef is used",
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
+					Network: infrav1.NetworkSpec{VPCRef: &vpc},
+				},
+			},
+			want: "custom-vpc",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resolveVPCName(tt.cluster))
+		})
+	}
+}
+
+func TestResolveSubnetName(t *testing.T) {
+	tests := []struct {
+		name    string
+		cluster *infrav1.EvrocCluster
+		zone    string
+		want    string
+	}{
+		{
+			name: "unset falls back to default-{region}-{zone}",
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{Region: "se-sto"},
+			},
+			zone: "a",
+			want: "default-se-sto-a",
+		},
+		{
+			name: "explicit SubnetRefs entry is used",
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
+					Region:  "se-sto",
+					Network: infrav1.NetworkSpec{SubnetRefs: map[string]string{"a": "custom-subnet-a"}},
+				},
+			},
+			zone: "a",
+			want: "custom-subnet-a",
+		},
+		{
+			name: "zone missing from SubnetRefs falls back to default",
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
+					Region:  "se-sto",
+					Network: infrav1.NetworkSpec{SubnetRefs: map[string]string{"a": "custom-subnet-a"}},
+				},
+			},
+			zone: "b",
+			want: "default-se-sto-b",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, resolveSubnetName(tt.cluster, tt.zone))
+		})
+	}
 }

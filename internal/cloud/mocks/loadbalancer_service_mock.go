@@ -32,9 +32,14 @@ func (m *MockLoadBalancerService) Get(ctx context.Context, name string) (*cloud.
 	return args.Get(0).(*cloud.LoadBalancer), args.Error(1)
 }
 
-func (m *MockLoadBalancerService) Delete(ctx context.Context, name string) error {
-	args := m.Called(ctx, name)
+func (m *MockLoadBalancerService) Delete(ctx context.Context, name, clusterID string, deletePublicIP bool) error {
+	args := m.Called(ctx, name, clusterID, deletePublicIP)
 	return args.Error(0)
+}
+
+func (m *MockLoadBalancerService) DeletionComplete(ctx context.Context, name, clusterID string, checkPublicIP bool) (bool, error) {
+	args := m.Called(ctx, name, clusterID, checkPublicIP)
+	return args.Bool(0), args.Error(1)
 }
 
 func (m *MockLoadBalancerService) List(ctx context.Context) ([]cloud.LoadBalancer, error) {

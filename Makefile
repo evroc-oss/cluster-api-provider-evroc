@@ -106,8 +106,12 @@ validate-manifests: manifests ## Validate manifests against CRD schemas and the 
 	go test ./test/manifests/...
 
 .PHONY: verify
-verify: test check-compliance validate-templates validate-manifests ## Run all verification checks (tests + compliance + templates + manifest schemas + chart render).
+verify: test check-compliance validate-templates validate-manifests verify-release-version ## Run all verification checks (tests + compliance + templates + manifest schemas + chart render).
 	@echo "All verification checks passed!"
+
+.PHONY: verify-release-version
+verify-release-version: ## Verify all release metadata matches VERSION and the changelog is populated.
+	@./scripts/verify-release-version.sh
 
 ##@ Build
 
@@ -129,8 +133,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	cd .. && docker build -f public-cluster-api/Dockerfile -t ${IMG} \
-		--build-arg PROVIDER_DIR=public-cluster-api \
+	docker build -f Dockerfile -t ${IMG} \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) .
@@ -217,16 +220,14 @@ e2e-image: ## Build and tag the provider image for local E2E use (uses local SDK
 		DOCKER_BUILDKIT=1 docker build \
 		  --secret id=github_token,src=/tmp/.github-token-build \
 		  --file $(PWD)/Dockerfile \
-		  --build-arg PROVIDER_DIR=public-cluster-api \
 		  -t $(E2E_LOCAL_IMAGE) \
-		  $(dir $(PWD)); \
+		  $(PWD); \
 		rm -f /tmp/.github-token-build; \
 	else \
 		DOCKER_BUILDKIT=1 docker build \
 		  --file $(PWD)/Dockerfile \
-		  --build-arg PROVIDER_DIR=public-cluster-api \
 		  -t $(E2E_LOCAL_IMAGE) \
-		  $(dir $(PWD)); \
+		  $(PWD); \
 	fi
 
 .PHONY: test-e2e-isolated
@@ -288,4 +289,3 @@ cert-info: ## Display certification information and requirements.
 	@echo "Configuration template: test/e2e/config.yaml.sample"
 	@echo "Create local config: cp test/e2e/config.yaml.sample test/e2e/config.yaml"
 	@echo "==================================================================="
-

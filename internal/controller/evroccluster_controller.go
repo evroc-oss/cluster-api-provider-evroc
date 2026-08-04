@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,9 +35,12 @@ import (
 const (
 	clusterFinalizer = "evroccluster.infrastructure.cluster.x-k8s.io"
 
-	// clusterResourcePrefixAnnotation preserves the identity of Evroc-managed
-	// cloud resources across clusterctl move. The move recreates EvrocCluster
-	// with a new UID and without status, but preserves metadata annotations.
+	// The ownership ID is immutable and independent of cloud resource names.
+	// clusterctl move preserves annotations while assigning a new live UID.
+	clusterOwnershipIDAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/ownership-id"
+
+	// The resource prefix preserves deterministic cloud resource names across
+	// clusterctl move. It is deliberately not used as an ownership identity.
 	clusterResourcePrefixAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/resource-prefix"
 )
 
@@ -96,6 +100,14 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, credentialErr
 	}
 
+	ownershipInitialized := false
+	if evrocCluster.DeletionTimestamp.IsZero() {
+		ownershipInitialized, err = ensureOwnershipID(evrocCluster, clusterOwnershipIDAnnotation)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Handle deletion using helper
 	if deleting, err := helpers.HandleDeletion(ctx, r.Client, evrocCluster, clusterFinalizer,
 		func(ctx context.Context) error {
@@ -111,6 +123,12 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if requeue, err := helpers.EnsureFinalizer(ctx, r.Client, evrocCluster, clusterFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if requeue {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	if ownershipInitialized {
+		if err := r.Update(ctx, evrocCluster); err != nil {
+			return ctrl.Result{}, fmt.Errorf("persisting cluster ownership ID: %w", err)
+		}
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
@@ -153,6 +171,15 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 		log.Error(err, "Failed to reconcile failure domains")
 		return ctrl.Result{}, err
 	}
+
+	// Store resolved network configuration in status.
+	evrocCluster.Status.Network.VPCID = resolveVPCName(evrocCluster)
+	evrocCluster.Status.Network.StackType = resolveStackType(evrocCluster)
+	subnetIDs := make(map[string]string, len(evrocCluster.Spec.FailureDomains))
+	for _, zone := range evrocCluster.Spec.FailureDomains {
+		subnetIDs[zone] = resolveSubnetName(evrocCluster, zone)
+	}
+	evrocCluster.Status.Network.SubnetIDs = subnetIDs
 
 	// Reconcile control plane load balancer (auto-created or existing).
 	// Reconcile control plane load balancer (always auto-created).
@@ -206,7 +233,7 @@ func buildLoadBalancerCreateRequest(cluster *infrav1.EvrocCluster, resourceName 
 		Name:        resourceName,
 		Port:        6443,
 		BackendPort: 6443,
-		Labels:      helpers.ResourceLabels(cluster.Name, string(cluster.UID), cluster.Spec.AdditionalLabels),
+		Labels:      helpers.ResourceLabels(cluster.Name, clusterOwnershipID(cluster), cluster.Spec.AdditionalLabels),
 	}
 	if lbCfg := cluster.Spec.ControlPlaneConfig.GetLoadBalancer(); lbCfg != nil {
 		if lbCfg.ExistingPublicIPID != nil {
@@ -214,6 +241,20 @@ func buildLoadBalancerCreateRequest(cluster *infrav1.EvrocCluster, resourceName 
 		}
 		req.AdditionalPorts = lbCfg.AdditionalPorts
 	}
+
+	req.StackType = resolveStackType(cluster)
+
+	if vpcName := resolveVPCName(cluster); vpcName != "" {
+		bn := &cloud.LoadBalancerBackendNetwork{
+			VPCName:     vpcName,
+			SubnetNames: make(map[string]string, len(cluster.Spec.FailureDomains)),
+		}
+		for _, zone := range cluster.Spec.FailureDomains {
+			bn.SubnetNames[zone] = resolveSubnetName(cluster, zone)
+		}
+		req.BackendNetwork = bn
+	}
+
 	return req
 }
 
@@ -416,7 +457,7 @@ func (r *EvrocClusterReconciler) reconcileSecurityGroupSection(
 
 		if !exists {
 			log.Info("Creating inline security group", "name", sgName, "role", role, "rules", len(inlineSG.Rules))
-			_, err := cloudClient.SecurityGroups().Create(ctx, sgName, sdkRules, helpers.ResourceLabels(cluster.Name, string(cluster.UID), cluster.Spec.AdditionalLabels))
+			_, err := cloudClient.SecurityGroups().Create(ctx, sgName, sdkRules, helpers.ResourceLabels(cluster.Name, clusterOwnershipID(cluster), cluster.Spec.AdditionalLabels), resolveVPCName(cluster))
 			if err != nil {
 				return nil, fmt.Errorf("failed to create security group %s: %w", sgName, err)
 			}
@@ -575,45 +616,66 @@ func clusterSecurityGroupNamesForRole(cluster *infrav1.EvrocCluster, isControlPl
 func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *infrav1.EvrocCluster, cloudClient cloud.ClientInterface) error {
 	log := log.FromContext(ctx)
 
-	// TODO: DO NOT rely on status to determine resources to clean up.
-	if cluster.Status.Resources == nil {
-		return nil
+	// Teardown must not rely on EvrocCluster status: clusterctl move recreates
+	// the object without status, and an orphaned cluster has none. Resources are
+	// found by the stable capi_cluster-id ownership label and by the
+	// deterministic LB name, both derived from the cluster (not its status).
+	clusterID := clusterOwnershipID(cluster)
+	if clusterID == "" {
+		return fmt.Errorf("cluster %s/%s has no ownership ID", cluster.Namespace, cluster.Name)
 	}
 
 	var errs []error
 	var stillDeleting []string
 
-	// Delete managed LoadBalancer (and its sub-resources: PublicIP, BackendPool, BackendService, L4Route).
-	if lb := cluster.Status.Resources.LoadBalancer; lb != nil {
-		log.Info("Deleting LoadBalancer", "id", lb.ID)
-		if err := cloudClient.LoadBalancers().Delete(ctx, lb.ID); err != nil {
+	// Delete the managed LoadBalancer and its sub-resources (BackendPool,
+	// BackendService, L4Route, PublicIP). The LB name is deterministic; its
+	// sub-resources are found by the capi_cluster-id label, so every one is
+	// removed regardless of how many ports the load balancer had.
+	if lbName, err := resolveLoadBalancerName(cluster); err != nil {
+		errs = append(errs, fmt.Errorf("resolving load balancer name for cleanup: %w", err))
+	} else {
+		deletePublicIP := true
+		if lbCfg := cluster.Spec.ControlPlaneConfig.GetLoadBalancer(); lbCfg != nil &&
+			lbCfg.ExistingPublicIPID != nil && *lbCfg.ExistingPublicIPID != "" {
+			deletePublicIP = false
+		}
+		log.Info("Deleting LoadBalancer", "id", lbName)
+		if err := cloudClient.LoadBalancers().Delete(ctx, lbName, clusterID, deletePublicIP); err != nil {
 			if !cloud.IsNotFoundError(err) {
-				errs = append(errs, fmt.Errorf("failed to delete managed LoadBalancer %s: %w", lb.ID, err))
+				errs = append(errs, fmt.Errorf("failed to delete managed LoadBalancer %s: %w", lbName, err))
 			}
 		}
-		if exists, err := cloudClient.LoadBalancers().Exists(ctx, lb.ID); err != nil {
-			errs = append(errs, fmt.Errorf("failed to check LoadBalancer %s existence: %w", lb.ID, err))
-		} else if exists {
-			stillDeleting = append(stillDeleting, "LoadBalancer/"+lb.ID)
+		// Hold the finalizer until every sub-resource is gone, not just until
+		// the deletes are issued.
+		if done, err := cloudClient.LoadBalancers().DeletionComplete(ctx, lbName, clusterID, deletePublicIP); err != nil {
+			errs = append(errs, fmt.Errorf("failed to check LoadBalancer deletion for cluster %s: %w", cluster.UID, err))
+		} else if !done {
+			stillDeleting = append(stillDeleting, "LoadBalancer/"+lbName)
 		}
 	}
 
-	// Delete managed SecurityGroups.
-	for _, sg := range cluster.Status.Resources.SecurityGroups {
-		if !sg.Managed {
-			continue
-		}
-		log.Info("Deleting managed SecurityGroup", "uid", sg.UID, "id", sg.ID)
-		if err := cloudClient.SecurityGroups().Delete(ctx, sg.ID); err != nil {
+	// Delete managed SecurityGroups by ownership label. Only SGs the provider
+	// created carry capi_cluster-id, so externally-managed SGs are never
+	// selected. This works even when status is empty (post-move / orphan).
+	sgNames, err := cloudClient.SecurityGroups().ListByOwner(ctx, clusterID)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to list security groups for cleanup: %w", err))
+	}
+	for _, name := range sgNames {
+		log.Info("Deleting managed SecurityGroup", "id", name)
+		if err := cloudClient.SecurityGroups().Delete(ctx, name); err != nil {
 			if !cloud.IsNotFoundError(err) {
-				errs = append(errs, fmt.Errorf("failed to delete managed SecurityGroup %s: %w", sg.ID, err))
+				errs = append(errs, fmt.Errorf("failed to delete managed SecurityGroup %s: %w", name, err))
 			}
 		}
-		// Check if it's gone yet.
-		if exists, err := cloudClient.SecurityGroups().Exists(ctx, sg.ID); err != nil {
-			errs = append(errs, fmt.Errorf("failed to check SecurityGroup %s existence: %w", sg.ID, err))
-		} else if exists {
-			stillDeleting = append(stillDeleting, "SecurityGroup/"+sg.ID)
+	}
+	// Hold the finalizer until no owned SGs remain.
+	if remaining, err := cloudClient.SecurityGroups().ListByOwner(ctx, clusterID); err != nil {
+		errs = append(errs, fmt.Errorf("failed to recheck security groups for cleanup: %w", err))
+	} else {
+		for _, name := range remaining {
+			stillDeleting = append(stillDeleting, "SecurityGroup/"+name)
 		}
 	}
 
@@ -745,7 +807,11 @@ func clusterResourcePrefix(cluster *infrav1.EvrocCluster) (string, error) {
 	if cluster.UID == "" {
 		return "", fmt.Errorf("cluster %s/%s has empty UID, cannot generate unique resource prefix", cluster.Namespace, cluster.Name)
 	}
-	prefix := fmt.Sprintf("%s-%s", cluster.Name, cluster.UID[:8])
+	uidPrefix := string(cluster.UID)
+	if len(uidPrefix) > 8 {
+		uidPrefix = uidPrefix[:8]
+	}
+	prefix := fmt.Sprintf("%s-%s", cluster.Name, uidPrefix)
 	setClusterResourcePrefixAnnotation(cluster, prefix)
 	return prefix, nil
 }
@@ -755,6 +821,30 @@ func setClusterResourcePrefixAnnotation(cluster *infrav1.EvrocCluster, prefix st
 		cluster.Annotations = map[string]string{}
 	}
 	cluster.Annotations[clusterResourcePrefixAnnotation] = prefix
+}
+
+func clusterOwnershipID(cluster *infrav1.EvrocCluster) string {
+	if cluster == nil {
+		return ""
+	}
+	return cluster.Annotations[clusterOwnershipIDAnnotation]
+}
+
+// ensureOwnershipID persists the object's original UID as its immutable cloud
+// ownership identity. The annotation, unlike metadata.uid, survives a move.
+func ensureOwnershipID(obj client.Object, annotation string) (bool, error) {
+	if obj.GetAnnotations()[annotation] != "" {
+		return false, nil
+	}
+	annotations := obj.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	// A generated UUID keeps the ownership contract independent of Kubernetes
+	// UID semantics and remains safely within the cloud label value limit.
+	annotations[annotation] = uuid.NewString()
+	obj.SetAnnotations(annotations)
+	return true, nil
 }
 
 // setClusterCondition sets or updates a condition on the cluster's status.
@@ -777,6 +867,32 @@ func setClusterCondition(cluster *infrav1.EvrocCluster, condType clusterv1.Condi
 		}
 	}
 	cluster.Status.Conditions = append(cluster.Status.Conditions, newCond)
+}
+
+// resolveVPCName returns the VPC name from the cluster spec, or empty string for default VPC.
+func resolveVPCName(cluster *infrav1.EvrocCluster) string {
+	if cluster.Spec.Network.VPCRef != nil {
+		return *cluster.Spec.Network.VPCRef
+	}
+	return ""
+}
+
+// resolveSubnetName returns the subnet name for a given zone,
+// using SubnetRefs if specified, or the default naming convention.
+func resolveSubnetName(cluster *infrav1.EvrocCluster, zone string) string {
+	if name, ok := cluster.Spec.Network.SubnetRefs[zone]; ok {
+		return name
+	}
+	return fmt.Sprintf("default-%s-%s", cluster.Spec.Region, zone)
+}
+
+// resolveStackType returns the cluster's stack type, defaulting to dual-stack
+// when unset (matches the kubebuilder default on NetworkSpec.StackType).
+func resolveStackType(cluster *infrav1.EvrocCluster) string {
+	if cluster.Spec.Network.StackType != nil {
+		return *cluster.Spec.Network.StackType
+	}
+	return "dual-stack"
 }
 
 // SetupWithManager sets up the controller with the Manager.

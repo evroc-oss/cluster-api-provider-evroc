@@ -7,11 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	evroc "github.com/evroc-oss/evroc-go-sdk"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
 	"github.com/evroc-oss/evroc-go-sdk/config"
+	"github.com/evroc-oss/evroc-go-sdk/filter"
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
 	"github.com/evroc-oss/evroc-go-sdk/networking"
 	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
@@ -22,6 +24,26 @@ import (
 // Client wraps the evroc SDK client for CAPI provider use.
 type Client struct {
 	client *evroc.Client
+}
+
+// VPCRef resolves a VPC reference. A bare name (e.g. "my-vpc") is expanded to a
+// fully-qualified ref within the SDK client's project/region; a value that is
+// already a fully-qualified ref (starts with "/networking/projects/") is
+// returned unchanged. This lets spec.network.vpcRef accept either form.
+func VPCRef(sdk *evroc.Client, vpc string) string {
+	if strings.HasPrefix(vpc, "/networking/projects/") {
+		return vpc
+	}
+	return sdk.Networking().VPCRef(vpc)
+}
+
+// SubnetRef resolves a subnet reference, accepting either a bare name or an
+// already fully-qualified ref (see VPCRef).
+func SubnetRef(sdk *evroc.Client, subnet string) string {
+	if strings.HasPrefix(subnet, "/networking/projects/") {
+		return subnet
+	}
+	return sdk.Compute().SubnetRef(subnet)
 }
 
 // SDKClient returns the underlying evroc SDK client for advanced usage.
@@ -138,6 +160,33 @@ func (ds *DiskService) List(ctx context.Context) ([]computetypes.Disk, error) {
 		return nil, fmt.Errorf("failed to list disks: %w", err)
 	}
 	return response.Items, nil
+}
+
+// ownerSelector requires both the provider marker and immutable owner label.
+// This prevents cleanup from adopting a manually-created resource that happens
+// to carry one CAPI-looking label.
+func ownerSelector(ownerLabel, ownerID string) filter.ListFilter {
+	return filter.WithLabelSelector(fmt.Sprintf(
+		"%s=%s,%s=%s",
+		LabelManagedBy, ManagedByValue,
+		ownerLabel, ownerID,
+	))
+}
+
+// ListByOwner returns the names of disks owned by the given machine, selected by
+// its immutable capi_machine-id. Teardown uses this so it finds a machine's disks
+// regardless of EvrocMachine status (empty after clusterctl move or for an
+// orphaned machine).
+func (ds *DiskService) ListByOwner(ctx context.Context, machineID string) ([]string, error) {
+	response, err := ds.client.Compute().Disks().List(ctx, ownerSelector(LabelMachineID, machineID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list disks by owner: %w", err)
+	}
+	names := make([]string, 0, len(response.Items))
+	for _, item := range response.Items {
+		names = append(names, item.Metadata.Id)
+	}
+	return names, nil
 }
 
 // Exists checks if a disk exists.
@@ -257,6 +306,20 @@ func (ps *PublicIPService) List(ctx context.Context) ([]networkingtypes.PublicIP
 	return response.Items, nil
 }
 
+// ListByOwner returns the names of public IPs owned by the given machine,
+// selected by the immutable capi_machine-id (see DiskService.ListByOwner).
+func (ps *PublicIPService) ListByOwner(ctx context.Context, machineID string) ([]string, error) {
+	response, err := ps.client.Networking().PublicIPs().List(ctx, ownerSelector(LabelMachineID, machineID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list public IPs by owner: %w", err)
+	}
+	names := make([]string, 0, len(response.Items))
+	for _, item := range response.Items {
+		names = append(names, item.Metadata.Id)
+	}
+	return names, nil
+}
+
 // Exists checks if a public IP exists.
 func (ps *PublicIPService) Exists(ctx context.Context, name string) (bool, error) {
 	_, err := ps.Get(ctx, name)
@@ -287,14 +350,20 @@ func (ps *PublicIPService) WaitForDeleted(ctx context.Context, name string, time
 }
 
 // Create creates a new security group using the SDK builder pattern.
+// If vpcName is non-empty, the SG is placed in that VPC; otherwise the default VPC is used.
 func (sg *SecurityGroupService) Create(
 	ctx context.Context,
 	name string,
 	rules []networkingtypes.SecurityGroupSpecRulesItem,
 	labels map[string]string,
+	vpcName string,
 ) (*networkingtypes.SecurityGroup, error) {
+	ref := sg.client.Networking().DefaultVPCRef()
+	if vpcName != "" {
+		ref = VPCRef(sg.client, vpcName)
+	}
 	builder := networking.NewSecurityGroupBuilder(name).
-		WithVPCRef(sg.client.Networking().DefaultVPCRef())
+		WithVPCRef(ref)
 
 	// Add rules using builder methods based on rule properties.
 	for _, rule := range rules {
@@ -375,6 +444,31 @@ func (sg *SecurityGroupService) List(ctx context.Context) ([]networkingtypes.Sec
 		return nil, fmt.Errorf("failed to list security groups: %w", err)
 	}
 	return response.Items, nil
+}
+
+// ListByOwner returns provider-managed security groups carrying the immutable
+// capi_cluster-id. It is independent of EvrocCluster status.
+func (sg *SecurityGroupService) ListByOwner(ctx context.Context, clusterID string) ([]string, error) {
+	selector := ownerSelector(LabelClusterID, clusterID)
+	return sg.listNamesBySelector(ctx, selector)
+}
+
+// ListByMachineOwner returns the names of security groups owned by the given
+// machine, selected by its immutable capi_machine-id.
+func (sg *SecurityGroupService) ListByMachineOwner(ctx context.Context, machineID string) ([]string, error) {
+	return sg.listNamesBySelector(ctx, ownerSelector(LabelMachineID, machineID))
+}
+
+func (sg *SecurityGroupService) listNamesBySelector(ctx context.Context, selector filter.ListFilter) ([]string, error) {
+	response, err := sg.client.Networking().SecurityGroups().List(ctx, selector)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list security groups by owner: %w", err)
+	}
+	names := make([]string, 0, len(response.Items))
+	for _, item := range response.Items {
+		names = append(names, item.Metadata.Id)
+	}
+	return names, nil
 }
 
 // Update updates a security group.
