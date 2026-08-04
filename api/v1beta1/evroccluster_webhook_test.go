@@ -307,6 +307,9 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 				"a",
 				"b",
 			},
+			Network: NetworkSpec{
+				SubnetRefs: map[string]string{"a": "subnet-a"},
+			},
 			CredentialsRef: &SecretReference{Name: "test-creds"},
 		},
 	}
@@ -325,6 +328,9 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 					FailureDomains: []string{
 						"a",
 						"b",
+					},
+					Network: NetworkSpec{
+						SubnetRefs: map[string]string{"a": "subnet-a"},
 					},
 					CredentialsRef: &SecretReference{Name: "test-creds"},
 				},
@@ -369,6 +375,52 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 						"a",
 						"b",
 						"c",
+					},
+					Network: NetworkSpec{
+						SubnetRefs: map[string]string{"a": "subnet-a"},
+					},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "change subnet for existing zone (immutable)",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a", "b"},
+					Network: NetworkSpec{
+						SubnetRefs: map[string]string{"a": "subnet-a-changed"},
+					},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "remove subnet for existing zone (immutable)",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a", "b"},
+					Network:        NetworkSpec{SubnetRefs: map[string]string{}},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "add subnet for new zone (mutable)",
+			newCluster: &EvrocCluster{
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a", "b"},
+					Network: NetworkSpec{
+						SubnetRefs: map[string]string{"a": "subnet-a", "b": "subnet-b"},
 					},
 					CredentialsRef: &SecretReference{Name: "test-creds"},
 				},

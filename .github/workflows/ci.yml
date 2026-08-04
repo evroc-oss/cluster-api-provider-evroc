@@ -102,6 +102,10 @@ jobs:
         run: |
           make validate-manifests
 
+      - name: Verify release version consistency
+        run: |
+          make verify-release-version
+
       # CRD contract conformance. Needs no cluster, so it belongs in CI.
       - name: Run CAPI conformance tests
         run: |

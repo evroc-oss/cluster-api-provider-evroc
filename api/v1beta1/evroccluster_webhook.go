@@ -109,6 +109,38 @@ func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 		))
 	}
 
+	// VPCRef is immutable once set (changing VPC would orphan running VMs)
+	if oldCluster.Spec.Network.VPCRef != nil && (r.Spec.Network.VPCRef == nil || *r.Spec.Network.VPCRef != *oldCluster.Spec.Network.VPCRef) {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "network", "vpcRef"),
+			"vpcRef is immutable once set",
+		))
+	}
+
+	// SubnetRefs are immutable per zone once set: changing or removing the
+	// subnet for a zone that may already host VMs would orphan those machines
+	// (same rationale as vpcRef). Adding a subnet for a new zone is allowed.
+	for zone, oldSubnet := range oldCluster.Spec.Network.SubnetRefs {
+		if newSubnet, ok := r.Spec.Network.SubnetRefs[zone]; !ok || newSubnet != oldSubnet {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "network", "subnetRefs").Key(zone),
+				"subnetRef for a zone is immutable once set",
+			))
+		}
+	}
+
+	// StackType is immutable once set. It is applied only at creation time, to
+	// both the VMs (networking.stackType) and the load balancer backend routing
+	// (ipProtocolSelection). A change propagates to neither existing VMs nor the
+	// LB, so it would only affect newly-created VMs and silently fragment the
+	// cluster's IP stack. Changing it requires recreating the cluster.
+	if oldCluster.Spec.Network.StackType != nil && (r.Spec.Network.StackType == nil || *r.Spec.Network.StackType != *oldCluster.Spec.Network.StackType) {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "network", "stackType"),
+			"stackType is immutable once set",
+		))
+	}
+
 	// ControlPlaneEndpoint is immutable once set (check both host and port)
 	oldEP := oldCluster.Spec.ControlPlaneEndpoint
 	newEP := r.Spec.ControlPlaneEndpoint
@@ -269,6 +301,29 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 	// Validate additionalLabels for evroc compatibility
 	if len(c.Spec.AdditionalLabels) > 0 {
 		allErrs = append(allErrs, validateAdditionalLabels(c.Spec.AdditionalLabels, field.NewPath("spec", "additionalLabels"))...)
+	}
+
+	// Validate network spec
+	if len(c.Spec.Network.SubnetRefs) > 0 {
+		for zone := range c.Spec.Network.SubnetRefs {
+			if !zonePattern.MatchString(zone) {
+				allErrs = append(allErrs, field.Invalid(
+					field.NewPath("spec", "network", "subnetRefs").Key(zone),
+					zone,
+					"subnet ref key must be a valid zone letter (a, b, or c)",
+				))
+			}
+		}
+
+		if c.Spec.Network.VPCRef == nil {
+			warnings = append(warnings, "subnetRefs is set without vpcRef; default VPC subnets are auto-named, explicit subnet refs are typically used with a custom VPC")
+		}
+
+		for _, zone := range c.Spec.FailureDomains {
+			if _, ok := c.Spec.Network.SubnetRefs[zone]; !ok {
+				warnings = append(warnings, fmt.Sprintf("failure domain %q has no entry in subnetRefs; VMs in this zone will use the default subnet", zone))
+			}
+		}
 	}
 
 	// Validate security group sections (common, controlPlane, worker)

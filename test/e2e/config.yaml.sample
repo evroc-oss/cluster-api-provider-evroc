@@ -32,13 +32,13 @@ variables:
   KUBERNETES_MANAGEMENT_VERSION: "v1.30.0"
 
   # Rancher configuration
-  RANCHER_VERSION: "v2.14.0-alpha12"
+  RANCHER_VERSION: "v2.15.0-rc4"
   RANCHER_HOSTNAME: "rancher-e2e.localhost"
   RANCHER_PASSWORD: "rancheradmin"
   RANCHER_FEATURES: "embedded-cluster-api=true"
-  RANCHER_REPO_NAME: "rancher-alpha"
-  RANCHER_PATH: "rancher-alpha/rancher"
-  RANCHER_URL: "https://releases.rancher.com/server-charts/alpha"
+  RANCHER_REPO_NAME: "rancher-latest"
+  RANCHER_PATH: "rancher-latest/rancher"
+  RANCHER_URL: "https://releases.rancher.com/server-charts/latest"
   CERT_MANAGER_REPO_NAME: "jetstack"
   CERT_MANAGER_URL: "https://charts.jetstack.io"
   CERT_MANAGER_PATH: "jetstack/cert-manager"

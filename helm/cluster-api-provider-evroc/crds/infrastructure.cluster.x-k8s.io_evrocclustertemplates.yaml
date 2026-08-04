@@ -118,12 +118,8 @@ spec:
                           containing evroc service account credentials. Cross-namespace references
                           are intentionally unsupported.
                           Required: every cluster must name the credentials it uses.
-                          The secret must use one of two formats:
-                           1. A "config.yaml" key with the evroc SDK config:
-                                auth:
-                                  service_account_id: "my-sa"
-                                  service_account_secret: "<base64-jwk-or-path>"
-                           2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
+                          The secret must contain serviceAccountID and serviceAccountSecret, with
+                          organization optionally specifying the evroc organization.
                         properties:
                           name:
                             description: Name is the name of the Secret.
@@ -141,16 +137,49 @@ spec:
                         type: array
                       network:
                         description: |-
-                          NetworkSpec defines the network configuration for the cluster.
-                          Currently unused; reserved for future VPC/Subnet integration.
+                          Network defines the VPC, subnet, and IP stack configuration for the cluster.
+                          When omitted, the project's default VPC with default subnets and dual-stack
+                          networking is used.
                         properties:
-                          subnetRef:
-                            description: SubnetRef is a reference to an EvrocSubnet
-                              resource (future implementation)
+                          stackType:
+                            default: dual-stack
+                            description: |-
+                              StackType is the IP stack type for the internal cluster network.
+                              When "dual-stack", VMs and pods get both IPv4 and IPv6 addresses.
+                              When "ipv6-only", VMs get only IPv6 addresses; the LB uses
+                              ipProtocolSelection to reach backends over IPv6.
+                              The control plane endpoint (load balancer frontend) is always IPv4.
+                              Defaults to "dual-stack" if not specified.
+                            enum:
+                            - ipv4-only
+                            - dual-stack
+                            - ipv6-only
                             type: string
+                          subnetRefs:
+                            additionalProperties:
+                              type: string
+                            description: |-
+                              SubnetRefs maps availability zone letters to subnets within the VPC.
+                              Key is the zone letter (e.g., "a", "b", "c"), value is the subnet.
+                              When VPCRef is set, SubnetRefs should map every zone in FailureDomains to
+                              the appropriate subnet. When omitted, the default subnet for each zone is
+                              used (default-{region}-{zone}).
+
+                              Each value accepts either a bare subnet name (e.g. "my-subnet-a"),
+                              resolved to an FQID within this cluster's project and region, or an
+                              already fully-qualified ref, i.e.
+                              "/networking/projects/{project}/regions/{region}/subnets/my-subnet-a".
+                            type: object
                           vpcRef:
-                            description: VPCRef is a reference to an EvrocVPC resource
-                              (future implementation)
+                            description: |-
+                              VPCRef references a pre-existing VPC to place all cluster resources in
+                              (security groups, VMs, load balancers). The VPC must already exist in the
+                              evroc project. When omitted, the project's default VPC is used.
+
+                              Accepts either a bare VPC name (e.g. "my-vpc"), which is resolved to an
+                              FQID within this cluster's project and region, or an already
+                              fully-qualified ref, i.e.
+                              "/networking/projects/{project}/regions/{region}/virtualPrivateClouds/my-vpc".
                             type: string
                         type: object
                       project:

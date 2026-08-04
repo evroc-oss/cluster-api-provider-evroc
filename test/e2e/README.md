@@ -196,6 +196,59 @@ export KUBECONFIG=../../_artifacts/kubeconfig
 kubectl get pods -A
 ```
 
+## CAPI QuickStart Suite
+
+Upstream Cluster API QuickStart certification tests (`suites/capi`), run against
+live evroc infrastructure. Run locally — these tests are not part of CI.
+
+Variables are read from `test/e2e/capi-e2e-config.yaml`. This file is git-ignored
+because it holds account-specific values (project ID, SSH key).
+
+```bash
+# Create your local config from the sample and fill in EVROC_* values
+cp test/e2e/capi-e2e-config.yaml.sample test/e2e/capi-e2e-config.yaml
+# Edit variables.EVROC_PROJECT and variables.EVROC_SSH_KEY
+
+# Run the suite
+make test-e2e-capi
+```
+
+The suite loads `test/e2e/capi-e2e-config.yaml` by default, or the path in
+`CAPI_E2E_CONFIG_PATH`. Each variable also falls back to the OS environment.
+
+### Custom VPC / dual-stack
+
+`EVROC_VPC_REF` and `EVROC_SUBNET_A` are **optional**. When unset, the controller
+uses the project's **default VPC** and the per-zone **default subnet**
+(`default-{region}-{zone}`).
+
+They are only needed to exercise the dual-stack path, and they reference
+**pre-existing** resources — nothing in this repo creates them. Create the VPC
+and subnet yourself first with the evroc CLI, then set the two variables to the
+names you chose:
+
+```bash
+# Create a dual-stack VPC
+evroc networking vpc create capi-e2e-dualstack \
+  --stack-type=dual-stack \
+  --ipv4-cidr-block=10.0.0.0/16
+
+# Create a dual-stack subnet in zone a within that VPC
+evroc networking subnet create capi-e2e-ds-a \
+  --stack-type=dual-stack \
+  --ipv4-cidr-block=10.0.5.0/24 \
+  --vpc=capi-e2e-dualstack \
+  --zone=a
+
+# Then in capi-e2e-config.yaml:
+#   EVROC_VPC_REF: "capi-e2e-dualstack"
+#   EVROC_SUBNET_A: "capi-e2e-ds-a"
+```
+
+For an ipv6-only cluster instead, use `--stack-type=ipv6-only` (no
+`--ipv4-cidr-block`) on both commands and set `EVROC_STACK_TYPE: "ipv6-only"`.
+Clean up afterward with `evroc networking subnet delete` / `vpc delete`.
+
 ## More Information
 
 For Rancher integration, see the "Rancher with Turtles" section in the [README](../../README.md).

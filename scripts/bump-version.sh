@@ -20,7 +20,6 @@ INPUT_VERSION="$1"
 CHART_FILE="helm/cluster-api-provider-evroc/Chart.yaml"
 VALUES_FILE="helm/cluster-api-provider-evroc/values.yaml"
 CHANGELOG_FILE="CHANGELOG.md"
-SYNC_SCRIPT_FILE="scripts/sync-to-github.sh"
 
 # Strip 'v' prefix if present
 NEW_VERSION="${INPUT_VERSION#v}"
@@ -42,7 +41,6 @@ fi
 
 echo "Current version: $CURRENT_VERSION"
 echo "New version: $NEW_VERSION"
-OLD_TAG="v$CURRENT_VERSION"
 NEW_TAG="v$NEW_VERSION"
 
 # Update Chart.yaml
@@ -61,6 +59,7 @@ if command -v helm >/dev/null 2>&1; then
         --namespace capi-evroc-system \
         --set controller.image.tag="$NEW_TAG" \
         --set fullnameOverride=cluster-api-provider-evroc \
+        --set namespace.create=true \
         --include-crds \
         > "templates/infrastructure-components.yaml"
 else
@@ -81,20 +80,16 @@ sed -i "s/minor: [0-9]*/minor: $MINOR/" metadata.yaml
 echo "Updating VERSION file..."
 echo "$NEW_TAG" > VERSION
 
-# Keep sync script examples aligned with current release version.
-if [ -f "$SYNC_SCRIPT_FILE" ]; then
-    echo "Updating $SYNC_SCRIPT_FILE examples..."
-    sed -i "s/${OLD_TAG//./\\.}/${NEW_TAG//./\\.}/g" "$SYNC_SCRIPT_FILE"
-fi
-
-# Update CHANGELOG.md - replace [Unreleased] with the new version
+# Update CHANGELOG.md while retaining an Unreleased section for future changes.
 if [ -f "$CHANGELOG_FILE" ]; then
     echo "Updating $CHANGELOG_FILE..."
     TODAY=$(date +%Y-%m-%d)
-    sed -i "s/## \[Unreleased\]/## [$NEW_VERSION] - $TODAY/" "$CHANGELOG_FILE"
+    sed -i "s/## \[Unreleased\]/## [Unreleased]\\n\\n## [$NEW_VERSION] - $TODAY/" "$CHANGELOG_FILE"
 
-    # Add [Unreleased] link at the bottom if it doesn't exist
-    if ! grep -q "\[Unreleased\]:" "$CHANGELOG_FILE"; then
+    # Keep the Unreleased comparison anchored to the release being prepared.
+    if grep -q "^\[Unreleased\]:" "$CHANGELOG_FILE"; then
+        sed -i "s|^\[Unreleased\]:.*|[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v$NEW_VERSION...HEAD|" "$CHANGELOG_FILE"
+    else
         echo "" >> "$CHANGELOG_FILE"
         echo "[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v$NEW_VERSION...HEAD" >> "$CHANGELOG_FILE"
     fi
@@ -113,7 +108,6 @@ git add VERSION
 git add metadata.yaml
 git add templates/infrastructure-components.yaml
 [ -f "$CHANGELOG_FILE" ] && git add "$CHANGELOG_FILE"
-[ -f "$SYNC_SCRIPT_FILE" ] && git add "$SYNC_SCRIPT_FILE"
 
 echo "Creating commit..."
 git commit -m "chore: bump version to v$NEW_VERSION"
@@ -133,7 +127,6 @@ echo "   - VERSION"
 echo "   - metadata.yaml"
 echo "   - templates/infrastructure-components.yaml"
 [ -f "$CHANGELOG_FILE" ] && echo "   - $CHANGELOG_FILE"
-[ -f "$SYNC_SCRIPT_FILE" ] && echo "   - $SYNC_SCRIPT_FILE"
 echo ""
 echo "To push to remote, run:"
 echo "   git push origin \$(git branch --show-current)"

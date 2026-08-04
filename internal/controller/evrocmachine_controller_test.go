@@ -90,6 +90,7 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 
 	mockClient.On("Disks").Return(mockDiskService)
 	mockClient.On("VirtualMachines").Return(mockVMService)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 
 	// Disk lifecycle: first Get → not found, then Create, then Get → ready (two more times)
 	mockDiskService.On("Get", mock.Anything, diskName).Return(nil, evroc.ErrNotFound).Once()
@@ -251,6 +252,7 @@ func TestEvrocMachineReconciler_CreateError(t *testing.T) {
 
 	mockClient.On("Disks").Return(mockDiskService)
 	mockClient.On("VirtualMachines").Return(mockVMService)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 
 	// Disk exists and is ready (skip disk creation phase)
 	readyDisk := &computetypes.Disk{
@@ -362,13 +364,19 @@ func TestEvrocMachineReconciler_Delete(t *testing.T) {
 	mockClient := new(mocks.MockClient)
 	mockVMService := new(mocks.MockVirtualMachineService)
 	mockDiskService := new(mocks.MockDiskService)
+	mockSGService := new(mocks.MockSecurityGroupService)
+	mockPIPService := new(mocks.MockPublicIPService)
 
 	mockClient.On("VirtualMachines").Return(mockVMService)
 	mockClient.On("Disks").Return(mockDiskService)
+	mockClient.On("SecurityGroups").Return(mockSGService)
+	mockClient.On("PublicIPs").Return(mockPIPService)
 	// SDKClient is not called during delete operations
 
-	mockVMService.On("Delete", mock.Anything, vmName).Return(nil)
-	mockVMService.On("WaitForDeleted", mock.Anything, vmName, 5*time.Minute).Return(nil)
+	mockVMService.On("Exists", mock.Anything, vmName).Return(false, nil)
+	mockSGService.On("ListByMachineOwner", mock.Anything, "machine-owner-delete").Return([]string{}, nil)
+	mockPIPService.On("ListByOwner", mock.Anything, "machine-owner-delete").Return([]string{}, nil)
+	mockDiskService.On("ListByOwner", mock.Anything, "machine-owner-delete").Return([]string{diskName}, nil)
 	mockDiskService.On("Delete", mock.Anything, diskName).Return(nil)
 
 	capiCluster, evrocCluster := testClusterObjects("default")
@@ -379,6 +387,9 @@ func TestEvrocMachineReconciler_Delete(t *testing.T) {
 			Namespace:         "default",
 			DeletionTimestamp: &now,
 			Finalizers:        []string{machineFinalizer},
+			Annotations: map[string]string{
+				machineOwnershipIDAnnotation: "machine-owner-delete",
+			},
 			Labels: map[string]string{
 				clusterv1.ClusterNameLabel: "test-cluster",
 			},
@@ -507,6 +518,7 @@ func TestReconcile_PersistsResourcesBeforePendingRequeue(t *testing.T) {
 	mockVMService := new(mocks.MockVirtualMachineService)
 	mockClient.On("Disks").Return(mockDiskService)
 	mockClient.On("VirtualMachines").Return(mockVMService)
+	mockClient.On("SDKClient").Maybe().Return(testSDKClientForCluster())
 
 	// Early cloud check: VM does not exist yet.
 	mockVMService.On("Get", mock.Anything, vmName).Return(nil, evroc.ErrNotFound)
@@ -1557,7 +1569,10 @@ func TestBuildDisks(t *testing.T) {
 		{
 			name: "boot disk only",
 			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "vm-1",
+					Annotations: map[string]string{machineOwnershipIDAnnotation: "machine-owner-1"},
+				},
 				Spec: infrav1.EvrocMachineSpec{
 					RootDiskSize: 50,
 				},
@@ -1948,7 +1963,7 @@ func TestReconcileMachineSecurityGroups(t *testing.T) {
 			setupMocks: func(mc *mocks.MockClient, sg *mocks.MockSecurityGroupService) {
 				mc.On("SecurityGroups").Return(sg)
 				sg.On("Exists", mock.Anything, "vm-1-ssh").Return(false, nil)
-				sg.On("Create", mock.Anything, "vm-1-ssh", mock.Anything, mock.Anything).Return(&networkingtypes.SecurityGroup{}, nil)
+				sg.On("Create", mock.Anything, "vm-1-ssh", mock.Anything, mock.Anything, mock.Anything).Return(&networkingtypes.SecurityGroup{}, nil)
 			},
 			expectError: false,
 		},
@@ -2348,15 +2363,19 @@ func TestReconcileAdditionalDisks(t *testing.T) {
 
 func TestDeleteMachineFromCloud(t *testing.T) {
 	tests := []struct {
-		name        string
-		machine     *infrav1.EvrocMachine
-		setupMocks  func(*mocks.MockClient, *mocks.MockVirtualMachineService, *mocks.MockDiskService, *mocks.MockSecurityGroupService, *mocks.MockPublicIPService)
-		expectError bool
+		name          string
+		machine       *infrav1.EvrocMachine
+		setupMocks    func(*mocks.MockClient, *mocks.MockVirtualMachineService, *mocks.MockDiskService, *mocks.MockSecurityGroupService, *mocks.MockPublicIPService)
+		expectError   bool
+		expectPending bool
 	}{
 		{
-			name: "deletes VM and boot disk",
+			name: "cleans up boot disk after VM deletion",
 			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "vm-1",
+					Annotations: map[string]string{machineOwnershipIDAnnotation: "machine-owner-1"},
+				},
 				Spec: infrav1.EvrocMachineSpec{
 					RootDiskSize: 50,
 				},
@@ -2372,52 +2391,56 @@ func TestDeleteMachineFromCloud(t *testing.T) {
 			},
 			setupMocks: func(mc *mocks.MockClient, vm *mocks.MockVirtualMachineService, ds *mocks.MockDiskService, sg *mocks.MockSecurityGroupService, pip *mocks.MockPublicIPService) {
 				mc.On("VirtualMachines").Return(vm)
+				mc.On("SecurityGroups").Return(sg)
+				mc.On("PublicIPs").Return(pip)
 				mc.On("Disks").Return(ds)
-				vm.On("Delete", mock.Anything, "vm-1").Return(nil)
-				vm.On("WaitForDeleted", mock.Anything, "vm-1", 5*time.Minute).Return(nil)
+				vm.On("Exists", mock.Anything, "vm-1").Return(false, nil)
+				sg.On("ListByMachineOwner", mock.Anything, "machine-owner-1").Return([]string{}, nil)
+				pip.On("ListByOwner", mock.Anything, "machine-owner-1").Return([]string{}, nil)
+				ds.On("ListByOwner", mock.Anything, "machine-owner-1").Return([]string{"vm-1-boot-disk"}, nil)
 				ds.On("Delete", mock.Anything, "vm-1-boot-disk").Return(nil)
 			},
 			expectError: false,
 		},
 		{
-			name: "VM already deleted",
+			name: "submits VM deletion without blocking",
 			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "vm-1",
+					Annotations: map[string]string{machineOwnershipIDAnnotation: "machine-owner-1"},
+				},
 				Spec: infrav1.EvrocMachineSpec{
 					RootDiskSize: 0,
 				},
 			},
 			setupMocks: func(mc *mocks.MockClient, vm *mocks.MockVirtualMachineService, ds *mocks.MockDiskService, sg *mocks.MockSecurityGroupService, pip *mocks.MockPublicIPService) {
 				mc.On("VirtualMachines").Return(vm)
-				vm.On("Delete", mock.Anything, "vm-1").Return(evroc.ErrNotFound)
+				vm.On("Exists", mock.Anything, "vm-1").Return(true, nil)
+				vm.On("Delete", mock.Anything, "vm-1").Return(nil)
 			},
-			expectError: false,
+			expectError:   true,
+			expectPending: true,
 		},
 		{
-			name: "deletes managed SGs and managed public IP from status",
+			name: "deletes label-owned SG and public IP without status",
 			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{Name: "vm-1"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "vm-1",
+					Annotations: map[string]string{machineOwnershipIDAnnotation: "machine-owner-1"},
+				},
 				Spec: infrav1.EvrocMachineSpec{
 					RootDiskSize: 0,
-				},
-				Status: infrav1.EvrocMachineStatus{
-					Resources: &infrav1.MachineResources{
-						SecurityGroups: []infrav1.ManagedSecurityGroup{
-							{ID: "vm-1-ssh", Managed: true, Role: "common"},
-						},
-						PublicIP: &infrav1.ManagedPublicIP{
-							ID:      "vm-1-public-ip",
-							Managed: true,
-						},
-					},
 				},
 			},
 			setupMocks: func(mc *mocks.MockClient, vm *mocks.MockVirtualMachineService, ds *mocks.MockDiskService, sg *mocks.MockSecurityGroupService, pip *mocks.MockPublicIPService) {
 				mc.On("VirtualMachines").Return(vm)
 				mc.On("SecurityGroups").Return(sg)
 				mc.On("PublicIPs").Return(pip)
-				vm.On("Delete", mock.Anything, "vm-1").Return(nil)
-				vm.On("WaitForDeleted", mock.Anything, "vm-1", 5*time.Minute).Return(nil)
+				mc.On("Disks").Return(ds)
+				vm.On("Exists", mock.Anything, "vm-1").Return(false, nil)
+				sg.On("ListByMachineOwner", mock.Anything, "machine-owner-1").Return([]string{"vm-1-ssh"}, nil)
+				pip.On("ListByOwner", mock.Anything, "machine-owner-1").Return([]string{"vm-1-public-ip"}, nil)
+				ds.On("ListByOwner", mock.Anything, "machine-owner-1").Return([]string{}, nil)
 				sg.On("Delete", mock.Anything, "vm-1-ssh").Return(nil)
 				pip.On("Delete", mock.Anything, "vm-1-public-ip").Return(nil)
 			},
@@ -2436,7 +2459,9 @@ func TestDeleteMachineFromCloud(t *testing.T) {
 
 			reconciler := &EvrocMachineReconciler{}
 			err := reconciler.deleteMachineFromCloud(context.Background(), tt.machine, mockClient)
-			if tt.expectError {
+			if tt.expectPending {
+				assert.ErrorIs(t, err, errMachineDeletionPending)
+			} else if tt.expectError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
@@ -2717,6 +2742,9 @@ func TestEvrocMachineReconciler_PostMoveRecovery(t *testing.T) {
 			Name:       vmName,
 			Namespace:  "default",
 			Finalizers: []string{machineFinalizer},
+			Annotations: map[string]string{
+				machineOwnershipIDAnnotation: "pre-move-machine-owner",
+			},
 			Labels: map[string]string{
 				clusterv1.ClusterNameLabel: "test-cluster",
 			},

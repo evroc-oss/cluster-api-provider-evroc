@@ -17,11 +17,8 @@ RUN apk add --no-cache git make
 # Set working directory
 WORKDIR /workspace
 
-# PROVIDER_DIR is the subdirectory name within the build context (parent dir).
-ARG PROVIDER_DIR=public-cluster-api
-
 # Copy go mod files
-COPY ${PROVIDER_DIR}/go.mod ${PROVIDER_DIR}/go.sum ./
+COPY go.mod go.sum ./
 
 # Configure Git to use the provided token for private repos
 # The github_token secret is provided by the build workflow
@@ -33,10 +30,10 @@ RUN --mount=type=secret,id=github_token \
     GOPRIVATE=github.com/evroc-oss GOSUMDB=off go mod download
 
 # Copy source code (only what's needed for the binary)
-COPY ${PROVIDER_DIR}/api/ api/
-COPY ${PROVIDER_DIR}/cmd/ cmd/
-COPY ${PROVIDER_DIR}/internal/ internal/
-COPY ${PROVIDER_DIR}/pkg/ pkg/
+COPY api/ api/
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY pkg/ pkg/
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \

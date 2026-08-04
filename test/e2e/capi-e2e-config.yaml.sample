@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 evroc
 
-# CAPI QuickStart E2E Test Configuration
+# CAPI QuickStart E2E Test Configuration (SAMPLE)
+#
+# Copy this file to capi-e2e-config.yaml and fill in the values marked below.
+# The real config is git-ignored because it holds account-specific values
+# (project ID, SSH key). CAPI E2E tests are run locally, so each developer
+# supplies their own copy.
+#
 # Used for upstream CAPI E2E certification tests (QuickStart spec)
 # See: https://cluster-api.sigs.k8s.io/developer/core/e2e
 #
@@ -41,6 +47,21 @@ variables:
   EVROC_IMAGE: "ubuntu.22-04.1"
   EVROC_CONTROL_PLANE_DISK_SIZE: "100"
   # evroc project/credentials (loaded from config.yaml by loadCredentialsFile, duplicated here as fallback)
-  EVROC_PROJECT: "f1dbc774-c978-4e75-bcf9-a28015a181f7"
+  EVROC_PROJECT: "<your-evroc-project-uuid>"
   EVROC_CREDENTIALS_SECRET: "evroc-credentials"
-  EVROC_SSH_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFeENOwB0QwUEicJGrFxt44yiShgBWzANhpE/5gNw041"
+  EVROC_SSH_KEY: "<your-ssh-public-key>"
+  # Custom VPC/subnet for the dual-stack E2E path. OPTIONAL: when unset, the
+  # controller uses the project's default VPC and the per-zone default subnet
+  # (default-{region}-{zone}).
+  #
+  # These reference PRE-EXISTING resources — nothing in this repo creates them.
+  # To run the dual-stack path, first create a VPC + subnet, then set these to
+  # their names (see test/e2e/README.md "Custom VPC / dual-stack" for details):
+  #
+  #   evroc networking vpc create capi-e2e-dualstack --stack-type=dual-stack \
+  #     --ipv4-cidr-block=10.0.0.0/16
+  #   evroc networking subnet create capi-e2e-ds-a --stack-type=dual-stack \
+  #     --ipv4-cidr-block=10.0.5.0/24 --vpc=capi-e2e-dualstack --zone=a
+  #
+  # EVROC_VPC_REF: "capi-e2e-dualstack"
+  # EVROC_SUBNET_A: "capi-e2e-ds-a"

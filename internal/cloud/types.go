@@ -23,6 +23,20 @@ type LoadBalancerCreateRequest struct {
 	AdditionalPorts    []int32 // Additional ports to forward (e.g. 9345 for RKE2 supervisor)
 	ExistingPublicIPID string  // If set, use this pre-existing IP instead of auto-creating one
 	Labels             map[string]string
+	// BackendNetwork configures the VPC and per-zone subnets for the LB.
+	// When nil, the LB uses the default bootstrap networking subnet.
+	BackendNetwork *LoadBalancerBackendNetwork
+	// StackType is the cluster's IP stack type. When "ipv6-only", the LB
+	// backend service uses ipProtocolSelection=IPv6 so the LB can reach
+	// backends that only have IPv6 addresses. The LB frontend is always IPv4.
+	StackType string
+}
+
+// LoadBalancerBackendNetwork configures the VPC and subnets for the LB backend.
+// Names are resolved to fully-qualified IDs by the LoadBalancerService.
+type LoadBalancerBackendNetwork struct {
+	VPCName     string            // VPC name (resolved to FQID internally)
+	SubnetNames map[string]string // zone letter → subnet name (resolved to FQIDs internally)
 }
 
 // Backend represents a VM registered as a backend target of the load balancer.

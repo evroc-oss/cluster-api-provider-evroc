@@ -32,6 +32,8 @@ type DiskServiceInterface interface {
 	Get(ctx context.Context, name string) (*computetypes.Disk, error)
 	Delete(ctx context.Context, name string) error
 	List(ctx context.Context) ([]computetypes.Disk, error)
+	// ListByOwner returns disks owned by immutable capi_machine-id.
+	ListByOwner(ctx context.Context, machineID string) ([]string, error)
 	Exists(ctx context.Context, name string) (bool, error)
 
 	// Waiter methods for async operations.
@@ -50,6 +52,8 @@ type PublicIPServiceInterface interface {
 	Get(ctx context.Context, name string) (*networkingtypes.PublicIP, error)
 	Delete(ctx context.Context, name string) error
 	List(ctx context.Context) ([]networkingtypes.PublicIP, error)
+	// ListByOwner returns public IPs owned by immutable capi_machine-id.
+	ListByOwner(ctx context.Context, machineID string) ([]string, error)
 	Exists(ctx context.Context, name string) (bool, error)
 
 	// Waiter methods for async operations.
@@ -69,10 +73,16 @@ type SecurityGroupServiceInterface interface {
 		name string,
 		rules []networkingtypes.SecurityGroupSpecRulesItem,
 		labels map[string]string,
+		vpcName string,
 	) (*networkingtypes.SecurityGroup, error)
 	Get(ctx context.Context, name string) (*networkingtypes.SecurityGroup, error)
 	Delete(ctx context.Context, name string) error
 	List(ctx context.Context) ([]networkingtypes.SecurityGroup, error)
+	// ListByOwner returns security groups carrying both this immutable
+	// capi_cluster-id and the provider's managed-by marker.
+	ListByOwner(ctx context.Context, clusterID string) ([]string, error)
+	// ListByMachineOwner returns security groups owned by capi_machine-id.
+	ListByMachineOwner(ctx context.Context, machineID string) ([]string, error)
 	Update(
 		ctx context.Context,
 		name string,
@@ -165,9 +175,17 @@ type LoadBalancerServiceInterface interface {
 	// Get retrieves a load balancer by its evroc resource ID.
 	Get(ctx context.Context, name string) (*LoadBalancer, error)
 
-	// Delete deletes a load balancer and all sub-resources.
-	// This is idempotent — deleting a non-existent resource is a no-op.
-	Delete(ctx context.Context, name string) error
+	// Delete deletes a load balancer and all sub-resources owned by the given
+	// cluster, identified by its stable cluster ID (resource prefix, which
+	// survives clusterctl move). The public IP is deleted only when
+	// deletePublicIP is true. This is idempotent — deleting non-existent
+	// resources is a no-op.
+	Delete(ctx context.Context, name, clusterID string, deletePublicIP bool) error
+
+	// DeletionComplete reports whether every managed load balancer resource has
+	// been removed. checkPublicIP must match the deletePublicIP value passed to
+	// Delete so an externally managed IP does not hold the finalizer.
+	DeletionComplete(ctx context.Context, name, clusterID string, checkPublicIP bool) (bool, error)
 
 	// List lists all load balancers.
 	List(ctx context.Context) ([]LoadBalancer, error)

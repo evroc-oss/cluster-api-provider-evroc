@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ import (
 
 	evroc "github.com/evroc-oss/evroc-go-sdk"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
+	"github.com/evroc-oss/evroc-go-sdk/filter"
 	"github.com/evroc-oss/evroc-go-sdk/networking"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -254,6 +256,9 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			// We'll track which kubeconfig owns the cluster for cleanup.
 			// Starts as the bootstrap cluster; after move it becomes the workload cluster.
 			ownerKubeconfig := kubeconfigPath
+			// Recorded once the LB exists; used post-teardown to assert cloud cleanup.
+			var moveLBID string
+			var moveOwnershipID string
 			defer func() {
 				collectClusterArtifacts(ctx, ownerKubeconfig, clusterName, namespace)
 
@@ -266,6 +271,16 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 
 				By("Deleting workload cluster from current owner")
 				deleteCluster(ctx, ownerKubeconfig, clusterName, namespace)
+
+				// The point of clusterctl move is not just that the cluster moves,
+				// but that once moved it can be torn down and cleans up all its
+				// cloud resources. The controller (now on the post-move owner with
+				// a new cluster UID) must still find them by the stable
+				// capi_cluster-id label. Assert that it did.
+				if moveLBID != "" && moveOwnershipID != "" && !CurrentSpecReport().Failed() {
+					By("Verifying all owned cloud resources were cleaned up after post-move teardown")
+					verifyOwnedResourcesCleanedUp(ctx, newEvrocSDKClient(ctx), moveLBID, moveOwnershipID)
+				}
 			}()
 
 			By("Waiting for EvrocCluster to become ready")
@@ -314,6 +329,8 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			GinkgoWriter.Printf("Provider IDs before move: %v\n", providerIDsBefore)
 			loadBalancerIDBefore := getEvrocClusterLoadBalancerID(ctx, kubeconfigPath, clusterName, namespace)
 			GinkgoWriter.Printf("Load balancer ID before move: %s\n", loadBalancerIDBefore)
+			moveLBID = loadBalancerIDBefore // for post-teardown cloud-cleanup assertion
+			moveOwnershipID = getEvrocClusterOwnershipID(ctx, kubeconfigPath, clusterName, namespace)
 
 			By("Pre-creating evroc credentials on workload cluster")
 			applyEvrocCredentials(ctx, workloadKubeconfig)
@@ -365,6 +382,37 @@ var _ = Describe("[evroc] CAPI QuickStart", Label("capi-quickstart"), func() {
 			By("Verifying EvrocMachines are ready on target (post-move status reconstruction)")
 			waitForEvrocMachineReady(ctx, workloadKubeconfig, clusterName, namespace,
 				e2eConfig.GetIntervals("default", "wait-machines")...)
+
+			// clusterctl move refuses to start until every Machine reports a
+			// nodeRef (phase Running) and the control plane is initialized.
+			// Right after the forward pivot the self-managing controller has not
+			// yet re-populated Machine.status.nodeRef, so wait for all Machines
+			// (control plane and workers) to reach Running before moving back.
+			By("Waiting for all Machines to be Running on target before move-back")
+			Eventually(func() error {
+				cmd := exec.CommandContext(ctx, kubectlPath(),
+					"--kubeconfig", workloadKubeconfig,
+					"get", "machines",
+					"-n", namespace,
+					"-l", "cluster.x-k8s.io/cluster-name="+clusterName,
+					"-o", "jsonpath={.items[*].status.phase}",
+				)
+				out, err := cmd.Output()
+				if err != nil {
+					return fmt.Errorf("kubectl get machines failed: %w", err)
+				}
+				phases := strings.Fields(string(out))
+				if len(phases) == 0 {
+					return fmt.Errorf("no machines found yet for cluster %s", clusterName)
+				}
+				for _, p := range phases {
+					if p != string(clusterv1.MachinePhaseRunning) {
+						return fmt.Errorf("cluster %s: machine phases not all Running: %v", clusterName, phases)
+					}
+				}
+				return nil
+			}, e2eConfig.GetIntervals("default", "wait-machines")...).Should(Succeed(),
+				"not all Machines reached Running on target before move-back")
 
 			// Move ownership back before cleanup. A self-managed cluster cannot
 			// reliably finish deleting its own control plane after its API goes down.
@@ -817,11 +865,19 @@ func loadProviderImageToRemoteCluster(ctx context.Context, bootstrapKubeconfig, 
 		for _, item := range machineList.Items {
 			n := nodeTarget{name: item.Metadata.Name}
 			for _, addr := range item.Status.Addresses {
+				// Dual-stack machines report both an IPv4 and an IPv6 address
+				// per type. Prefer IPv4 for SSH: it avoids IPv6-literal parsing
+				// issues (e.g. the "-W host:port" proxy spec) and the jump-host
+				// path. Only fall back to IPv6 when no IPv4 is present.
 				switch addr.Type {
 				case "ExternalIP":
-					n.externalIP = addr.Address
+					if n.externalIP == "" || isIPv4(addr.Address) {
+						n.externalIP = addr.Address
+					}
 				case "InternalIP":
-					n.internalIP = addr.Address
+					if n.internalIP == "" || isIPv4(addr.Address) {
+						n.internalIP = addr.Address
+					}
 				}
 			}
 			nodes = append(nodes, n)
@@ -903,6 +959,13 @@ func loadProviderImageToRemoteCluster(ctx context.Context, bootstrapKubeconfig, 
 	}
 }
 
+// isIPv4 reports whether addr is an IPv4 literal. On dual-stack clusters the
+// same address type carries both families; SSH targets prefer the IPv4 one.
+// IPv6 literals always contain a colon, IPv4 never does.
+func isIPv4(addr string) bool {
+	return addr != "" && !strings.Contains(addr, ":")
+}
+
 // applyEvrocCredentials creates the capi-evroc-system namespace and the
 // evroc-credentials secret from environment variables.
 func applyEvrocCredentials(ctx context.Context, kubeconfig string) {
@@ -913,20 +976,20 @@ func applyEvrocCredentials(ctx context.Context, kubeconfig string) {
 func buildCredentialsYAML() []byte {
 	saID := os.Getenv("EVROC_SERVICE_ACCOUNT_ID")
 	saSecret := os.Getenv("EVROC_SERVICE_ACCOUNT_SECRET")
-	project := os.Getenv("EVROC_PROJECT")
-	region := os.Getenv("EVROC_REGION")
 	organization := os.Getenv("EVROC_ORGANIZATION")
-	if region == "" {
-		region = "se-sto"
-	}
 
 	if saID == "" || saSecret == "" {
 		Fail("EVROC_SERVICE_ACCOUNT_ID and EVROC_SERVICE_ACCOUNT_SECRET must be set")
 	}
-	authSection := fmt.Sprintf("    service_account_id: %q\n    service_account_secret: %q\n", saID, saSecret)
 
-	configYAML := fmt.Sprintf("auth:\n%scontext:\n  project: %q\n  region: %q\n  organization: %q\n",
-		authSection, project, region, organization)
+	// The provider requires flat service-account keys (serviceAccountID,
+	// serviceAccountSecret, optional organization). Project and region come
+	// from the EvrocCluster spec, not the secret. The pre-v0.2.1 config.yaml
+	// format is removed and rejected by the controller.
+	stringData := fmt.Sprintf("  serviceAccountID: %q\n  serviceAccountSecret: %q\n", saID, saSecret)
+	if organization != "" {
+		stringData += fmt.Sprintf("  organization: %q\n", organization)
+	}
 
 	return []byte(fmt.Sprintf(`apiVersion: v1
 kind: Namespace
@@ -940,9 +1003,7 @@ metadata:
   namespace: capi-evroc-system
 type: Opaque
 stringData:
-  config.yaml: |
-%s
----
+%s---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -950,18 +1011,7 @@ metadata:
   namespace: default
 type: Opaque
 stringData:
-  config.yaml: |
-%s`, indent(configYAML, "    "), indent(configYAML, "    ")))
-}
-
-func indent(s, prefix string) string {
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		if l != "" {
-			lines[i] = prefix + l
-		}
-	}
-	return strings.Join(lines, "\n")
+%s`, stringData, stringData))
 }
 
 // applyEvrocCRDs applies the evroc CRDs directly to avoid race conditions.
@@ -2018,6 +2068,20 @@ func getEvrocClusterLoadBalancerID(ctx context.Context, kubeconfig, clusterName,
 	return id
 }
 
+func getEvrocClusterOwnershipID(ctx context.Context, kubeconfig, clusterName, namespace string) string {
+	cmd := exec.CommandContext(ctx, kubectlPath(),
+		"--kubeconfig", kubeconfig,
+		"get", "evroccluster", clusterName,
+		"-n", namespace,
+		"-o", "jsonpath={.metadata.annotations.evroccluster\\.infrastructure\\.cluster\\.x-k8s\\.io/ownership-id}",
+	)
+	out, err := cmd.CombinedOutput()
+	Expect(err).ToNot(HaveOccurred(), "Failed to get EvrocCluster ownership ID: %s", string(out))
+	id := strings.TrimSpace(string(out))
+	Expect(id).ToNot(BeEmpty(), "EvrocCluster immutable ownership ID must be persisted")
+	return id
+}
+
 // clusterctlMove runs `clusterctl move` to pivot CAPI resources from the source
 // management cluster to the target cluster.
 func clusterctlMove(ctx context.Context, fromKubeconfig, toKubeconfig, namespace string) {
@@ -2108,6 +2172,71 @@ func newEvrocSDKClient(ctx context.Context) *evroc.Client {
 	client, err := evroc.NewFromEnv(ctx)
 	Expect(err).ToNot(HaveOccurred(), "Failed to create evroc SDK client from env")
 	return client
+}
+
+// verifyLBResourcesCleanedUp asserts that, after the cluster has been deleted,
+// the managed load balancer and every sub-resource it owned are gone from
+// evroc. Sub-resources are matched by the stable capi_cluster-id ownership
+// label (clusterID = the LB resource prefix), which is what makes teardown work
+// after a clusterctl move — the live UID changes, so selecting on it would miss
+// pre-move resources and leak them. This is the assertion that proves the fix:
+// move the cluster, delete it from its new owner, and confirm nothing is left.
+func verifyOwnedResourcesCleanedUp(ctx context.Context, sdk *evroc.Client, lbID, ownershipID string) {
+	lbc := sdk.LoadBalancer()
+	selector := filter.WithLabelSelector(fmt.Sprintf(
+		"capi_managed-by=cluster-api-provider-evroc,capi_cluster-id=%s", ownershipID))
+
+	Eventually(func() error {
+		if _, err := lbc.LoadBalancers().Get(ctx, lbID); err == nil {
+			return fmt.Errorf("load balancer %q still exists", lbID)
+		} else if !errors.Is(err, evroc.ErrNotFound) {
+			return fmt.Errorf("get load balancer %q: %w", lbID, err)
+		}
+		pools, err := lbc.BackendPools().List(ctx, selector)
+		if err != nil {
+			return fmt.Errorf("list backend pools: %w", err)
+		}
+		if n := len(pools.Items); n > 0 {
+			return fmt.Errorf("%d owned backend pool(s) remain", n)
+		}
+		svcs, err := lbc.BackendServices().List(ctx, selector)
+		if err != nil {
+			return fmt.Errorf("list backend services: %w", err)
+		}
+		if n := len(svcs.Items); n > 0 {
+			return fmt.Errorf("%d owned backend service(s) remain", n)
+		}
+		routes, err := lbc.L4Routes().List(ctx, selector)
+		if err != nil {
+			return fmt.Errorf("list l4 routes: %w", err)
+		}
+		if n := len(routes.Items); n > 0 {
+			return fmt.Errorf("%d owned l4 route(s) remain", n)
+		}
+		ips, err := sdk.Networking().PublicIPs().List(ctx, selector)
+		if err != nil {
+			return fmt.Errorf("list public IPs: %w", err)
+		}
+		if n := len(ips.Items); n > 0 {
+			return fmt.Errorf("%d owned public IP(s) remain", n)
+		}
+		sgs, err := sdk.Networking().SecurityGroups().List(ctx, selector)
+		if err != nil {
+			return fmt.Errorf("list security groups: %w", err)
+		}
+		if n := len(sgs.Items); n > 0 {
+			return fmt.Errorf("%d owned security group(s) remain", n)
+		}
+		disks, err := sdk.Compute().Disks().List(ctx, selector)
+		if err != nil {
+			return fmt.Errorf("list disks: %w", err)
+		}
+		if n := len(disks.Items); n > 0 {
+			return fmt.Errorf("%d owned disk(s) remain", n)
+		}
+		return nil
+	}, 10*time.Minute, 15*time.Second).Should(Succeed(),
+		"all resources owned by cluster %q must be cleaned up after post-move teardown", ownershipID)
 }
 
 // createBastionVM creates a small VM with a public IP to use as an SSH jump host.

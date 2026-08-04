@@ -49,3 +49,4 @@ _artifacts/
 test/e2e/_artifacts/
 test/e2e/credentials.yaml
 test/e2e/config.yaml
+test/e2e/capi-e2e-config.yaml

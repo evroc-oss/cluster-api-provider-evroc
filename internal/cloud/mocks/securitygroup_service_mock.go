@@ -17,8 +17,8 @@ type MockSecurityGroupService struct {
 	mock.Mock
 }
 
-func (m *MockSecurityGroupService) Create(ctx context.Context, name string, rules []networkingtypes.SecurityGroupSpecRulesItem, labels map[string]string) (*networkingtypes.SecurityGroup, error) {
-	args := m.Called(ctx, name, rules, labels)
+func (m *MockSecurityGroupService) Create(ctx context.Context, name string, rules []networkingtypes.SecurityGroupSpecRulesItem, labels map[string]string, vpcName string) (*networkingtypes.SecurityGroup, error) {
+	args := m.Called(ctx, name, rules, labels, vpcName)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -44,6 +44,22 @@ func (m *MockSecurityGroupService) List(ctx context.Context) ([]networkingtypes.
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]networkingtypes.SecurityGroup), args.Error(1)
+}
+
+func (m *MockSecurityGroupService) ListByOwner(ctx context.Context, clusterID string) ([]string, error) {
+	args := m.Called(ctx, clusterID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]string), args.Error(1)
+}
+
+func (m *MockSecurityGroupService) ListByMachineOwner(ctx context.Context, machineID string) ([]string, error) {
+	args := m.Called(ctx, machineID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]string), args.Error(1)
 }
 
 func (m *MockSecurityGroupService) Update(ctx context.Context, name string, group *networkingtypes.SecurityGroup) (*networkingtypes.SecurityGroup, error) {

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-31
+
+### Added
+
+- IPv6/dual-stack networking, custom VPC/subnet selection, and new `dualstack`
+  and `calico` flavors. The default kubeadm flavor now uses Cilium.
+
+### Changed
+
+- Cloud resource ownership and asynchronous VM deletion now work reliably
+  across `clusterctl move` and controller reconciliations.
+
+### Fixed
+
+- Fixed standalone release image builds and added the Namespace to standalone
+  `infrastructure-components.yaml` manifests.
+- Load balancer teardown now finds and removes related resources after moves or
+  incomplete status updates.
+
+### Security
+
+- Documented that VM-readable cloud-init data contains kubeadm secrets, making
+  VM-read access equivalent to cluster-admin access.
+
 ## [0.2.1] - 2026-07-21
 
 ### Removed
@@ -103,10 +127,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Security group and public IP management
 - Placement group support for VM spread
 
-[0.1.2]: https://gitlab.evroc.dev/engineering/public-cluster-api/-/tags/v0.1.2
-[0.1.1]: https://gitlab.evroc.dev/engineering/public-cluster-api/-/tags/v0.1.1
+[0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
+[0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -125,3 +149,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.28]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.28
 [0.2.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.0
 [0.2.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.1
+[0.3.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.0

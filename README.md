@@ -267,7 +267,7 @@ kubectl get evrocmachine -o wide
 ssh evroc-user@<PUBLIC_IP>
 ```
 
-**CNI note:** The `minimal` and `ha-lb` flavors install Calico automatically via `postKubeadmCommands`. The `default` flavor installs Calico via ClusterResourceSet. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
+**CNI note:** The `minimal`, `calico`, and `ha-lb` flavors install Calico automatically via `postKubeadmCommands`. The `default` flavor installs Cilium the same way. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
 
 ```bash
 # Only needed for custom templates without built-in CNI:
@@ -751,6 +751,14 @@ make test-e2e-capi
 - [templates/](./templates/) - Available cluster template flavors
 
 ## Security
+
+### Bootstrap Data Exposure
+
+The VM `cloudInitUserData` stored by evroc contains kubeadm bootstrap data,
+including cluster CA private keys. Anyone with permission to read VM details
+(including the `computeOperator` role) can retrieve that data. Until the cloud
+API redacts it, treat project membership with VM-read access as equivalent to
+cluster-admin access and limit it accordingly.
 
 ### Image Signing and Verification
 

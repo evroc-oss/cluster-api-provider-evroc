@@ -5,8 +5,8 @@ apiVersion: v2
 name: cluster-api-provider-evroc
 description: A Cluster API v1beta2 infrastructure provider for managing Kubernetes clusters on evroc Cloud (compatible with CAPI v1.11+ and v1.12)
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.3.0
+appVersion: "0.3.0"
 keywords:
   - kubernetes
   - cluster-api
@@ -19,7 +19,6 @@ sources:
 maintainers:
   - name: evroc Team
     email: support@evroc.com
-icon: https://raw.githubusercontent.com/evroc-oss/cluster-api-provider-evroc/main/docs/images/evroc-logo.png
 kubeVersion: ">=1.27.0-0"
 annotations:
   # ArtifactHub — CNCF Helm chart discovery (artifacthub.io)

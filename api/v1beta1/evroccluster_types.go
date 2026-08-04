@@ -22,12 +22,8 @@ type EvrocClusterSpec struct {
 	// containing evroc service account credentials. Cross-namespace references
 	// are intentionally unsupported.
 	// Required: every cluster must name the credentials it uses.
-	// The secret must use one of two formats:
-	//  1. A "config.yaml" key with the evroc SDK config:
-	//       auth:
-	//         service_account_id: "my-sa"
-	//         service_account_secret: "<base64-jwk-or-path>"
-	//  2. Individual keys: serviceAccountID, serviceAccountSecret (and optionally organization).
+	// The secret must contain serviceAccountID and serviceAccountSecret, with
+	// organization optionally specifying the evroc organization.
 	// +kubebuilder:validation:Required
 	CredentialsRef *SecretReference `json:"credentialsRef"`
 
@@ -41,8 +37,9 @@ type EvrocClusterSpec struct {
 	// +optional
 	FailureDomains []string `json:"failureDomains,omitempty"`
 
-	// NetworkSpec defines the network configuration for the cluster.
-	// Currently unused; reserved for future VPC/Subnet integration.
+	// Network defines the VPC, subnet, and IP stack configuration for the cluster.
+	// When omitted, the project's default VPC with default subnets and dual-stack
+	// networking is used.
 	// +optional
 	Network NetworkSpec `json:"network,omitempty"`
 
@@ -89,15 +86,42 @@ type SecretReference struct {
 	Name string `json:"name"`
 }
 
-// NetworkSpec defines network configuration for the cluster
+// NetworkSpec defines network configuration for the cluster.
 type NetworkSpec struct {
-	// VPCRef is a reference to an EvrocVPC resource (future implementation)
+	// VPCRef references a pre-existing VPC to place all cluster resources in
+	// (security groups, VMs, load balancers). The VPC must already exist in the
+	// evroc project. When omitted, the project's default VPC is used.
+	//
+	// Accepts either a bare VPC name (e.g. "my-vpc"), which is resolved to an
+	// FQID within this cluster's project and region, or an already
+	// fully-qualified ref, i.e.
+	// "/networking/projects/{project}/regions/{region}/virtualPrivateClouds/my-vpc".
 	// +optional
 	VPCRef *string `json:"vpcRef,omitempty"`
 
-	// SubnetRef is a reference to an EvrocSubnet resource (future implementation)
+	// SubnetRefs maps availability zone letters to subnets within the VPC.
+	// Key is the zone letter (e.g., "a", "b", "c"), value is the subnet.
+	// When VPCRef is set, SubnetRefs should map every zone in FailureDomains to
+	// the appropriate subnet. When omitted, the default subnet for each zone is
+	// used (default-{region}-{zone}).
+	//
+	// Each value accepts either a bare subnet name (e.g. "my-subnet-a"),
+	// resolved to an FQID within this cluster's project and region, or an
+	// already fully-qualified ref, i.e.
+	// "/networking/projects/{project}/regions/{region}/subnets/my-subnet-a".
 	// +optional
-	SubnetRef *string `json:"subnetRef,omitempty"`
+	SubnetRefs map[string]string `json:"subnetRefs,omitempty"`
+
+	// StackType is the IP stack type for the internal cluster network.
+	// When "dual-stack", VMs and pods get both IPv4 and IPv6 addresses.
+	// When "ipv6-only", VMs get only IPv6 addresses; the LB uses
+	// ipProtocolSelection to reach backends over IPv6.
+	// The control plane endpoint (load balancer frontend) is always IPv4.
+	// Defaults to "dual-stack" if not specified.
+	// +optional
+	// +kubebuilder:validation:Enum="ipv4-only";"dual-stack";"ipv6-only"
+	// +kubebuilder:default="dual-stack"
+	StackType *string `json:"stackType,omitempty"`
 }
 
 // ControlPlaneConfig defines configuration for the control plane endpoint.
@@ -226,15 +250,19 @@ type EvrocClusterStatus struct {
 	Resources *ClusterResources `json:"resources,omitempty"`
 }
 
-// NetworkStatus provides information about the cluster network
+// NetworkStatus provides information about the resolved cluster network configuration.
 type NetworkStatus struct {
-	// VPCID is the ID of the VPC (when implemented)
+	// VPCID is the name of the VPC in use by this cluster.
 	// +optional
 	VPCID string `json:"vpcId,omitempty"`
 
-	// SubnetID is the ID of the subnet (when implemented)
+	// SubnetIDs maps zone letters to the resolved subnet names in use.
 	// +optional
-	SubnetID string `json:"subnetId,omitempty"`
+	SubnetIDs map[string]string `json:"subnetIds,omitempty"`
+
+	// StackType is the resolved IP stack type for VMs in this cluster.
+	// +optional
+	StackType string `json:"stackType,omitempty"`
 }
 
 // ClusterResources tracks cloud resources created or referenced by the cluster controller.
