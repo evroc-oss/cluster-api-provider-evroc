@@ -6,6 +6,7 @@ package v1beta1
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -141,6 +142,26 @@ func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 		))
 	}
 
+	// Endpoints are immutable once set. Repointing a running cluster at a
+	// different evroc deployment would make the controller look for VMs that do
+	// not exist there and start recreating infrastructure that is still running
+	// against the original endpoints (same rationale as vpcRef).
+	for _, f := range []struct {
+		name     string
+		old, new string
+	}{
+		{"apiBaseURL", oldCluster.Spec.Endpoints.GetAPIBaseURL(), r.Spec.Endpoints.GetAPIBaseURL()},
+		{"issuerURL", oldCluster.Spec.Endpoints.GetIssuerURL(), r.Spec.Endpoints.GetIssuerURL()},
+		{"clientID", oldCluster.Spec.Endpoints.GetClientID(), r.Spec.Endpoints.GetClientID()},
+	} {
+		if f.old != "" && f.new != f.old {
+			allErrs = append(allErrs, field.Forbidden(
+				field.NewPath("spec", "endpoints", f.name),
+				fmt.Sprintf("%s is immutable once set", f.name),
+			))
+		}
+	}
+
 	// ControlPlaneEndpoint is immutable once set (check both host and port)
 	oldEP := oldCluster.Spec.ControlPlaneEndpoint
 	newEP := r.Spec.ControlPlaneEndpoint
@@ -229,6 +250,52 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 			field.NewPath("spec", "region"),
 			c.Spec.Region,
 			"region must be in format xx-xxx (e.g., se-sto)",
+		))
+	}
+
+	// Validate endpoint overrides. A malformed URL here would otherwise surface
+	// as an opaque SDK request failure on every reconcile.
+	for _, u := range []struct {
+		name  string
+		value string
+	}{
+		{"apiBaseURL", c.Spec.Endpoints.GetAPIBaseURL()},
+		{"issuerURL", c.Spec.Endpoints.GetIssuerURL()},
+	} {
+		if u.value == "" {
+			continue
+		}
+		parsed, err := url.Parse(u.value)
+		switch {
+		case err != nil:
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "endpoints", u.name),
+				u.value,
+				fmt.Sprintf("must be a valid URL: %v", err),
+			))
+		case parsed.Scheme != "https":
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "endpoints", u.name),
+				u.value,
+				"must use the https scheme",
+			))
+		case parsed.Host == "":
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "endpoints", u.name),
+				u.value,
+				"must include a host",
+			))
+		}
+	}
+
+	// The token endpoint is derived from issuerURL, so a full token URL here
+	// would be double-suffixed. Catch the paste rather than failing at the first
+	// token request.
+	if issuer := c.Spec.Endpoints.GetIssuerURL(); strings.HasSuffix(strings.TrimSuffix(issuer, "/"), TokenPathSuffix) {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "endpoints", "issuerURL"),
+			issuer,
+			fmt.Sprintf("must be the issuer (realm) URL, not the token endpoint; drop the trailing %q", TokenPathSuffix),
 		))
 	}
 

@@ -697,7 +697,13 @@ func (r *EvrocClusterReconciler) resolveCloudClient(ctx context.Context, cluster
 	if ref := cluster.Spec.CredentialsRef; ref != nil {
 		secretKey.Name = ref.Name
 	}
-	clusterCtx := cloud.ClusterContext{Project: cluster.Spec.Project, Region: cluster.Spec.Region}
+	clusterCtx := cloud.ClusterContext{
+		Project:      cluster.Spec.Project,
+		Region:       cluster.Spec.Region,
+		APIBaseURL:   cluster.Spec.Endpoints.GetAPIBaseURL(),
+		AuthTokenURL: cluster.Spec.Endpoints.GetAuthTokenURL(),
+		ClientID:     cluster.Spec.Endpoints.GetClientID(),
+	}
 	factory := r.clientFactory
 	if factory == nil {
 		factory = cloud.ClientForCluster

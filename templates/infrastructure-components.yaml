@@ -133,6 +133,36 @@ spec:
                 required:
                 - name
                 type: object
+              endpoints:
+                description: |-
+                  Endpoints overrides the evroc API and authentication endpoints this cluster
+                  talks to. Omit it to use the public evroc cloud; set it to target a private
+                  cloud deployment. The credentials in credentialsRef must be valid against
+                  whichever endpoints are configured here — a mismatch is only detected when
+                  the controller first authenticates.
+                properties:
+                  apiBaseURL:
+                    description: |-
+                      APIBaseURL is the base URL for the evroc APIs, e.g.
+                      "https://api.private.example.com". Defaults to the public evroc API.
+                    type: string
+                  clientID:
+                    description: |-
+                      ClientID is the OAuth2 client ID used when requesting tokens. When unset,
+                      it is derived as "<serviceAccountID>_<project>", which is the convention
+                      used by the public evroc cloud. Set it only if a private deployment's
+                      identity provider registers clients under a different name.
+                    type: string
+                  issuerURL:
+                    description: |-
+                      IssuerURL is the OIDC issuer (Keycloak realm) URL, e.g.
+                      "https://authn.private.example.com/realms/evroc-customer". This is the
+                      same value as issuerURL in the evroc CLI config; the OAuth2 token endpoint
+                      is derived from it by appending "/protocol/openid-connect/token", matching
+                      what the evroc SDK does when loading that config.
+                      Defaults to the public evroc authentication server.
+                    type: string
+                type: object
               failureDomains:
                 description: |-
                   FailureDomains is a list of failure domains (availability zones) in which machines should be placed.
@@ -773,6 +803,36 @@ spec:
                             type: string
                         required:
                         - name
+                        type: object
+                      endpoints:
+                        description: |-
+                          Endpoints overrides the evroc API and authentication endpoints this cluster
+                          talks to. Omit it to use the public evroc cloud; set it to target a private
+                          cloud deployment. The credentials in credentialsRef must be valid against
+                          whichever endpoints are configured here — a mismatch is only detected when
+                          the controller first authenticates.
+                        properties:
+                          apiBaseURL:
+                            description: |-
+                              APIBaseURL is the base URL for the evroc APIs, e.g.
+                              "https://api.private.example.com". Defaults to the public evroc API.
+                            type: string
+                          clientID:
+                            description: |-
+                              ClientID is the OAuth2 client ID used when requesting tokens. When unset,
+                              it is derived as "<serviceAccountID>_<project>", which is the convention
+                              used by the public evroc cloud. Set it only if a private deployment's
+                              identity provider registers clients under a different name.
+                            type: string
+                          issuerURL:
+                            description: |-
+                              IssuerURL is the OIDC issuer (Keycloak realm) URL, e.g.
+                              "https://authn.private.example.com/realms/evroc-customer". This is the
+                              same value as issuerURL in the evroc CLI config; the OAuth2 token endpoint
+                              is derived from it by appending "/protocol/openid-connect/token", matching
+                              what the evroc SDK does when loading that config.
+                              Defaults to the public evroc authentication server.
+                            type: string
                         type: object
                       failureDomains:
                         description: |-
@@ -1863,11 +1923,11 @@ kind: Namespace
 metadata:
   name: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1882,11 +1942,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1896,11 +1956,11 @@ kind: ClusterRole
 metadata:
   name: cluster-api-provider-evroc-manager-role
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2010,11 +2070,11 @@ kind: ClusterRoleBinding
 metadata:
   name: cluster-api-provider-evroc-manager-rolebinding
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2033,11 +2093,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-role
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2080,11 +2140,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-rolebinding
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2103,11 +2163,11 @@ metadata:
   name: cluster-api-provider-evroc-metrics
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2133,11 +2193,11 @@ metadata:
   name: cluster-api-provider-evroc-webhook-service
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2162,11 +2222,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2193,7 +2253,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.3.0"
+        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.3.2"
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect
@@ -2272,11 +2332,11 @@ metadata:
   name: cluster-api-provider-evroc-serving-cert
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2295,11 +2355,11 @@ metadata:
   name: cluster-api-provider-evroc-selfsigned-issuer
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2315,11 +2375,11 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-mutating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:
@@ -2376,11 +2436,11 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-validating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.3.0
+    helm.sh/chart: cluster-api-provider-evroc-0.3.2
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/version: "0.3.2"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:

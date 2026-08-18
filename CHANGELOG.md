@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-14
+
+### Added
+
+- `spec.endpoints` on `EvrocCluster` selects which evroc deployment a cluster
+  talks to (`apiBaseURL`, `issuerURL`, and an optional `clientID`). Omit it to
+  use the public evroc cloud. `apiBaseURL` and `issuerURL` are the same values
+  as `apiURL`/`issuerURL` in an evroc CLI config profile, so they can be copied
+  across; the OAuth2 token endpoint is derived from `issuerURL`. The URLs are
+  validated at apply time and are immutable once set, since repointing a running
+  cluster would orphan its infrastructure. Cluster templates accept the values
+  via `EVROC_API_BASE_URL` and `EVROC_ISSUER_URL`; when unset the `endpoints`
+  block is omitted entirely, so existing manifests are unchanged.
+
+### Fixed
+
+- Machines no longer get stuck in `MachineOperationFailed` when the boot disk
+  briefly reports the non-terminal `DiskImageImportCompleted` condition.
+- Placement is now patched only when the placement group changes, instead of
+  retrying the immutable `placement.zone` field on every reconcile.
+
+### Documentation
+
+- Dropped `/download` from the clusterctl provider URL in the README, which
+  prevented `clusterctl init --infrastructure evroc` from finding its assets.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added
@@ -130,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.2...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -150,3 +176,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.0
 [0.2.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.2.1
 [0.3.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.0
+[0.3.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.1
+[0.3.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.2

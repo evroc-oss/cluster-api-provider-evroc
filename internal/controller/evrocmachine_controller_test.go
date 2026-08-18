@@ -1712,6 +1712,182 @@ func TestCloudInitContentType(t *testing.T) {
 	}
 }
 
+func TestReconcileVMPlacement(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	machineWithGroup := func(group *string) *infrav1.EvrocMachine {
+		m := &infrav1.EvrocMachine{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-machine", Namespace: "default"},
+			Status: infrav1.EvrocMachineStatus{
+				MachineID:        "vm-123",
+				AvailabilityZone: "a",
+			},
+		}
+		if group != nil {
+			m.Spec.PlacementConfig = &infrav1.PlacementConfig{ExistingGroupID: group}
+		}
+		return m
+	}
+
+	vmWithGroup := func(group *string) *computetypes.VirtualMachine {
+		return &computetypes.VirtualMachine{
+			Spec: computetypes.VirtualMachineSpec{
+				Placement: computetypes.VirtualMachineSpecPlacement{
+					PlacementGroupRef: group,
+					Zone:              strPtr("a"),
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name             string
+		machine          *infrav1.EvrocMachine
+		evrocVM          *computetypes.VirtualMachine
+		mockExpectations func(*mocks.MockClient, *mocks.MockVirtualMachineService)
+		expectError      bool
+	}{
+		{
+			// Regression: placement was patched on every reconcile, and the patch
+			// carried the immutable zone field, so the API returned 422 forever.
+			name:    "unchanged placement group issues no patch",
+			machine: machineWithGroup(strPtr("my-pg")),
+			evrocVM: vmWithGroup(strPtr("my-pg")),
+			mockExpectations: func(mockClient *mocks.MockClient, mockVMService *mocks.MockVirtualMachineService) {
+				// No expectations — steady state must not call the API.
+			},
+		},
+		{
+			name:    "no placement group configured issues no patch",
+			machine: machineWithGroup(nil),
+			evrocVM: vmWithGroup(nil),
+			mockExpectations: func(mockClient *mocks.MockClient, mockVMService *mocks.MockVirtualMachineService) {
+				// No expectations — nothing to reconcile.
+			},
+		},
+		{
+			name:    "changed placement group patches without zone",
+			machine: machineWithGroup(strPtr("new-pg")),
+			evrocVM: vmWithGroup(strPtr("old-pg")),
+			mockExpectations: func(mockClient *mocks.MockClient, mockVMService *mocks.MockVirtualMachineService) {
+				mockClient.On("VirtualMachines").Return(mockVMService)
+				mockVMService.On("UpdatePlacement", mock.Anything, "test-machine",
+					mock.MatchedBy(func(p computetypes.VirtualMachineSpecPlacement) bool {
+						// zone is immutable and must never be sent.
+						return p.Zone == nil && p.PlacementGroupRef != nil && *p.PlacementGroupRef == "new-pg"
+					})).Return(nil)
+			},
+		},
+		{
+			name:    "VM not created yet skips",
+			machine: &infrav1.EvrocMachine{ObjectMeta: metav1.ObjectMeta{Name: "test-machine"}},
+			evrocVM: nil,
+			mockExpectations: func(mockClient *mocks.MockClient, mockVMService *mocks.MockVirtualMachineService) {
+				// No expectations — function returns early.
+			},
+		},
+		{
+			name:    "UpdatePlacement failure is returned",
+			machine: machineWithGroup(strPtr("new-pg")),
+			evrocVM: vmWithGroup(strPtr("old-pg")),
+			mockExpectations: func(mockClient *mocks.MockClient, mockVMService *mocks.MockVirtualMachineService) {
+				mockClient.On("VirtualMachines").Return(mockVMService)
+				mockVMService.On("UpdatePlacement", mock.Anything, "test-machine",
+					mock.Anything).Return(evroc.ErrBadRequest)
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := new(mocks.MockClient)
+			mockVMService := new(mocks.MockVirtualMachineService)
+
+			if tt.mockExpectations != nil {
+				tt.mockExpectations(mockClient, mockVMService)
+			}
+
+			reconciler := &EvrocMachineReconciler{
+				Client:        fake.NewClientBuilder().WithScheme(testScheme()).Build(),
+				clientFactory: staticClientFactory(mockClient),
+			}
+
+			err := reconciler.reconcileVMPlacement(context.Background(), tt.machine, tt.evrocVM, mockClient)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			mockClient.AssertExpectations(t)
+			mockVMService.AssertExpectations(t)
+		})
+	}
+}
+
+func TestGetDiskErrorCondition(t *testing.T) {
+	diskWithCondition := func(status, reason, message string) *computetypes.Disk {
+		conds := []computetypes.DiskStatusConditionsItem{{
+			Type:    "Ready",
+			Status:  computetypes.DiskStatusConditionsItemStatus(status),
+			Reason:  reason,
+			Message: message,
+		}}
+		return &computetypes.Disk{
+			Status: computetypes.DiskStatus{Conditions: &conds},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		disk       *computetypes.Disk
+		wantReason string
+	}{
+		{
+			// Regression: the API briefly reports Ready=False with this success
+			// reason before flipping to Ready=True. Treating it as terminal failed
+			// otherwise-healthy machines and forced a manual machine delete.
+			name:       "import completed is not an error",
+			disk:       diskWithCondition("False", "DiskImageImportCompleted", "Disk Image import has completed"),
+			wantReason: "",
+		},
+		{
+			name:       "in-progress download is not an error",
+			disk:       diskWithCondition("False", "DiskImageDownloading", "downloading"),
+			wantReason: "",
+		},
+		{
+			name:       "terminal failure is surfaced",
+			disk:       diskWithCondition("False", "DiskImageImportFailed", "import failed"),
+			wantReason: "DiskImageImportFailed",
+		},
+		{
+			name:       "invalid size is surfaced",
+			disk:       diskWithCondition("False", "DiskTooSmall", "Disk is too small to contain disk image"),
+			wantReason: "DiskTooSmall",
+		},
+		{
+			name:       "ready disk has no error",
+			disk:       diskWithCondition("True", "DiskReady", "ready"),
+			wantReason: "",
+		},
+		{
+			name:       "nil disk has no error",
+			disk:       nil,
+			wantReason: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, _ := getDiskErrorCondition(tt.disk)
+			assert.Equal(t, tt.wantReason, reason)
+		})
+	}
+}
+
 func TestGetOwnerMachineRef(t *testing.T) {
 	tests := []struct {
 		name       string

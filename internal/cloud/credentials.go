@@ -25,12 +25,19 @@ const (
 	legacyConfigKey = "config.yaml"
 )
 
-// ClusterContext carries the project and region from the EvrocCluster spec.
-// These are the authoritative source — any project/region in the credentials
-// secret is ignored.
+// ClusterContext carries the project, region and endpoint overrides from the
+// EvrocCluster spec. These are the authoritative source — any project/region in
+// the credentials secret is ignored.
 type ClusterContext struct {
 	Project string
 	Region  string
+
+	// APIBaseURL, AuthTokenURL and ClientID override the SDK's public evroc
+	// cloud defaults for private cloud deployments. Empty means "use the
+	// default", which SetDefaults fills in.
+	APIBaseURL   string
+	AuthTokenURL string
+	ClientID     string
 }
 
 // ClientForCluster returns a cloud client for a specific cluster.
@@ -79,10 +86,17 @@ func configFromServiceAccountKeys(data map[string][]byte, clusterCtx ClusterCont
 		return nil, fmt.Errorf("missing required keys: %s and %s", keyServiceAccountID, keyServiceAccountSecret)
 	}
 
+	// Endpoint overrides are set before SetDefaults, which only fills in fields
+	// left empty — so an unset override keeps the public evroc cloud default.
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
 			ServiceAccountID:     saID,
 			ServiceAccountSecret: saSecret,
+			TokenURL:             clusterCtx.AuthTokenURL,
+			ClientID:             clusterCtx.ClientID,
+		},
+		API: config.APIConfig{
+			BaseURL: clusterCtx.APIBaseURL,
 		},
 		Context: config.ContextConfig{
 			Project:      clusterCtx.Project,

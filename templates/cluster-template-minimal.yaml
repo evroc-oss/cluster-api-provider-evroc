@@ -60,6 +60,11 @@ metadata:
 spec:
   project: ${EVROC_PROJECT}
   region: ${EVROC_REGION:=se-sto}
+  # Endpoint overrides for private/non-production evroc deployments.
+  # Leave unset to use the public evroc cloud.
+  endpoints:
+    apiBaseURL: "${EVROC_API_BASE_URL:=}"
+    issuerURL: "${EVROC_ISSUER_URL:=}"
   # The credential Secret must be in the same namespace as this EvrocCluster.
   credentialsRef:
     name: "${EVROC_CREDENTIALS_SECRET}"

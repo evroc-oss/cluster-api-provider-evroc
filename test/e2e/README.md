@@ -155,10 +155,43 @@ Edit `config.yaml` to customize test parameters and credentials:
 - Cleanup behavior
 - `variables.EVROC_*` credentials used by the e2e suites
 
-Authentication in `variables` supports both valid platform methods:
+Authentication in `variables` uses a service account, which is what the provider
+requires:
 
-- token-based: `EVROC_TOKEN` (+ optional `EVROC_REFRESH_TOKEN`)
-- username/password: `EVROC_USERNAME` + `EVROC_PASSWORD`
+- `EVROC_SERVICE_ACCOUNT_ID` — the service **account** name (not the credential
+  name), from which the OAuth client ID is derived as
+  `<serviceAccountID>_<project>`
+- `EVROC_SERVICE_ACCOUNT_SECRET` — the base64 JWK, pasted verbatim
+- `EVROC_ORGANIZATION` — optional
+
+### Choosing an environment
+
+Tests run against the public evroc cloud unless told otherwise. To target
+another deployment, set both endpoint variables to the `apiURL`/`issuerURL` of
+the matching profile in `~/.evroc/config.yaml`:
+
+```yaml
+  EVROC_API_BASE_URL: "https://api.<env>.example.com"
+  EVROC_ISSUER_URL: "https://authn.<env>.example.com/realms/evroc-customer"
+```
+
+`EVROC_ISSUER_URL` is the issuer (realm) URL — the token endpoint is derived
+from it. Leave both empty for the public cloud.
+
+Every value in a config file must belong to the **same** environment: project,
+organization, service account, and endpoints together. A mismatch is not caught
+at apply time — it surfaces as an authentication failure during reconcile.
+
+Both suites select their config by env var, so per-environment copies can live
+side by side (all are git-ignored, since they hold live credentials):
+
+```bash
+E2E_CONFIG_PATH=$PWD/test/e2e/config.prod.yaml make test-e2e-rancher-turtles
+CAPI_E2E_CONFIG_PATH=$PWD/test/e2e/capi-e2e-config.prod.yaml make test-e2e-capi
+```
+
+> Internal: see `docs/internal/staging-setup.md` for the staging environment
+> values, service-account creation, and how to read each auth failure mode.
 
 ## Running Tests
 
