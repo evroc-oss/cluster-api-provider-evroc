@@ -43,6 +43,15 @@ variables:
   WORKER_MACHINE_COUNT: "1"
   EVROC_AVAILABILITY_ZONE: "a"
   EVROC_REGION: "se-sto"
+  # Endpoint overrides. Leave empty to run against the public evroc cloud.
+  # To target another environment, copy apiURL/issuerURL from the matching
+  # profile in ~/.evroc/config.yaml, e.g.:
+  #   EVROC_API_BASE_URL: "https://api.<env>.example.com"
+  #   EVROC_ISSUER_URL: "https://authn.<env>.example.com/realms/evroc-customer"
+  # The service account, project and organization must all belong to that same
+  # environment — a mismatch only surfaces as an auth failure at reconcile time.
+  EVROC_API_BASE_URL: ""
+  EVROC_ISSUER_URL: ""
   EVROC_CONTROL_PLANE_FLAVOR: "a1a.s"
   EVROC_IMAGE: "ubuntu.22-04.1"
   EVROC_CONTROL_PLANE_DISK_SIZE: "100"

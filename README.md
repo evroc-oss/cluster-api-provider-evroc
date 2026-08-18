@@ -68,7 +68,7 @@ cat > ~/.cluster-api/clusterctl.yaml <<EOF
 providers:
   - name: evroc
     type: InfrastructureProvider
-    url: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/latest/download/infrastructure-components.yaml
+    url: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/latest/infrastructure-components.yaml
 EOF
 ```
 
@@ -161,6 +161,46 @@ is required and `clusterctl` errors if it is unset:
 ```bash
 export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 ```
+
+### 7b) Target a private cloud deployment (optional)
+
+By default clusters talk to the public evroc cloud. To target a private
+deployment — or a non-production environment such as staging — set
+`spec.endpoints` on the `EvrocCluster`:
+
+```yaml
+spec:
+  endpoints:
+    apiBaseURL: https://api.example.com
+    issuerURL: https://authn.example.com/realms/evroc-customer
+```
+
+These are the same `apiURL` and `issuerURL` values as the profile for that
+deployment in the evroc CLI config (`~/.evroc/config.yaml`), so they can be
+copied across directly. The OAuth2 token endpoint is derived from `issuerURL`
+by appending `/protocol/openid-connect/token`, matching what the evroc SDK does
+when it loads that config.
+
+Each field is independently optional; omitting one keeps the public evroc cloud
+default for that field. Omit the whole block for the public cloud.
+
+- `apiBaseURL` — base URL for the evroc APIs (`apiURL` in the CLI config).
+- `issuerURL` — the OIDC issuer (Keycloak realm) URL, **not** the token
+  endpoint. A value ending in `/protocol/openid-connect/token` is rejected.
+- `clientID` — only needed if the deployment's identity provider does not
+  register clients as `<serviceAccountID>_<project>` (see step 7). Leave unset
+  otherwise.
+
+Both URLs must use `https` and are validated at apply time. All three fields are
+**immutable once set**: repointing a running cluster at a different deployment
+would make the controller look for infrastructure that does not exist there.
+Changing endpoints means recreating the cluster.
+
+> **Important:** the credentials in `credentialsRef` must be valid against
+> whichever endpoints are configured here. Nothing validates that pairing — a
+> mismatch surfaces as an authentication failure when the controller first
+> contacts the API, not at apply time. Keep per-environment service accounts in
+> separate secrets.
 
 ### 8) Create your first workload cluster
 

@@ -4,6 +4,8 @@
 package v1beta1
 
 import (
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -62,6 +64,80 @@ type EvrocClusterSpec struct {
 	// receive the common section plus their role-specific section.
 	// +optional
 	SecurityGroups *ClusterSecurityGroupsConfig `json:"securityGroups,omitempty"`
+
+	// Endpoints overrides the evroc API and authentication endpoints this cluster
+	// talks to. Omit it to use the public evroc cloud; set it to target a private
+	// cloud deployment. The credentials in credentialsRef must be valid against
+	// whichever endpoints are configured here — a mismatch is only detected when
+	// the controller first authenticates.
+	// +optional
+	Endpoints *EndpointsConfig `json:"endpoints,omitempty"`
+}
+
+// EndpointsConfig overrides the evroc service endpoints for a cluster.
+// Each field is independently optional; an unset field keeps the public evroc
+// cloud default. All fields are immutable once set, since repointing a running
+// cluster at a different deployment would orphan its existing infrastructure.
+type EndpointsConfig struct {
+	// APIBaseURL is the base URL for the evroc APIs, e.g.
+	// "https://api.private.example.com". Defaults to the public evroc API.
+	// +optional
+	APIBaseURL string `json:"apiBaseURL,omitempty"`
+
+	// IssuerURL is the OIDC issuer (Keycloak realm) URL, e.g.
+	// "https://authn.private.example.com/realms/evroc-customer". This is the
+	// same value as issuerURL in the evroc CLI config; the OAuth2 token endpoint
+	// is derived from it by appending "/protocol/openid-connect/token", matching
+	// what the evroc SDK does when loading that config.
+	// Defaults to the public evroc authentication server.
+	// +optional
+	IssuerURL string `json:"issuerURL,omitempty"`
+
+	// ClientID is the OAuth2 client ID used when requesting tokens. When unset,
+	// it is derived as "<serviceAccountID>_<project>", which is the convention
+	// used by the public evroc cloud. Set it only if a private deployment's
+	// identity provider registers clients under a different name.
+	// +optional
+	ClientID string `json:"clientID,omitempty"`
+}
+
+// GetAPIBaseURL safely returns the configured API base URL, or "".
+func (e *EndpointsConfig) GetAPIBaseURL() string {
+	if e == nil {
+		return ""
+	}
+	return e.APIBaseURL
+}
+
+// TokenPathSuffix is appended to IssuerURL to form the OAuth2 token endpoint.
+// This mirrors how the evroc SDK derives the token URL from the issuerURL in
+// the CLI config.
+const TokenPathSuffix = "/protocol/openid-connect/token"
+
+// GetIssuerURL safely returns the configured issuer URL, or "".
+func (e *EndpointsConfig) GetIssuerURL() string {
+	if e == nil {
+		return ""
+	}
+	return e.IssuerURL
+}
+
+// GetAuthTokenURL returns the OAuth2 token endpoint derived from IssuerURL, or
+// "" when no issuer is configured (in which case the SDK default applies).
+func (e *EndpointsConfig) GetAuthTokenURL() string {
+	issuer := e.GetIssuerURL()
+	if issuer == "" {
+		return ""
+	}
+	return strings.TrimSuffix(issuer, "/") + TokenPathSuffix
+}
+
+// GetClientID safely returns the configured OAuth2 client ID, or "".
+func (e *EndpointsConfig) GetClientID() string {
+	if e == nil {
+		return ""
+	}
+	return e.ClientID
 }
 
 // InfrastructureClusterInitialization tracks infrastructure provisioning status.

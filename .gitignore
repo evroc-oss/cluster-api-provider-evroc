@@ -49,4 +49,10 @@ _artifacts/
 test/e2e/_artifacts/
 test/e2e/credentials.yaml
 test/e2e/config.yaml
+# Per-environment e2e configs (config.prod.yaml, capi-e2e-config.prod.yaml, ...)
+# hold live service-account credentials and account-specific values.
+test/e2e/config.*.yaml
+test/e2e/capi-e2e-config.*.yaml
+!test/e2e/config.yaml.sample
+!test/e2e/capi-e2e-config.yaml.sample
 test/e2e/capi-e2e-config.yaml

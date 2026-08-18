@@ -127,6 +127,36 @@ spec:
                         required:
                         - name
                         type: object
+                      endpoints:
+                        description: |-
+                          Endpoints overrides the evroc API and authentication endpoints this cluster
+                          talks to. Omit it to use the public evroc cloud; set it to target a private
+                          cloud deployment. The credentials in credentialsRef must be valid against
+                          whichever endpoints are configured here — a mismatch is only detected when
+                          the controller first authenticates.
+                        properties:
+                          apiBaseURL:
+                            description: |-
+                              APIBaseURL is the base URL for the evroc APIs, e.g.
+                              "https://api.private.example.com". Defaults to the public evroc API.
+                            type: string
+                          clientID:
+                            description: |-
+                              ClientID is the OAuth2 client ID used when requesting tokens. When unset,
+                              it is derived as "<serviceAccountID>_<project>", which is the convention
+                              used by the public evroc cloud. Set it only if a private deployment's
+                              identity provider registers clients under a different name.
+                            type: string
+                          issuerURL:
+                            description: |-
+                              IssuerURL is the OIDC issuer (Keycloak realm) URL, e.g.
+                              "https://authn.private.example.com/realms/evroc-customer". This is the
+                              same value as issuerURL in the evroc CLI config; the OAuth2 token endpoint
+                              is derived from it by appending "/protocol/openid-connect/token", matching
+                              what the evroc SDK does when loading that config.
+                              Defaults to the public evroc authentication server.
+                            type: string
+                        type: object
                       failureDomains:
                         description: |-
                           FailureDomains is a list of failure domains (availability zones) in which machines should be placed.

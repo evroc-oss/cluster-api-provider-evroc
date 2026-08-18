@@ -105,6 +105,44 @@ func TestConfigFromServiceAccountKeys_IgnoresLegacyProjectRegion(t *testing.T) {
 	assert.Equal(t, "se-sto", cfg.Context.Region)
 }
 
+// Endpoint overrides from the cluster spec must reach the SDK config.
+func TestConfigFromServiceAccountKeys_EndpointOverrides(t *testing.T) {
+	clusterCtx := ClusterContext{
+		Project:      "spec-project",
+		Region:       "se-sto",
+		APIBaseURL:   "https://api.private.example.com",
+		AuthTokenURL: "https://authn.private.example.com/realms/r/protocol/openid-connect/token",
+		ClientID:     "custom-client",
+	}
+	data := map[string][]byte{
+		"serviceAccountID":     []byte("my-sa"),
+		"serviceAccountSecret": []byte("base64-jwk-data"),
+	}
+
+	cfg, err := configFromServiceAccountKeys(data, clusterCtx)
+	assert.NoError(t, err)
+	assert.Equal(t, "https://api.private.example.com", cfg.API.BaseURL)
+	assert.Equal(t, "https://authn.private.example.com/realms/r/protocol/openid-connect/token", cfg.Auth.TokenURL)
+	// An explicit clientID survives SetDefaults' <serviceAccountID>_<project> derivation.
+	assert.Equal(t, "custom-client", cfg.Auth.ClientID)
+}
+
+// Without overrides, SetDefaults must still fill in the public evroc cloud
+// endpoints and derive the client ID as before.
+func TestConfigFromServiceAccountKeys_DefaultEndpoints(t *testing.T) {
+	clusterCtx := ClusterContext{Project: "spec-project", Region: "se-sto"}
+	data := map[string][]byte{
+		"serviceAccountID":     []byte("my-sa"),
+		"serviceAccountSecret": []byte("base64-jwk-data"),
+	}
+
+	cfg, err := configFromServiceAccountKeys(data, clusterCtx)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, cfg.API.BaseURL)
+	assert.Contains(t, cfg.Auth.TokenURL, "evroc.com")
+	assert.Equal(t, "my-sa_spec-project", cfg.Auth.ClientID)
+}
+
 // credentialsRef is mandatory: an empty secret name has no credential source.
 func TestClientForCluster_NoSecret(t *testing.T) {
 	client, err := ClientForCluster(context.Background(), nil, "", "", ClusterContext{}, nil)

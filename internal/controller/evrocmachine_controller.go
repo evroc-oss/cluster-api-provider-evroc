@@ -226,8 +226,11 @@ func (r *EvrocMachineReconciler) resolveCloudClient(ctx context.Context, machine
 		secretName = ref.Name
 	}
 	clusterCtx := cloud.ClusterContext{
-		Project: evrocCluster.Spec.Project,
-		Region:  evrocCluster.Spec.Region,
+		Project:      evrocCluster.Spec.Project,
+		Region:       evrocCluster.Spec.Region,
+		APIBaseURL:   evrocCluster.Spec.Endpoints.GetAPIBaseURL(),
+		AuthTokenURL: evrocCluster.Spec.Endpoints.GetAuthTokenURL(),
+		ClientID:     evrocCluster.Spec.Endpoints.GetClientID(),
 	}
 	factory := r.clientFactory
 	if factory == nil {
@@ -508,10 +511,8 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 		return ctrl.Result{}, err
 	}
 
-	// Reconcile placement on existing VM if configuration changed.
-	// The evroc API rejects this if the VM is running; the controller
-	// will requeue and succeed once the VM is stopped.
-	if err := r.reconcileVMPlacement(ctx, machine, cloudClient); err != nil {
+	// Reconcile placement on existing VM if the placement group changed.
+	if err := r.reconcileVMPlacement(ctx, machine, evrocVM, cloudClient); err != nil {
 		log.Error(err, "failed to reconcile VM placement (will retry)")
 		return ctrl.Result{}, err
 	}
@@ -1491,16 +1492,34 @@ func (r *EvrocMachineReconciler) reconcileVMDisks(ctx context.Context, machine *
 }
 
 // reconcileVMPlacement updates the placement group on an existing VM.
-// The evroc API rejects this if the VM is running — the error propagates
-// and the controller requeues until the VM is stopped.
-func (r *EvrocMachineReconciler) reconcileVMPlacement(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface) error {
+//
+// Only the placement group is patched: placement.zone is immutable on an
+// existing VM, so including it made every reconcile fail with a 422 and
+// requeue forever. The patch is skipped entirely when the placement group
+// already matches, which keeps steady-state reconciles free of API writes.
+func (r *EvrocMachineReconciler) reconcileVMPlacement(ctx context.Context, machine *infrav1.EvrocMachine, evrocVM *computetypes.VirtualMachine, cloudClient cloud.ClientInterface) error {
 	if machine.Status.MachineID == "" {
 		return nil
 	}
 
-	desiredPlacement := r.buildPlacement(machine)
+	desired := r.buildPlacement(machine)
+	if desired.PlacementGroupRef == nil {
+		// No placement group requested — nothing to reconcile. Detaching an
+		// existing group is not supported by the API.
+		return nil
+	}
 
-	if err := cloudClient.VirtualMachines().UpdatePlacement(ctx, machine.Name, desiredPlacement); err != nil {
+	var current *string
+	if evrocVM != nil {
+		current = evrocVM.Spec.Placement.PlacementGroupRef
+	}
+	if current != nil && *current == *desired.PlacementGroupRef {
+		return nil
+	}
+
+	if err := cloudClient.VirtualMachines().UpdatePlacement(ctx, machine.Name, computetypes.VirtualMachineSpecPlacement{
+		PlacementGroupRef: desired.PlacementGroupRef,
+	}); err != nil {
 		return fmt.Errorf("failed to update placement on VM %s: %w", machine.Name, err)
 	}
 
@@ -1791,6 +1810,14 @@ func cloudInitContentType(content string) string {
 // explicit failure), both return values are empty strings.
 // This prevents the controller from silently requeueing forever when the platform
 // reports a terminal disk error (e.g. "Disk is too small to contain disk image").
+//
+// The API reports reasons as free-form strings and briefly holds Ready=False with
+// a non-failure reason (notably "DiskImageImportCompleted") before flipping the
+// disk to Ready=True. Treating every unrecognised reason as terminal therefore
+// failed healthy machines whenever a reconcile landed in that window, so only
+// reasons that actually denote failure are surfaced here. Readiness itself is
+// gated separately by compute.IsDiskReady, so anything not matched below simply
+// keeps the caller requeueing.
 func getDiskErrorCondition(disk *computetypes.Disk) (reason, message string) {
 	if disk == nil || disk.Status.Conditions == nil {
 		return "", ""
@@ -1799,15 +1826,24 @@ func getDiskErrorCondition(disk *computetypes.Disk) (reason, message string) {
 		if cond.Type != "Ready" || cond.Status != "False" || cond.Reason == "" {
 			continue
 		}
-		// Skip in-progress reasons — these are normal provisioning states,
-		// not terminal errors. Only surface actual failures.
-		switch cond.Reason {
-		case "DiskImageDownloading", "Provisioning", "Pending":
+		if !isTerminalDiskReason(cond.Reason) {
 			continue
 		}
 		return cond.Reason, cond.Message
 	}
 	return "", ""
+}
+
+// isTerminalDiskReason reports whether a disk's Ready=False reason denotes a
+// failure the controller cannot recover from by waiting.
+func isTerminalDiskReason(reason string) bool {
+	lowered := strings.ToLower(reason)
+	for _, marker := range []string{"failed", "failure", "error", "invalid", "unavailable", "denied", "exceeded", "toosmall"} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // setMachineCondition sets or updates a condition on the machine's status.

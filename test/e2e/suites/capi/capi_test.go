@@ -1291,6 +1291,8 @@ func generateKubeadmClusterYAML(clusterName string) []byte {
 		"CLUSTER_NAME":                        clusterName,
 		"EVROC_PROJECT":                       e2eConfig.GetVariable("EVROC_PROJECT"),
 		"EVROC_REGION":                        e2eConfig.GetVariable("EVROC_REGION"),
+		"EVROC_API_BASE_URL":                  e2eConfig.GetVariable("EVROC_API_BASE_URL"),
+		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
 		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         e2eConfig.MustGetVariable("CONTROL_PLANE_MACHINE_COUNT"),
@@ -1338,6 +1340,8 @@ func generateHALBClusterYAML(clusterName string) []byte {
 		"CLUSTER_NAME":                        clusterName,
 		"EVROC_PROJECT":                       e2eConfig.GetVariable("EVROC_PROJECT"),
 		"EVROC_REGION":                        e2eConfig.GetVariable("EVROC_REGION"),
+		"EVROC_API_BASE_URL":                  e2eConfig.GetVariable("EVROC_API_BASE_URL"),
+		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
 		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         "3",
@@ -1383,6 +1387,8 @@ func generateRKE2HALBClusterYAML(clusterName string) []byte {
 		"CLUSTER_NAME":                        clusterName,
 		"EVROC_PROJECT":                       e2eConfig.GetVariable("EVROC_PROJECT"),
 		"EVROC_REGION":                        e2eConfig.GetVariable("EVROC_REGION"),
+		"EVROC_API_BASE_URL":                  e2eConfig.GetVariable("EVROC_API_BASE_URL"),
+		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
 		"KUBERNETES_VERSION":                  "v1.30.0+rke2r1",
 		"CONTROL_PLANE_MACHINE_COUNT":         "3",
@@ -2384,5 +2390,17 @@ func loadCredentialsFile() {
 		if os.Getenv(key) == "" {
 			_ = os.Setenv(key, val)
 		}
+	}
+
+	// Test helpers that build their own SDK client via evroc.NewFromEnv read the
+	// SDK's own endpoint variables, which differ from the ones the templates use.
+	// Without this mapping such a helper silently falls back to the public evroc
+	// cloud and fails to authenticate with another environment's credentials.
+	if v := os.Getenv("EVROC_API_BASE_URL"); v != "" && os.Getenv("EVROC_API_URL") == "" {
+		_ = os.Setenv("EVROC_API_URL", v)
+	}
+	if v := os.Getenv("EVROC_ISSUER_URL"); v != "" && os.Getenv("EVROC_TOKEN_URL") == "" {
+		// Mirrors EndpointsConfig.GetAuthTokenURL in api/v1beta1.
+		_ = os.Setenv("EVROC_TOKEN_URL", strings.TrimSuffix(v, "/")+"/protocol/openid-connect/token")
 	}
 }

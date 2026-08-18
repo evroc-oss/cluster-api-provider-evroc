@@ -441,6 +441,228 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 	}
 }
 
+func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
+	g := NewWithT(t)
+
+	clusterWith := func(e *EndpointsConfig) *EvrocCluster {
+		return &EvrocCluster{
+			Spec: EvrocClusterSpec{
+				Project:        "test-project",
+				Region:         "se-sto",
+				FailureDomains: []string{"a"},
+				CredentialsRef: &SecretReference{Name: "test-creds"},
+				Endpoints:      e,
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		endpoints   *EndpointsConfig
+		expectError bool
+	}{
+		{
+			name:        "omitted endpoints are valid",
+			endpoints:   nil,
+			expectError: false,
+		},
+		{
+			name:        "empty endpoints block is valid",
+			endpoints:   &EndpointsConfig{},
+			expectError: false,
+		},
+		{
+			name: "valid https endpoints",
+			endpoints: &EndpointsConfig{
+				APIBaseURL: "https://api.private.example.com",
+				IssuerURL:  "https://authn.private.example.com/realms/evroc-customer",
+			},
+			expectError: false,
+		},
+		{
+			name:        "apiBaseURL only is valid",
+			endpoints:   &EndpointsConfig{APIBaseURL: "https://api.private.example.com"},
+			expectError: false,
+		},
+		{
+			name:        "http scheme rejected",
+			endpoints:   &EndpointsConfig{APIBaseURL: "http://api.private.example.com"},
+			expectError: true,
+		},
+		{
+			name:        "missing scheme rejected",
+			endpoints:   &EndpointsConfig{APIBaseURL: "api.private.example.com"},
+			expectError: true,
+		},
+		{
+			name:        "missing host rejected",
+			endpoints:   &EndpointsConfig{APIBaseURL: "https://"},
+			expectError: true,
+		},
+		{
+			name:        "malformed issuerURL rejected",
+			endpoints:   &EndpointsConfig{IssuerURL: "https://authn.example.com/%zz"},
+			expectError: true,
+		},
+		{
+			// The token endpoint is derived; pasting the full token URL would
+			// double-suffix it.
+			name:        "full token URL as issuerURL rejected",
+			endpoints:   &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/r/protocol/openid-connect/token"},
+			expectError: true,
+		},
+		{
+			name:        "trailing slash on issuerURL is accepted",
+			endpoints:   &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/r/"},
+			expectError: false,
+		},
+		{
+			name:        "clientID is not URL-validated",
+			endpoints:   &EndpointsConfig{ClientID: "some-client"},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := clusterValidator.ValidateCreate(context.Background(), clusterWith(tt.endpoints))
+			if tt.expectError {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+			}
+		})
+	}
+}
+
+func TestEndpointsConfig_GetAuthTokenURL(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		name      string
+		endpoints *EndpointsConfig
+		expected  string
+	}{
+		{
+			name:      "nil endpoints yield no override",
+			endpoints: nil,
+			expected:  "",
+		},
+		{
+			name:      "unset issuer yields no override",
+			endpoints: &EndpointsConfig{APIBaseURL: "https://api.example.com"},
+			expected:  "",
+		},
+		{
+			// Shaped like an issuerURL from the evroc CLI config.
+			name:      "issuer is suffixed with the token path",
+			endpoints: &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/evroc-customer"},
+			expected:  "https://authn.example.com/realms/evroc-customer/protocol/openid-connect/token",
+		},
+		{
+			name:      "trailing slash does not double up",
+			endpoints: &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/evroc-customer/"},
+			expected:  "https://authn.example.com/realms/evroc-customer/protocol/openid-connect/token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g.Expect(tt.endpoints.GetAuthTokenURL()).To(Equal(tt.expected))
+		})
+	}
+}
+
+func TestEvrocClusterValidateUpdate_EndpointsImmutable(t *testing.T) {
+	g := NewWithT(t)
+
+	clusterWith := func(e *EndpointsConfig) *EvrocCluster {
+		return &EvrocCluster{
+			Spec: EvrocClusterSpec{
+				Project:        "test-project",
+				Region:         "se-sto",
+				FailureDomains: []string{"a"},
+				CredentialsRef: &SecretReference{Name: "test-creds"},
+				Endpoints:      e,
+			},
+		}
+	}
+
+	set := &EndpointsConfig{
+		APIBaseURL: "https://api.private.example.com",
+		IssuerURL:  "https://authn.private.example.com/realms/evroc-customer",
+	}
+
+	tests := []struct {
+		name        string
+		old, new    *EndpointsConfig
+		expectError bool
+	}{
+		{
+			name:        "unchanged endpoints",
+			old:         set,
+			new:         set,
+			expectError: false,
+		},
+		{
+			name:        "unset stays unset",
+			old:         nil,
+			new:         nil,
+			expectError: false,
+		},
+		{
+			// Adopting a private cloud endpoint on a cluster that has none is
+			// allowed; the "once set" rule only guards an existing value.
+			name:        "setting endpoints when previously unset is allowed",
+			old:         nil,
+			new:         set,
+			expectError: false,
+		},
+		{
+			name: "changing apiBaseURL rejected",
+			old:  set,
+			new: &EndpointsConfig{
+				APIBaseURL: "https://api.other.example.com",
+				IssuerURL:  set.IssuerURL,
+			},
+			expectError: true,
+		},
+		{
+			name: "changing issuerURL rejected",
+			old:  set,
+			new: &EndpointsConfig{
+				APIBaseURL: set.APIBaseURL,
+				IssuerURL:  "https://authn.other.example.com/realms/evroc-customer",
+			},
+			expectError: true,
+		},
+		{
+			name:        "clearing endpoints rejected",
+			old:         set,
+			new:         nil,
+			expectError: true,
+		},
+		{
+			name:        "changing clientID rejected",
+			old:         &EndpointsConfig{ClientID: "client-a"},
+			new:         &EndpointsConfig{ClientID: "client-b"},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := clusterValidator.ValidateUpdate(
+				context.Background(), clusterWith(tt.old), clusterWith(tt.new))
+			if tt.expectError {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+			}
+		})
+	}
+}
+
 func TestEvrocClusterConditions(t *testing.T) {
 	cluster := &EvrocCluster{
 		ObjectMeta: metav1.ObjectMeta{
