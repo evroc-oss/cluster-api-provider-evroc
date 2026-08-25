@@ -153,7 +153,12 @@ spec:
       - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
       - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
       - apt-get update -y
-      - apt-get install -y kubelet kubeadm kubectl
+      - |
+        KUBE_VERSION=$(echo "${KUBERNETES_VERSION}" | sed 's/^v//')
+        HOST_ARCH=$(dpkg --print-architecture)
+        KUBE_PKG_VER=$(apt list -a kubelet 2>/dev/null | awk -v arch="$HOST_ARCH" -v v="^$KUBE_VERSION-" '$3==arch && $2 ~ v {print $2; exit}')
+        test -n "$KUBE_PKG_VER" || { echo "Kubernetes ${KUBERNETES_VERSION} not found in pkgs.k8s.io channel" >&2; exit 1; }
+        apt-get install -y kubelet=$KUBE_PKG_VER kubeadm=$KUBE_PKG_VER kubectl=$KUBE_PKG_VER
       - systemctl enable kubelet
     initConfiguration:
       nodeRegistration:
@@ -266,7 +271,12 @@ spec:
         - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
         - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
         - apt-get update -y
-        - apt-get install -y kubelet kubeadm kubectl
+        - |
+          KUBE_VERSION=$(echo "${KUBERNETES_VERSION}" | sed 's/^v//')
+          HOST_ARCH=$(dpkg --print-architecture)
+          KUBE_PKG_VER=$(apt list -a kubelet 2>/dev/null | awk -v arch="$HOST_ARCH" -v v="^$KUBE_VERSION-" '$3==arch && $2 ~ v {print $2; exit}')
+          test -n "$KUBE_PKG_VER" || { echo "Kubernetes ${KUBERNETES_VERSION} not found in pkgs.k8s.io channel" >&2; exit 1; }
+          apt-get install -y kubelet=$KUBE_PKG_VER kubeadm=$KUBE_PKG_VER kubectl=$KUBE_PKG_VER
         - systemctl enable kubelet
       joinConfiguration:
         nodeRegistration:

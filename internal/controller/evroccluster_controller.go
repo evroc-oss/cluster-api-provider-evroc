@@ -905,6 +905,11 @@ func resolveStackType(cluster *infrav1.EvrocCluster) string {
 func (r *EvrocClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.EvrocCluster{}).
+		// Re-reconcile EvrocCluster if its CredentialRef secret changes.
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.secretToCluster),
+		).
 		Watches(
 			&infrav1.EvrocMachine{},
 			handler.EnqueueRequestsFromMapFunc(r.machineToCluster),
@@ -914,6 +919,26 @@ func (r *EvrocClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.
 			handler.EnqueueRequestsFromMapFunc(r.capiClusterToEvrocCluster),
 		).
 		Complete(r)
+}
+
+func (r *EvrocClusterReconciler) secretToCluster(ctx context.Context, obj client.Object) []reconcile.Request {
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		return nil
+	}
+	clusterlist := &infrav1.EvrocClusterList{}
+	if err := r.List(ctx, clusterlist, client.InNamespace(secret.Namespace)); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range clusterlist.Items {
+		cluster := &clusterlist.Items[i]
+		if ref := cluster.Spec.CredentialsRef; ref != nil && ref.Name == secret.Name {
+			reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cluster)})
+			continue
+		}
+	}
+	return reqs
 }
 
 // capiClusterToEvrocCluster maps a CAPI Cluster event to the associated EvrocCluster.

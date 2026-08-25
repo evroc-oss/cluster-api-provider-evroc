@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-25
+
+### Fixed
+
+- Re-queue reconcilation of an EvrocCluster cluster if the secret it is referencing changes.
+- Fix template `preKubeadmCommands` to pin to the right *patch* version of `kubelet`, `kubeadm` and `kubectl` within a minor version.
+- A machine's availability zone is assigned once and persisted before any
+  cloud resource is created. Re-picking the least-used zone on every reconcile
+  could create the boot disk and the VM in different zones, which failed the
+  VM start until the machine was recreated.
+
 ## [0.3.2] - 2026-08-14
 
 ### Added
@@ -156,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.3...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -178,3 +189,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.0
 [0.3.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.1
 [0.3.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.2
+[0.3.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.3

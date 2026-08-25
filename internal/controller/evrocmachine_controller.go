@@ -303,35 +303,14 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 		return ctrl.Result{}, fmt.Errorf("failed to get owner Machine: %w", err)
 	}
 
-	// Resolve the availability zone from the CAPI Machine's failureDomain
-	// (assigned by KCP for control plane nodes) or by picking the least-used
-	// zone from the EvrocCluster's failureDomains (for workers).
-	var resolvedZone string
-	fd, ok, err := unstructured.NestedString(ownerMachine.Object, "spec", "failureDomain")
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reading spec.failureDomain from owner Machine: %w", err)
-	}
-	if ok && fd != "" {
-		resolvedZone = fd
-	}
-	if resolvedZone == "" {
-		zone, err := r.pickZoneForMachine(ctx, machine, evrocCluster)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if zone != "" {
-			log.Info("Resolved availabilityZone from EvrocCluster failureDomains", "zone", zone)
-			resolvedZone = zone
+	// A zone is assigned once and kept: re-picking on every reconcile can land
+	// on a different zone once other machines have been counted, leaving the
+	// boot disk and the VM in different zones.
+	if machine.Status.AvailabilityZone == "" {
+		if err := r.pickAndUpdateZoneForMachine(ctx, machine, ownerMachine, evrocCluster); err != nil {
+			return r.handleMachineError(ctx, machine, err)
 		}
 	}
-
-	// Guard: never proceed to cloud API calls without a zone.
-	// This prevents cryptic API errors from evroc when zone is empty.
-	if resolvedZone == "" {
-		return r.handleMachineError(ctx, machine, fmt.Errorf(
-			"availabilityZone is empty: configure failureDomains on the EvrocCluster so the controller can assign one automatically"))
-	}
-	machine.Status.AvailabilityZone = resolvedZone
 
 	// Check the cloud first: if the VM already exists, skip all pre-creation
 	// work and go straight to status reconciliation. This uses the cloud as
@@ -913,6 +892,40 @@ func (r *EvrocMachineReconciler) reconcileNodeLabelsAndTaints(ctx context.Contex
 		}
 	}
 
+	return nil
+}
+
+// pickAndUpdateZoneForMachine resolves the availability zone for a machine
+// that does not have one yet and persists it to status before any cloud
+// resource is created. The owner CAPI Machine's failureDomain (assigned by KCP
+// for control plane nodes) takes precedence; otherwise the least-used of the
+// EvrocCluster's failureDomains is picked (workers).
+func (r *EvrocMachineReconciler) pickAndUpdateZoneForMachine(
+	ctx context.Context,
+	machine *infrav1.EvrocMachine,
+	ownerMachine *unstructured.Unstructured,
+	evrocCluster *infrav1.EvrocCluster,
+) error {
+	zone, _, err := unstructured.NestedString(ownerMachine.Object, "spec", "failureDomain")
+	if err != nil {
+		return fmt.Errorf("reading spec.failureDomain from owner Machine: %w", err)
+	}
+	if zone == "" {
+		if zone, err = r.pickZoneForMachine(ctx, machine, evrocCluster); err != nil {
+			return err
+		}
+	}
+	// Never proceed to cloud API calls without a zone; evroc's errors for an
+	// empty zone are cryptic.
+	if zone == "" {
+		return errors.New("availabilityZone is empty: configure failureDomains on the EvrocCluster so the controller can assign one automatically")
+	}
+
+	log.FromContext(ctx).Info("Assigned availabilityZone", "zone", zone)
+	machine.Status.AvailabilityZone = zone
+	if err := r.Status().Update(ctx, machine); err != nil {
+		return fmt.Errorf("persisting availability zone: %w", err)
+	}
 	return nil
 }
 

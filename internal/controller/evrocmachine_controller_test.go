@@ -630,6 +630,69 @@ func TestReconcile_PersistsResourcesBeforePendingRequeue(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+// A zone already recorded in status is reused rather than re-picked, so disks
+// and the VM are created in the same zone even when the least-used zone changed.
+func TestReconcile_KeepsAssignedAvailabilityZone(t *testing.T) {
+	scheme := testScheme()
+	vmName := "test-machine-sticky-zone"
+	diskName := vmName + "-data"
+
+	mockClient := new(mocks.MockClient)
+	mockDiskService := new(mocks.MockDiskService)
+	mockVMService := new(mocks.MockVirtualMachineService)
+	mockClient.On("Disks").Return(mockDiskService)
+	mockClient.On("VirtualMachines").Return(mockVMService)
+	mockClient.On("SDKClient").Maybe().Return(testSDKClientForCluster())
+	mockVMService.On("Get", mock.Anything, vmName).Return(nil, evroc.ErrNotFound)
+	mockDiskService.On("Get", mock.Anything, diskName).Return(nil, evroc.ErrNotFound).Once()
+	// Least-used would be "a" (no other machines); the assigned "b" must win.
+	mockDiskService.On("Create", mock.Anything, diskName, 20, "", "b", mock.Anything).
+		Return(&computetypes.Disk{}, nil).Once()
+
+	capiCluster, evrocCluster := testClusterObjects("default")
+	evrocCluster.Spec.FailureDomains = []string{"a", "b", "c"}
+	bootstrapSecretName := "bootstrap-secret-sticky-zone"
+	capiMachine := &clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-capi-machine-sticky-zone", Namespace: "default", UID: "capi-machine-sticky-zone-uid"},
+		Spec: clusterv1.MachineSpec{
+			Bootstrap:         clusterv1.Bootstrap{DataSecretName: &bootstrapSecretName},
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{Kind: "EvrocMachineTemplate", Name: "test-template"},
+		},
+	}
+	bootstrapSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: bootstrapSecretName, Namespace: "default"},
+		Data:       map[string][]byte{"value": []byte("#cloud-config\nruncmd:\n- echo hello")},
+	}
+	evrocMachine := &infrav1.EvrocMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: vmName, Namespace: "default",
+			Labels:          map[string]string{clusterv1.ClusterNameLabel: "test-cluster"},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: clusterv1.GroupVersion.String(), Kind: "Machine", Name: capiMachine.Name, UID: capiMachine.UID}},
+		},
+		Spec: infrav1.EvrocMachineSpec{
+			Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.s", Image: "ubuntu.22-04.1",
+			AdditionalDisks: []infrav1.AdditionalDiskSpec{{Name: "data", SizeGB: 20}},
+		},
+		Status: infrav1.EvrocMachineStatus{AvailabilityZone: "b"},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(capiCluster, evrocCluster, capiMachine, bootstrapSecret, evrocMachine).
+		WithStatusSubresource(evrocMachine).Build()
+	reconciler := &EvrocMachineReconciler{Client: fakeClient, Scheme: scheme, clientFactory: staticClientFactory(mockClient)}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: vmName, Namespace: "default"}}
+
+	// Reconcile 1 adds the finalizer; reconcile 2 creates the disk.
+	for range 2 {
+		_, err := reconciler.Reconcile(context.Background(), req)
+		assert.NoError(t, err)
+	}
+
+	var updated infrav1.EvrocMachine
+	assert.NoError(t, fakeClient.Get(context.Background(), req.NamespacedName, &updated))
+	assert.Equal(t, "b", updated.Status.AvailabilityZone)
+	mockDiskService.AssertExpectations(t)
+}
+
 // TestBuildOSSettings_SSHKeyInjection tests that SSH keys are always injected via cloud-init.
 // The Evroc API ssh.authorizedKeys is never used because cloud-init overrides it.
 func TestBuildOSSettings_SSHKeyInjection(t *testing.T) {
