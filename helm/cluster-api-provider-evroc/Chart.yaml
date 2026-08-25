@@ -5,8 +5,8 @@ apiVersion: v2
 name: cluster-api-provider-evroc
 description: A Cluster API v1beta2 infrastructure provider for managing Kubernetes clusters on evroc Cloud (compatible with CAPI v1.11+ and v1.12)
 type: application
-version: 0.3.2
-appVersion: "0.3.2"
+version: 0.3.3
+appVersion: "0.3.3"
 keywords:
   - kubernetes
   - cluster-api

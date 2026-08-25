@@ -1149,6 +1149,29 @@ func TestMachineToCluster(t *testing.T) {
 	}
 }
 
+func TestSecretToCluster(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	referencing := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "referencing", Namespace: "default"},
+		Spec:       infrav1.EvrocClusterSpec{CredentialsRef: &infrav1.SecretReference{Name: "evroc-creds"}},
+	}
+	other := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default"},
+		Spec:       infrav1.EvrocClusterSpec{CredentialsRef: &infrav1.SecretReference{Name: "other-creds"}},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(referencing, other).Build()
+	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "evroc-creds", Namespace: "default"}}
+	requests := reconciler.secretToCluster(context.Background(), secret)
+	if assert.Len(t, requests, 1) {
+		assert.Equal(t, types.NamespacedName{Name: "referencing", Namespace: "default"}, requests[0].NamespacedName)
+	}
+}
+
 func TestReconcileSecurityGroups_NoConfig(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = infrav1.AddToScheme(scheme)
