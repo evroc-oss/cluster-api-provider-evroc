@@ -11,6 +11,9 @@ const (
 	// ClusterReadyCondition reports on the overall readiness of the cluster
 	ClusterReadyCondition clusterv1.ConditionType = "Ready"
 
+	// ClusterReadyReason is used when the cluster infrastructure is provisioned.
+	ClusterReadyReason = "ClusterReady"
+
 	// PausedCondition is set when reconciliation is paused (e.g. during clusterctl move).
 	PausedCondition clusterv1.ConditionType = "Paused"
 
