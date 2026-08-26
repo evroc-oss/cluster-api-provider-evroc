@@ -232,6 +232,12 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 					ID: "test-lb", Address: "10.0.0.100",
 				},
 			},
+			// Stale failure from a reconcile that ran before the secret existed;
+			// a successful reconcile must clear it.
+			Conditions: clusterv1.Conditions{{
+				Type: infrav1.ClusterReadyCondition, Status: corev1.ConditionFalse,
+				Reason: infrav1.CredentialsNotFoundReason,
+			}},
 		},
 	}
 
@@ -285,6 +291,16 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 	err = fakeClient.Get(context.Background(), types.NamespacedName{Name: clusterName, Namespace: "default"}, &updatedCluster)
 	assert.NoError(t, err)
 	assert.True(t, updatedCluster.Status.Ready)
+	var ready *clusterv1.Condition
+	for i := range updatedCluster.Status.Conditions {
+		if updatedCluster.Status.Conditions[i].Type == infrav1.ClusterReadyCondition {
+			ready = &updatedCluster.Status.Conditions[i]
+		}
+	}
+	if assert.NotNil(t, ready, "Ready condition must be set") {
+		assert.Equal(t, corev1.ConditionTrue, ready.Status)
+		assert.Equal(t, infrav1.ClusterReadyReason, ready.Reason)
+	}
 
 	// Verify failure domains
 	assert.NotNil(t, updatedCluster.Status.FailureDomains)

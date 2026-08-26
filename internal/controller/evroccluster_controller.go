@@ -206,6 +206,9 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 	evrocCluster.Status.Initialization.Provisioned = &provisioned
 	evrocCluster.Status.Initialization.InfrastructureProvisioned = &provisioned
 	evrocCluster.Status.Ready = true
+	// Clear any earlier failure (e.g. CredentialsNotFound) now that reconciliation succeeded.
+	setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionTrue,
+		infrav1.ClusterReadyReason, "")
 
 	if evrocCluster.Spec.ControlPlaneEndpoint.IsZero() {
 		log.Info("Waiting for control plane endpoint (LoadBalancer not yet ready)")
