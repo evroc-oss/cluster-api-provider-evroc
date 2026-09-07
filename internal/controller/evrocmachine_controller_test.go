@@ -3042,3 +3042,67 @@ func TestEvrocMachineReconciler_PostMoveRecovery(t *testing.T) {
 	mockVMService.AssertNotCalled(t, "UpdateSecurityGroups")
 	mockVMService.AssertNotCalled(t, "UpdatePublicIP")
 }
+
+func TestReconcileNodeInitialization(t *testing.T) {
+	tests := []struct {
+		name             string
+		annotations      map[string]string
+		wantTaint        bool
+		wantInstanceType string
+	}{
+		{
+			name:             "CAPE-managed initialization",
+			wantTaint:        false,
+			wantInstanceType: "a1a.s",
+		},
+		{
+			name: "external CCM owns initialization",
+			annotations: map[string]string{
+				externalCloudProviderAnnotation: "true",
+			},
+			wantTaint: true,
+		},
+		{
+			name: "annotation is case insensitive",
+			annotations: map[string]string{
+				externalCloudProviderAnnotation: " TRUE ",
+			},
+			wantTaint: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := testScheme()
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "machine-1"},
+				Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+					Key:    "node.cloudprovider.kubernetes.io/uninitialized",
+					Effect: corev1.TaintEffectNoSchedule,
+				}}},
+			}
+			workloadClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(node).Build()
+			machine := &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: node.Name},
+				Spec: infrav1.EvrocMachineSpec{
+					ComputeProfile: "a1a.s",
+				},
+			}
+			cluster := &infrav1.EvrocCluster{ObjectMeta: metav1.ObjectMeta{Annotations: tt.annotations}}
+
+			reconciler := &EvrocMachineReconciler{}
+			assert.NoError(t, reconciler.reconcileNodeInitialization(context.Background(), machine, cluster, workloadClient))
+
+			updated := &corev1.Node{}
+			assert.NoError(t, workloadClient.Get(context.Background(), client.ObjectKey{Name: node.Name}, updated))
+			assert.Equal(t, tt.wantInstanceType, updated.Labels[corev1.LabelInstanceTypeStable])
+			hasTaint := false
+			for _, taint := range updated.Spec.Taints {
+				if taint.Key == "node.cloudprovider.kubernetes.io/uninitialized" {
+					hasTaint = true
+				}
+			}
+			assert.Equal(t, tt.wantTaint, hasTaint)
+		})
+	}
+}

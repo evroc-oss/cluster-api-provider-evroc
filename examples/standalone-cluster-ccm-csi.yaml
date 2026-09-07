@@ -1,0 +1,609 @@
+# Standalone Cluster: self-sufficient with evroc CCM + CSI
+#
+# A workload cluster that manages its own cloud integration. CAPI creates the
+# infrastructure; from there the cluster runs the evroc cloud-controller-manager
+# and CSI driver itself, so node initialisation, LoadBalancer Services, and
+# persistent volumes are handled in-cluster rather than by the management
+# cluster.
+#
+#   - Calico CNI
+#   - evroc CCM   (github.com/evroc-oss/evroc-ccm-driver)
+#   - evroc CSI   (github.com/evroc-oss/evroc-csi-driver)
+#
+# WHY THIS TEMPLATE DIFFERS FROM THE OTHERS
+#
+# Every kubelet runs with cloud-provider=external. That is what makes the CCM
+# meaningful: without it the CCM deploys and does nothing. It also means each
+# node registers with the taint
+#
+#   node.cloudprovider.kubernetes.io/uninitialized:NoSchedule
+#
+# and ONLY the CCM removes it. Nothing else schedules until the CCM is running,
+# which is why the CCM install below tolerates everything, uses hostNetwork,
+# and does not wait on cluster DNS — CoreDNS is itself pending on that taint,
+# so a CCM that needed DNS would deadlock the bootstrap.
+#
+# The EvrocCluster annotation below tells CAPE that this cluster delegates node
+# initialisation to an external provider. This gives the CCM sole ownership of
+# provider metadata, addresses, topology labels, and removal of the taint on the
+# first control-plane node as well as workers.
+#
+# WHAT THE CCM DOES AND DOES NOT OWN
+#
+# The CAPI provider creates the control plane load balancer and registers
+# control plane machines as its backends. The CCM's service-lb-controller
+# creates load balancers for type: LoadBalancer Services. Distinct objects,
+# same evroc API — the control plane endpoint stays CAPI's, application
+# load balancers are the CCM's.
+#
+# CREDENTIALS
+#
+# For least privilege, use two separate evroc service accounts, each with only
+# its own role:
+#
+#   ccm-agent   kubernetesCCMAgent
+#   csi-agent   kubernetesCSIAgent
+#
+# kubernetesCCMAgent grants the compute, load balancer, and networking
+# permissions the CCM needs.
+#
+#   evroc iam serviceaccount create ccm-agent
+#   evroc iam serviceaccount credential create ccm-agent-key --service-account ccm-agent
+#   evroc iam rolebinding assign \
+#     --principal "/iam/projects/<project-id>/serviceAccounts/ccm-agent" \
+#     --role /iam/roles/kubernetesCCMAgent
+#
+#   evroc iam serviceaccount create csi-agent
+#   evroc iam serviceaccount credential create csi-agent-key --service-account csi-agent
+#   evroc iam rolebinding assign \
+#     --principal "/iam/projects/<project-id>/serviceAccounts/csi-agent" \
+#     --role /iam/roles/kubernetesCSIAgent
+#
+# Each credential's private key is printed only once, at creation.
+#
+# Note: service_account_id is the BARE service account name. The SDK derives
+# the OAuth2 client ID as <service_account_id>_<project>, so appending the
+# project yields <name>_<project>_<project> and authentication fails with
+# invalid_client.
+#
+# USAGE
+#
+#   export CLUSTER_NAME="standalone-demo"
+#   export EVROC_ORGANIZATION="your-org"
+#   export EVROC_PROJECT="your-project-id"
+#   export EVROC_REGION="se-sto"
+#   export EVROC_API_BASE_URL="https://api.evroc.com"
+#   export EVROC_ISSUER_URL="https://authn.iam.evroc.com/realms/evroc-customer"
+#   export EVROC_TOKEN_URL="${EVROC_ISSUER_URL}/protocol/openid-connect/token"
+#   export KUBERNETES_VERSION="v1.31.0"
+#   export CONTROL_PLANE_MACHINE_COUNT=1
+#   export WORKER_MACHINE_COUNT=2
+#   export CONTROL_PLANE_MACHINE_COMPUTE_PROFILE="a1a.m"
+#   export WORKER_MACHINE_COMPUTE_PROFILE="a1a.s"
+#   export EVROC_ALLOWED_CIDR="0.0.0.0/0"
+#   export EVROC_VPC_CIDR="10.0.0.0/8"
+#   export EVROC_SSH_KEY=""
+#
+#   export EVROC_CCM_SA_ID="ccm-agent"
+#   export EVROC_CCM_SA_SECRET="<ccm jwk private key>"
+#   export EVROC_CSI_SA_ID="csi-agent"
+#   export EVROC_CSI_SA_SECRET="<csi jwk private key>"
+#   export EVROC_CCM_CHART_VERSION="0.1.2"
+#   export EVROC_CSI_CHART_VERSION="0.2.3"
+#   export GITHUB_USER="evroc"
+#   export GITHUB_TOKEN="<token with packages:read>"
+#
+#   # The CAPI provider's own credentials (flat-key secret, distinct from the
+#   # config.yaml form the drivers read).
+#   kubectl create secret generic evroc-credentials \
+#     --from-literal=organization="${EVROC_ORGANIZATION}" \
+#     --from-literal=serviceAccountID="<capi sa>" \
+#     --from-literal=serviceAccountSecret="<capi sa key>"
+#
+#   clusterctl generate yaml \
+#     --from examples/standalone-cluster-ccm-csi.yaml | kubectl apply -f -
+#
+# VERIFY
+#
+#   clusterctl get kubeconfig ${CLUSTER_NAME} > /tmp/${CLUSTER_NAME}.kubeconfig
+#   export KUBECONFIG=/tmp/${CLUSTER_NAME}.kubeconfig   # absolute path
+#
+#   # Everything installed: the Job reports Completed, and the CCM and both CSI
+#   # components are Running on fully initialised nodes.
+#   kubectl get pods -n evroc-system
+#
+#   # The CCM initialised every node: providerID set, topology labelled, and no
+#   # uninitialized taint left.
+#   kubectl get nodes -o custom-columns=\
+# NAME:.metadata.name,ZONE:.metadata.labels.topology\.kubernetes\.io/zone,\
+# REGION:.metadata.labels.topology\.kubernetes\.io/region,PROVIDER:.spec.providerID
+#
+#   # If the install log is needed, the Job writes it to a ConfigMap: nodes have
+#   # no InternalIP until the CCM runs, so kubectl logs cannot reach the kubelet
+#   # while the install is still failing.
+#   kubectl get cm evroc-install-log -n evroc-system -o jsonpath='{.data.log}'
+#
+#   # CSI: a volume binds and the data survives the mount.
+#   kubectl apply -f - <<'EOF'
+#   apiVersion: v1
+#   kind: PersistentVolumeClaim
+#   metadata:
+#     name: demo
+#   spec:
+#     accessModes: [ReadWriteOnce]
+#     storageClassName: evroc-standard
+#     resources:
+#       requests:
+#         storage: 10Gi
+#   EOF
+#   kubectl get pvc demo -w            # -> Bound
+#
+#   # CCM: a LoadBalancer Service gets an external IP that serves traffic.
+#   kubectl create deployment demo --image=nginx:alpine --replicas=2
+#   kubectl expose deployment demo --port=80 --type=LoadBalancer
+#   kubectl get svc demo -w            # -> EXTERNAL-IP
+#   curl -sI http://<EXTERNAL-IP>/     # -> HTTP 200
+#
+#   # Clean up: delete the Service before the cluster, so the CCM releases the
+#   # load balancer and its public IP rather than leaving them billable.
+#   kubectl delete svc demo
+#   kubectl delete pvc demo
+#
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: default
+  labels:
+    standalone: "true"
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - 192.168.0.0/16
+    services:
+      cidrBlocks:
+      - 10.96.0.0/12
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: ${CLUSTER_NAME}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: default
+  annotations:
+    # Preserve the cloud-provider taint until the CCM has populated all node
+    # metadata. Without this explicit ownership contract, CAPE initializes the
+    # node itself and upstream CCM will skip topology initialization.
+    infrastructure.cluster.x-k8s.io/external-cloud-provider: "true"
+spec:
+  project: ${EVROC_PROJECT}
+  region: ${EVROC_REGION:=se-sto}
+  endpoints:
+    apiBaseURL: "${EVROC_API_BASE_URL:=https://api.evroc.com}"
+    issuerURL: "${EVROC_ISSUER_URL:=https://authn.iam.evroc.com/realms/evroc-customer}"
+  credentialsRef:
+    name: evroc-credentials
+  failureDomains:
+  - a
+  - b
+  - c
+  # Without an explicit egress rule the nodes cannot reach pkgs.k8s.io, so the
+  # preKubeadmCommands package install never completes and kubeadm never runs.
+  securityGroups:
+    common:
+      inlineSecurityGroups:
+      - name: standalone-sg
+        rules:
+        - name: ssh
+          direction: Ingress
+          protocol: TCP
+          port: 22
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+        - name: cluster-internal
+          direction: Ingress
+          protocol: All
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
+        - name: allow-all-egress
+          direction: Egress
+          protocol: All
+          remoteCIDR: "0.0.0.0/0"
+    controlPlane:
+      inlineSecurityGroups:
+      - name: standalone-cp-sg
+        rules:
+        - name: k8s-api
+          direction: Ingress
+          protocol: TCP
+          port: 6443
+          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: default
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: ${KUBERNETES_VERSION}
+  machineTemplate:
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+  kubeadmConfigSpec:
+    # The evroc images ship a bare OS: no containerd, no kubeadm, no kubelet.
+    # These commands install the runtime and Kubernetes packages before
+    # "kubeadm init" runs. Without them kubeadm is simply not on the VM, init
+    # never happens, and nothing ever listens on 6443.
+    preKubeadmCommands:
+      - modprobe overlay
+      - modprobe br_netfilter
+      - |
+        cat <<EOF > /etc/sysctl.d/k8s.conf
+        net.bridge.bridge-nf-call-iptables = 1
+        net.bridge.bridge-nf-call-ip6tables = 1
+        net.ipv4.ip_forward = 1
+        EOF
+      - sysctl --system
+      - apt-get update -y
+      - apt-get install -y apt-transport-https ca-certificates curl gpg containerd conntrack
+      - mkdir -p /etc/containerd
+      - containerd config default > /etc/containerd/config.toml
+      - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+      - systemctl restart containerd
+      - systemctl enable containerd
+      - mkdir -p -m 755 /etc/apt/keyrings
+      - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
+      - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
+      - apt-get update -y
+      - |
+        KUBE_VERSION=$(echo "${KUBERNETES_VERSION}" | sed 's/^v//')
+        HOST_ARCH=$(dpkg --print-architecture)
+        KUBE_PKG_VER=$(apt list -a kubelet 2>/dev/null | awk -v arch="$HOST_ARCH" -v v="^$KUBE_VERSION-" '$3==arch && $2 ~ v {print $2; exit}')
+        test -n "$KUBE_PKG_VER" || { echo "Kubernetes ${KUBERNETES_VERSION} not found in pkgs.k8s.io channel" >&2; exit 1; }
+        apt-get install -y kubelet=$KUBE_PKG_VER kubeadm=$KUBE_PKG_VER kubectl=$KUBE_PKG_VER
+      - systemctl enable kubelet
+    # Calico is applied from the upstream manifest rather than inlined: it
+    # carries the projectcalico.org CRDs (IPPool and friends). A hand-trimmed
+    # DaemonSet without them starts and then dies with "Failed to create
+    # default IPv4 IP pool: resource does not exist", leaving every node
+    # NotReady.
+    postKubeadmCommands:
+      - |
+        if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
+        if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node >/dev/null 2>&1; then exit 0; fi
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+    # cloud-provider=external hands node initialisation to the CCM. Both the
+    # init and join paths need it: without it on either, those nodes keep the
+    # in-tree provider's behaviour and the CCM never manages them.
+    initConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: cloud-provider
+          value: external
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${CONTROL_PLANE_MACHINE_COMPUTE_PROFILE:=a1a.m}
+      image: ubuntu.22-04.1
+      rootDiskSize: 50
+      # Node access for debugging the bootstrap. May be empty, but must be
+      # exported: clusterctl errors on unset variables.
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: default
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      version: ${KUBERNETES_VERSION}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-workers
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${WORKER_MACHINE_COMPUTE_PROFILE:=a1a.s}
+      image: ubuntu.22-04.1
+      rootDiskSize: 50
+      # Node access for debugging the bootstrap. May be empty, but must be
+      # exported: clusterctl errors on unset variables.
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      # Same bare-OS bootstrap as the control plane: workers need the runtime
+      # and Kubernetes packages installed before they can join.
+      preKubeadmCommands:
+        - modprobe overlay
+        - modprobe br_netfilter
+        - |
+          cat <<EOF > /etc/sysctl.d/k8s.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+          EOF
+        - sysctl --system
+        - apt-get update -y
+        - apt-get install -y apt-transport-https ca-certificates curl gpg containerd conntrack
+        - mkdir -p /etc/containerd
+        - containerd config default > /etc/containerd/config.toml
+        - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+        - systemctl restart containerd
+        - systemctl enable containerd
+        - mkdir -p -m 755 /etc/apt/keyrings
+        - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
+        - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
+        - apt-get update -y
+        - |
+          KUBE_VERSION=$(echo "${KUBERNETES_VERSION}" | sed 's/^v//')
+          HOST_ARCH=$(dpkg --print-architecture)
+          KUBE_PKG_VER=$(apt list -a kubelet 2>/dev/null | awk -v arch="$HOST_ARCH" -v v="^$KUBE_VERSION-" '$3==arch && $2 ~ v {print $2; exit}')
+          test -n "$KUBE_PKG_VER" || { echo "Kubernetes ${KUBERNETES_VERSION} not found in pkgs.k8s.io channel" >&2; exit 1; }
+          apt-get install -y kubelet=$KUBE_PKG_VER kubeadm=$KUBE_PKG_VER kubectl=$KUBE_PKG_VER
+        - systemctl enable kubelet
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+          - name: cloud-provider
+            value: external
+---
+# evroc CCM and CSI driver.
+#
+# Both are installed by one Helm Job so the CCM is guaranteed to go first: the
+# CSI controller runs with the default (non-tolerating) scheduling rules of its
+# chart, so it cannot be scheduled until the CCM has cleared the uninitialized
+# taint. Running them as two independent ClusterResourceSets would race.
+apiVersion: addons.cluster.x-k8s.io/v1beta2
+kind: ClusterResourceSet
+metadata:
+  name: ${CLUSTER_NAME}-evroc-cloud
+  namespace: default
+spec:
+  clusterSelector:
+    matchLabels:
+      standalone: "true"
+  resources:
+  - name: ${CLUSTER_NAME}-evroc-cloud-installer
+    kind: ConfigMap
+  strategy: ApplyOnce
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${CLUSTER_NAME}-evroc-cloud-installer
+  namespace: default
+data:
+  evroc-cloud.yaml: |
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: evroc-system
+    ---
+    # Each driver authenticates as its own evroc service account, so a
+    # compromise of one does not grant the other's permissions. The auth, api,
+    # and context sections use the SDK schema understood by both components;
+    # CCM-specific settings belong only in the CCM config.
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: evroc-ccm-config
+      namespace: evroc-system
+    stringData:
+      config.yaml: |
+        api:
+          base_url: "${EVROC_API_BASE_URL:=https://api.evroc.com}"
+        auth:
+          token_url: "${EVROC_TOKEN_URL:=https://authn.iam.evroc.com/realms/evroc-customer/protocol/openid-connect/token}"
+          service_account_id: "${EVROC_CCM_SA_ID}"
+          service_account_secret: "${EVROC_CCM_SA_SECRET}"
+        context:
+          organization: "${EVROC_ORGANIZATION}"
+          project: "${EVROC_PROJECT}"
+          region: "${EVROC_REGION:=se-sto}"
+    ---
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: evroc-csi-config
+      namespace: evroc-system
+    stringData:
+      config.yaml: |
+        api:
+          base_url: "${EVROC_API_BASE_URL:=https://api.evroc.com}"
+        auth:
+          token_url: "${EVROC_TOKEN_URL:=https://authn.iam.evroc.com/realms/evroc-customer/protocol/openid-connect/token}"
+          service_account_id: "${EVROC_CSI_SA_ID}"
+          service_account_secret: "${EVROC_CSI_SA_SECRET}"
+        context:
+          organization: "${EVROC_ORGANIZATION}"
+          project: "${EVROC_PROJECT}"
+          region: "${EVROC_REGION:=se-sto}"
+    ---
+    # Registry credentials. Drop this Secret, the registry login, and the
+    # imagePullSecrets override once the CCM packages are public.
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: ghcr-token
+      namespace: evroc-system
+    stringData:
+      user: "${GITHUB_USER:=evroc}"
+      token: "${GITHUB_TOKEN}"
+    ---
+    apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: evroc-cloud-installer
+      namespace: evroc-system
+    ---
+    # cluster-admin: the installer creates the CCM and CSI RBAC, which include
+    # cluster-scoped roles it cannot otherwise grant. The Job removes this
+    # binding after both Helm releases succeed.
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: evroc-cloud-installer
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: cluster-admin
+    subjects:
+    - kind: ServiceAccount
+      name: evroc-cloud-installer
+      namespace: evroc-system
+    ---
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: install-evroc-cloud
+      namespace: evroc-system
+    spec:
+      backoffLimit: 20
+      template:
+        spec:
+          serviceAccountName: evroc-cloud-installer
+          restartPolicy: OnFailure
+          # The installer itself must run before the cluster is initialised,
+          # so it tolerates the uninitialized taint like the CCM it installs.
+          tolerations:
+          - operator: Exists
+          hostNetwork: true
+          dnsPolicy: Default
+          containers:
+          - name: helm
+            # alpine/k8s ships both helm and kubectl. alpine/helm has helm only,
+            # so the install log could not be reported back out of the cluster.
+            image: alpine/k8s:1.31.0
+            env:
+            - name: GITHUB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ghcr-token
+                  key: user
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ghcr-token
+                  key: token
+            command:
+            - sh
+            - -c
+            - |
+              # pipefail matters: each helm command is piped into tee, and
+              # without it the pipeline reports tee's exit status, so a failed
+              # CCM install would be swallowed and the CSI install would run
+              # anyway — losing both the ordering guarantee and the error.
+              set -eo pipefail
+              # Helm output goes to a ConfigMap as well as stdout. Nodes have
+              # no InternalIP until the CCM initialises them, which is exactly
+              # what this Job installs, so "kubectl logs" and "kubectl exec"
+              # cannot reach the kubelet while the install is still failing.
+              # Without this the only failure signal is the exit code.
+              report() {
+                kubectl create configmap evroc-install-log -n evroc-system \
+                  --from-file=log=/tmp/install.log \
+                  --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1 || true
+              }
+              trap report EXIT
+
+              # Authenticate for the CCM chart pull and the kubelet's image pull.
+              # HOME must be writable: helm stores the registry credentials
+              # there and silently falls back to anonymous auth otherwise.
+              export HOME=/tmp
+              echo "$GITHUB_TOKEN" | helm registry login ghcr.io \
+                -u "$GITHUB_USER" --password-stdin 2>&1 | tee -a /tmp/install.log
+              echo "registry login exit=$?" | tee -a /tmp/install.log
+
+              kubectl create secret docker-registry ghcr-creds \
+                --namespace evroc-system \
+                --docker-server=ghcr.io \
+                --docker-username="$GITHUB_USER" \
+                --docker-password="$GITHUB_TOKEN" \
+                --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+              # CCM first: it clears the uninitialized taint that otherwise
+              # keeps every other workload, including the CSI controller,
+              # unschedulable. --wait blocks until it is actually running.
+              helm upgrade --install evroc-ccm \
+                oci://ghcr.io/evroc-oss/charts/evroc-ccm \
+                --version ${EVROC_CCM_CHART_VERSION:=0.1.2} \
+                --namespace evroc-system \
+                --set evroc.existingConfigSecret=evroc-ccm-config \
+                --set imagePullSecrets[0].name=ghcr-creds \
+                --wait --timeout 10m 2>&1 | tee -a /tmp/install.log
+
+              helm upgrade --install evroc-csi-driver \
+                oci://ghcr.io/evroc-oss/charts/evroc-csi-driver \
+                --version ${EVROC_CSI_CHART_VERSION:=0.2.3} \
+                --namespace evroc-system \
+                --set evroc.existingConfigSecret=evroc-csi-config \
+                --set storageClass.isDefault=true \
+                --wait --timeout 10m 2>&1 | tee -a /tmp/install.log
+
+              # Keep the persistent image pull secret, but discard the
+              # plaintext Helm token and the installer's cluster-admin access.
+              report
+              trap - EXIT
+              kubectl delete secret ghcr-token -n evroc-system --ignore-not-found
+              kubectl delete clusterrolebinding evroc-cloud-installer --ignore-not-found

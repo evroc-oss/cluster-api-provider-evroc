@@ -37,11 +37,32 @@ export POD_CIDR="10.244.0.0/16"
 export SERVICE_CIDR="10.96.0.0/12"
 export CONTROL_PLANE_MACHINE_COUNT="3"
 export WORKER_MACHINE_COUNT="3"
+export CONTROL_PLANE_MACHINE_COMPUTE_PROFILE="a1a.m"
+export WORKER_MACHINE_COMPUTE_PROFILE="a1a.s"
+export EVROC_ALLOWED_CIDR="0.0.0.0/0"
+export EVROC_VPC_CIDR="10.0.0.0/8"
+export EVROC_ORGANIZATION="00000000-0000-0000-0000-000000000000"
+export EVROC_API_BASE_URL="https://api.evroc.com"
+export EVROC_ISSUER_URL="https://authn.iam.evroc.com/realms/evroc-customer"
+export EVROC_TOKEN_URL="https://authn.iam.evroc.com/realms/evroc-customer/protocol/openid-connect/token"
+export EVROC_CCM_SA_ID="ccm-agent"
+export EVROC_CCM_SA_SECRET="test-ccm-secret"
+export EVROC_CSI_SA_ID="csi-agent"
+export EVROC_CSI_SA_SECRET="test-csi-secret"
+export EVROC_CCM_CHART_VERSION="0.1.2"
+export EVROC_CSI_CHART_VERSION="0.2.3"
+export GITHUB_USER="evroc"
+export GITHUB_TOKEN="test-package-token"
+
+templates=(
+  "$TEMPLATES_DIR"/cluster-template*.yaml
+  "$REPO_ROOT/examples/standalone-cluster-ccm-csi.yaml"
+)
 
 echo "=== Validating cluster templates ==="
 echo ""
 
-for template in "$TEMPLATES_DIR"/cluster-template*.yaml; do
+for template in "${templates[@]}"; do
   name="$(basename "$template")"
   echo -n "  $name ... "
 
@@ -64,7 +85,16 @@ try:
     # Filter out None docs (from trailing ---)
     docs = [d for d in docs if d is not None]
     kinds = [d.get('kind', 'UNKNOWN') for d in docs]
-    print('OK (%d documents: %s)' % (len(docs), ', '.join(kinds)))
+    embedded = 0
+    for doc in docs:
+        if doc.get('kind') != 'ConfigMap':
+            continue
+        for key, value in (doc.get('data') or {}).items():
+            if key.endswith(('.yaml', '.yml')):
+                embedded_docs = [d for d in yaml.safe_load_all(value) if d is not None]
+                embedded += len(embedded_docs)
+    suffix = ', %d embedded documents' % embedded if embedded else ''
+    print('OK (%d documents%s: %s)' % (len(docs), suffix, ', '.join(kinds)))
 except yaml.YAMLError as e:
     # Extract line/col info if available
     if hasattr(e, 'problem_mark') and e.problem_mark:
@@ -92,7 +122,7 @@ done
 echo ""
 echo "=== Checking block scalar indentation ==="
 
-for template in "$TEMPLATES_DIR"/cluster-template*.yaml; do
+for template in "${templates[@]}"; do
   name="$(basename "$template")"
   # Find lines matching "- |" and check the NEXT non-empty line is indented further
   line_num=0

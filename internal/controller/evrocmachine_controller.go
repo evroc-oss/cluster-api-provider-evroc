@@ -40,8 +40,9 @@ import (
 )
 
 const (
-	machineFinalizer             = "infrastructure.cluster.x-k8s.io/evrocmachine"
-	machineOwnershipIDAnnotation = "evrocmachine.infrastructure.cluster.x-k8s.io/ownership-id"
+	machineFinalizer                = "infrastructure.cluster.x-k8s.io/evrocmachine"
+	machineOwnershipIDAnnotation    = "evrocmachine.infrastructure.cluster.x-k8s.io/ownership-id"
+	externalCloudProviderAnnotation = "infrastructure.cluster.x-k8s.io/external-cloud-provider"
 
 	// Requeue intervals for various waiting scenarios
 	requeueImmediately = 1 * time.Second
@@ -576,9 +577,7 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 			return ctrl.Result{RequeueAfter: requeueMedium}, nil
 		}
 
-		// Add topology labels and remove cloud provider taints
-		// This is bootstrap-provider agnostic and works with any Kubernetes distribution
-		if err := r.reconcileNodeLabelsAndTaints(ctx, machine, wc); err != nil {
+		if err := r.reconcileNodeInitialization(ctx, machine, evrocCluster, wc); err != nil {
 			log.Error(err, "failed to reconcile node labels and taints (will retry)")
 			// Don't fail reconciliation, just log and continue
 		}
@@ -847,10 +846,26 @@ func (r *EvrocMachineReconciler) patchNodeProviderID(ctx context.Context, machin
 	return true, nil
 }
 
-// reconcileNodeLabelsAndTaints adds instance-type labels and removes cloud provider taints
-// This is a temporary solution until we have a full Cloud Controller Manager
+// reconcileNodeInitialization keeps node initialization self-contained in CAPE
+// unless the cluster delegates it to an external CCM. Delegating clusters leave
+// the uninitialized taint in place: upstream's
+// cloud-node-controller uses that taint to select the path which populates
+// topology, addresses, and instance metadata before removing it.
+func (r *EvrocMachineReconciler) reconcileNodeInitialization(ctx context.Context, machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster, wc client.Client) error {
+	if evrocCluster != nil && strings.EqualFold(strings.TrimSpace(evrocCluster.Annotations[externalCloudProviderAnnotation]), "true") {
+		log.FromContext(ctx).V(2).Info("Leaving node initialization to the external cloud provider", "machine", machine.Name)
+		return nil
+	}
+
+	return r.reconcileNodeLabelsAndTaints(ctx, machine, wc)
+}
+
+// reconcileNodeLabelsAndTaints provides CAPE-managed initialization for clusters
+// that do not delegate node initialization to an external CCM. It sets the
+// instance-type label and removes the cloud-provider initialization taint.
 //
-// NOTE: Topology labels (zone, region) should be configured via bootstrap provider:
+// Topology labels (zone and region) must be configured via the bootstrap provider
+// in this mode:
 // - RKE2: Use agentConfig.nodeLabels in RKE2ConfigTemplate/RKE2ControlPlane
 // - Kubeadm: Use kubeletExtraArgs.node-labels in KubeadmConfigTemplate/KubeadmControlPlane
 func (r *EvrocMachineReconciler) reconcileNodeLabelsAndTaints(ctx context.Context, machine *infrav1.EvrocMachine, wc client.Client) error {
