@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-04
+
+### Added
+
+- External cloud-controller-manager support. Set the
+  `infrastructure.cluster.x-k8s.io/external-cloud-provider: "true"` annotation
+  on an `EvrocCluster` to leave node metadata, topology labels, and removal of
+  the cloud-provider initialization taint to the CCM. Unannotated clusters keep
+  the existing CAPE-managed node initialization behavior.
+- A validated standalone cluster example that installs Calico, the evroc CCM,
+  and the evroc CSI driver with separate service-account credentials.
+
 ## [0.3.4] - 2026-08-25
 
 ### Fixed
@@ -173,7 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.5...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -197,3 +209,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.2
 [0.3.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.3
 [0.3.4]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.4
+[0.3.5]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.5
