@@ -7,6 +7,9 @@
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
+# Kubernetes version used by controller-runtime envtest.
+ENVTEST_K8S_VERSION ?= 1.31.0
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -82,11 +85,11 @@ test-controller-integration: manifests generate fmt vet envtest ## Run controlle
 .PHONY: envtest
 envtest: ## Download envtest binaries locally if necessary.
 	@test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-	@$(LOCALBIN)/setup-envtest use -p path 1.31.0
+	@$(LOCALBIN)/setup-envtest use -p path $(ENVTEST_K8S_VERSION)
 
 .PHONY: test-integration
 test-integration: manifests generate envtest ## Run integration tests (requires EVROC credentials).
-	KUBEBUILDER_ASSETS="$(shell $(LOCALBIN)/setup-envtest use 1.31.0 -p path)" \
+	KUBEBUILDER_ASSETS="$(shell $(LOCALBIN)/setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" \
 	INTEGRATION_TEST=1 go test -v -timeout 30m ./test/integration/...
 
 .PHONY: test-published-chart

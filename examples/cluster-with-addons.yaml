@@ -9,7 +9,7 @@
 #      export CLUSTER_NAME="my-cluster"
 #      export EVROC_PROJECT="your-project-id"
 #      export EVROC_REGION="se-sto"
-#      export KUBERNETES_VERSION="v1.28.0"
+#      export KUBERNETES_VERSION="v1.31.14"
 #      export CONTROL_PLANE_MACHINE_COUNT=1  # optional
 #
 #   2. Apply (choose one method):
@@ -102,7 +102,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${CONTROL_PLANE_MACHINE_COMPUTE_PROFILE:=a1a.m}
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 ---
 apiVersion: cluster.x-k8s.io/v1beta2
@@ -140,7 +140,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${WORKER_MACHINE_COMPUTE_PROFILE:=a1a.s}
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2

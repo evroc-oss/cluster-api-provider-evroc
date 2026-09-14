@@ -19,17 +19,20 @@
 # Required environment variables:
 #   CLUSTER_NAME: Name of the cluster
 #   EVROC_PROJECT: evroc project ID
+#   EVROC_CREDENTIALS_SECRET: Name of the credentials Secret
 #   EVROC_SSH_KEY: SSH public key used for node access
+#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access
 #
 # Optional environment variables:
 #   EVROC_REGION: evroc region (default: se-sto)
+#   EVROC_API_BASE_URL: API base URL override
+#   EVROC_ISSUER_URL: OIDC issuer URL override
 #   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
 #   WORKER_MACHINE_COUNT: Number of worker nodes (default: 3)
-#   KUBERNETES_VERSION: Kubernetes version (default: v1.28.0)
+#   KUBERNETES_VERSION: Kubernetes version (required; example: v1.31.14)
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.m)
 #   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.m)
-#   EVROC_IMAGE: OS image (default: ubuntu.22-04.1)
-#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access (default: 0.0.0.0/0)
+#   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
 #   POD_CIDR: Pod CIDR (default: 10.244.0.0/16)
 #   SERVICE_CIDR: Service CIDR (default: 10.96.0.0/12)
 #
@@ -91,7 +94,7 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 22
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         - name: kubelet
           direction: Ingress
           protocol: TCP
@@ -114,7 +117,7 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 6443
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         - name: etcd-client
           direction: Ingress
           protocol: TCP
@@ -219,7 +222,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.m}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: ${EVROC_CONTROL_PLANE_DISK_SIZE:=100}
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:
@@ -261,7 +264,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.m}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: ${EVROC_WORKER_DISK_SIZE:=100}
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:

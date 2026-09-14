@@ -28,8 +28,9 @@ variables:
   ARTIFACTS_FOLDER: "../../_artifacts"
 
   # Kubernetes configuration
-  KUBERNETES_VERSION: "v1.30.0+rke2r1"
-  KUBERNETES_MANAGEMENT_VERSION: "v1.30.0"
+  KUBERNETES_VERSION: "v1.31.14+rke2r1"
+  EVROC_ALLOWED_CIDR: "<your-trusted-source-cidr>"
+  KUBERNETES_MANAGEMENT_VERSION: "v1.31.14"
 
   # Rancher configuration
   RANCHER_VERSION: "v2.15.0-rc4"

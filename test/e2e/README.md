@@ -32,10 +32,10 @@ Before running certification tests, ensure you have the following tools installe
    docker version
    ```
 
-3. **kubectl v1.30.0+**
+3. **kubectl v1.31.14+**
    ```bash
    # Install kubectl
-   curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+   curl -LO "https://dl.k8s.io/release/v1.31.14/bin/linux/amd64/kubectl"
    chmod +x kubectl
    sudo mv kubectl /usr/local/bin/
 
@@ -92,7 +92,7 @@ sudo usermod -aG docker $USER
 newgrp docker
 
 # 3. Install kubectl
-curl -LO "https://dl.k8s.io/release/v1.30.0/bin/linux/amd64/kubectl"
+curl -LO "https://dl.k8s.io/release/v1.31.14/bin/linux/amd64/kubectl"
 chmod +x kubectl && sudo mv kubectl /usr/local/bin/
 
 # 4. Install kind

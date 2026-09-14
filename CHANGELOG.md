@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-10
+
+### Changed
+
+- Updated public defaults and examples to Ubuntu 24.04 and Kubernetes 1.31.14.
+- Wired Helm logging configuration to the controller-runtime logging flags.
+- Refined installation, CSI integration, topology, and cloud resource ownership
+  documentation for public users.
+
+### Fixed
+
+- Use the publicly available `v1.31.14+rke2r1` release for RKE2 templates,
+  examples, and end-to-end tests.
+- Tightened Secret RBAC, workload kubeconfig TLS validation, management ingress
+  defaults, and metrics exposure.
+
 ## [0.3.5] - 2026-09-04
 
 ### Added
@@ -185,7 +201,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.4.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -210,3 +226,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.3
 [0.3.4]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.4
 [0.3.5]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.5
+[0.4.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.0

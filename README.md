@@ -1,9 +1,11 @@
+<div align="center">
+  <img src="docs/assets/evroc-logo.png" alt="evroc" width="300"/>
+</div>
+
 # Cluster API Provider for evroc
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![CI](https://github.com/evroc-oss/cluster-api-provider-evroc/actions/workflows/ci.yml/badge.svg)](https://github.com/evroc-oss/cluster-api-provider-evroc/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/evroc-oss/cluster-api-provider-evroc)](https://goreportcard.com/report/github.com/evroc-oss/cluster-api-provider-evroc)
-[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](./go.mod)
+[![golangci-lint](https://img.shields.io/github/actions/workflow/status/evroc-oss/cluster-api-provider-evroc/ci.yml?branch=main&label=golangci-lint&logo=go)](https://github.com/evroc-oss/cluster-api-provider-evroc/actions/workflows/ci.yml)
 
 This repository provides the evroc infrastructure provider for Kubernetes Cluster API (CAPI).
 
@@ -15,6 +17,60 @@ The provider reconciles:
 - `EvrocClusterTemplate` - cluster templates for ClusterClass (advanced)
 
 It manages evroc cloud primitives such as virtual machines, disks, public IPs, security groups, and placement groups.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+  - [Prerequisites](#prerequisites)
+  - [1) Create a management cluster](#1-create-a-management-cluster)
+  - [2) Install cert-manager](#2-install-cert-manager)
+  - [3) Install clusterctl](#3-install-clusterctl)
+  - [4) Configure clusterctl for evroc provider](#4-configure-clusterctl-for-evroc-provider)
+  - [5) Initialize Cluster API with evroc provider](#5-initialize-cluster-api-with-evroc-provider)
+  - [6) Create a service account](#6-create-a-service-account)
+  - [7) Create evroc credentials secret](#7-create-evroc-credentials-secret)
+  - [7b) Target a private cloud deployment (optional)](#7b-target-a-private-cloud-deployment-optional)
+  - [8) Create your first workload cluster](#8-create-your-first-workload-cluster)
+  - [9) Monitor cluster creation](#9-monitor-cluster-creation)
+  - [10) Access the workload cluster](#10-access-the-workload-cluster)
+  - [Topology Labels](#topology-labels)
+- [Alternative: Helm-Based Installation](#alternative-helm-based-installation)
+  - [Rancher with Turtles](#rancher-with-turtles)
+  - [RKE2 Flavor](#rke2-flavor)
+- [Advanced: ClusterClass](#advanced-clusterclass)
+  - [When to Use ClusterClass](#when-to-use-clusterclass)
+  - [Example](#example)
+- [Common Operations](#common-operations)
+  - [Scale Workers](#scale-workers)
+  - [Scale Control Plane](#scale-control-plane)
+  - [Update Security Groups](#update-security-groups)
+  - [Upgrade Kubernetes Version](#upgrade-kubernetes-version)
+  - [Delete a Workload Cluster](#delete-a-workload-cluster)
+  - [Uninstall the Provider](#uninstall-the-provider)
+- [Troubleshooting](#troubleshooting)
+  - [Check Provider Logs](#check-provider-logs)
+  - [Check Machine Status](#check-machine-status)
+  - [Common Issues](#common-issues)
+- [Metrics and Observability](#metrics-and-observability)
+  - [Exposed evroc SDK Metrics](#exposed-evroc-sdk-metrics)
+  - [Configuration](#configuration)
+- [Repository Layout](#repository-layout)
+- [Core Capabilities](#core-capabilities)
+- [Custom Labels](#custom-labels)
+  - [Cluster-Level Labels](#cluster-level-labels)
+  - [Machine-Level Labels](#machine-level-labels)
+  - [Automatic Ownership Labels](#automatic-ownership-labels)
+- [Build and Test](#build-and-test)
+  - [Service Account Setup for E2E Tests](#service-account-setup-for-e2e-tests)
+- [Documentation](#documentation)
+- [Security](#security)
+  - [Bootstrap Data Exposure](#bootstrap-data-exposure)
+  - [Image Signing and Verification](#image-signing-and-verification)
+  - [Software Bill of Materials (SBOM)](#software-bill-of-materials-sbom)
+  - [SLSA Provenance](#slsa-provenance)
+  - [Helm Chart Signing](#helm-chart-signing)
+- [Support and Contributions](#support-and-contributions)
+- [License](#license)
 
 ## Quick Start
 
@@ -216,8 +272,10 @@ under **Available flavors** below and always pass `--control-plane-machine-count
 ```bash
 export CLUSTER_NAME="my-cluster"
 export EVROC_PROJECT="your-project-id"
+export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.28.0"
+export KUBERNETES_VERSION="v1.31.14"
+export EVROC_ALLOWED_CIDR="192.0.2.10/32" # CIDR allowed to access SSH (22) and the Kubernetes API (6443)
 export EVROC_SSH_KEY="your-ssh-public-key"  # may be empty (""), but MUST be exported — clusterctl errors on unset variables even when the template declares a default
 
 clusterctl generate cluster "${CLUSTER_NAME}" \
@@ -235,11 +293,13 @@ clusterctl generate cluster "${CLUSTER_NAME}" \
 # Export required variables (defaults won't be substituted by envsubst)
 export CLUSTER_NAME="my-cluster"
 export EVROC_PROJECT="your-project-id"
+export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.28.0"
+export KUBERNETES_VERSION="v1.31.14"
+export EVROC_ALLOWED_CIDR="192.0.2.10/32" # CIDR allowed to access SSH (22) and the Kubernetes API (6443)
 export NAMESPACE="default"
 export EVROC_AVAILABILITY_ZONE="a"
-export EVROC_IMAGE="ubuntu.22-04.1"
+export EVROC_IMAGE="ubuntu.24-04.1"
 export EVROC_SSH_KEY=""  # set to your SSH public key, or leave empty
 
 # Strip :=default syntax then substitute
@@ -251,6 +311,7 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 - `minimal` - 1 control plane, 1 worker, Calico CNI pre-installed (dev/test)
 - `default` - multi-zone, Cilium CNI (eBPF) via `postKubeadmCommands` (production)
 - `calico` - same topology as `default`, with Calico CNI instead of Cilium (opt-in)
+- `dualstack` - single-zone IPv4/IPv6 cluster with Calico CNI
 - `ha-lb` - multi-zone control plane behind an L4 load balancer, Calico CNI (high availability)
 - `rke2` - RKE2 (SUSE enterprise-hardened Kubernetes) with Canal CNI
 
@@ -403,7 +464,7 @@ clusterctl init --infrastructure evroc \
 clusterctl generate cluster rke2-prod \
   --infrastructure evroc \
   --flavor rke2 \
-  --kubernetes-version v1.30.0+rke2r1 \
+  --kubernetes-version v1.31.14+rke2r1 \
   | kubectl apply -f -
 ```
 
@@ -444,7 +505,7 @@ metadata:
 spec:
   topology:
     class: evroc-basic
-    version: v1.28.0
+    version: v1.31.14
     controlPlane:
       replicas: 3
     workers:
@@ -485,7 +546,7 @@ kubectl edit kubeadmcontrolplane ${CLUSTER_NAME}-control-plane
 
 ```bash
 kubectl edit evroccluster ${CLUSTER_NAME}
-# Edit spec.controlPlaneConfig.securityGroups.inlineRules
+# Edit spec.securityGroups.common.inlineSecurityGroups[*].rules
 # Changes apply automatically to all existing VMs with inheritFromCluster enabled
 ```
 
@@ -493,7 +554,7 @@ kubectl edit evroccluster ${CLUSTER_NAME}
 
 ```bash
 kubectl edit kubeadmcontrolplane ${CLUSTER_NAME}-control-plane
-# Change spec.version (e.g., v1.29.0)
+# Change spec.version to a supported target version
 # Control plane upgrades first, then workers
 ```
 
@@ -682,7 +743,6 @@ curl http://localhost:8080/metrics
 ├── cmd/manager/                    # Controller manager entrypoint
 ├── internal/controller/            # Reconciliation logic
 ├── internal/cloud/                 # evroc SDK client wrappers
-├── config/                         # CRDs, RBAC, webhook manifests (kustomize)
 ├── templates/                       # cluster templates & infrastructure-components.yaml
 ├── examples/                       # ready-to-run example manifests
 ├── helm/cluster-api-provider-evroc # Helm chart for provider install
@@ -743,7 +803,9 @@ The provider automatically adds ownership labels to every cloud resource. These 
 | Label | Description |
 |-------|-------------|
 | `capi_cluster-name` | Name of the owning CAPI cluster |
-| `capi_cluster-uid` | UID of the owning cluster (prevents stale resource collisions) |
+| `capi_cluster-id` | Immutable annotation-backed cluster ownership ID that survives `clusterctl move` |
+| `capi_machine-id` | Immutable annotation-backed machine ownership ID (machine resources only) |
+| `capi_machine-name` | Name of the owning `EvrocMachine` (machine resources only) |
 | `capi_managed-by` | Always `cluster-api-provider-evroc` |
 
 > **Note:** evroc does not allow `/` in label keys, so the provider uses `_` as a separator (e.g., `capi_cluster-name` instead of `capi/cluster-name`).

@@ -57,7 +57,7 @@ kubectl apply --server-side -f helm/cluster-api-provider-evroc/crds/
 | `rbac.create` | Create RBAC resources | `true` |
 | `serviceAccount.create` | Create service account | `true` |
 | `serviceAccount.name` | Service account name (auto-generated if empty) | `""` |
-| `metrics.enabled` | Enable Prometheus metrics endpoint | `true` |
+| `metrics.enabled` | Enable Prometheus metrics endpoint | `false` |
 | `metrics.port` | Metrics port | `8080` |
 | `metrics.service.annotations` | Annotations for the metrics Service | `{}` |
 | `metrics.serviceMonitor.enabled` | Create Prometheus ServiceMonitor | `false` |

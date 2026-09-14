@@ -61,7 +61,7 @@ spec:
               direction: Ingress
               protocol: TCP
               port: 22
-              remoteCIDR: 0.0.0.0/0
+              remoteCIDR: 0.0.0.0/0 # Example only; restrict to your trusted source CIDR
             - name: kubelet-api
               direction: Ingress
               protocol: TCP
@@ -88,7 +88,7 @@ spec:
               direction: Ingress
               protocol: TCP
               port: 6443
-              remoteCIDR: 0.0.0.0/0
+              remoteCIDR: 0.0.0.0/0 # Example only; restrict to your trusted source CIDR
             - name: rke2-supervisor
               direction: Ingress
               protocol: TCP
@@ -119,7 +119,7 @@ metadata:
   namespace: default
 spec:
   replicas: 1
-  version: v1.30.6+rke2r1
+  version: v1.31.14+rke2r1
   # Nodes register with the control plane over their private VPC addresses.
   # Without this, RKE2 agents wait on the control plane's public LB and fail to join.
   registrationMethod: internal-first
@@ -195,7 +195,7 @@ spec:
   template:
     spec:
       clusterName: rke2-sl-micro
-      version: v1.30.6+rke2r1
+      version: v1.31.14+rke2r1
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io

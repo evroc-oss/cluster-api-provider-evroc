@@ -44,8 +44,10 @@ func main() {
 	var webhookPort int
 	var webhookCertDir string
 	var printVersion bool
+	var metricsAddr string
 
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. Use 0 to disable it.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "The port the webhook endpoint binds to.")
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs", "The directory that contains the webhook server key and certificate.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -96,7 +98,7 @@ func main() {
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "evroc.cluster.x-k8s.io",
 		Metrics: metricsserver.Options{
-			BindAddress: ":8080",
+			BindAddress: metricsAddr,
 		},
 		WebhookServer: webhook.NewServer(webhook.Options{
 			Port:    webhookPort,

@@ -37,7 +37,7 @@ intervals:
 
 variables:
   NAMESPACE: "default"
-  KUBERNETES_VERSION: "v1.28.0"
+  KUBERNETES_VERSION: "v1.31.14"
   EVROC_PROVIDER_VERSION: "latest"
   CONTROL_PLANE_MACHINE_COUNT: "1"
   WORKER_MACHINE_COUNT: "1"
@@ -53,12 +53,13 @@ variables:
   EVROC_API_BASE_URL: ""
   EVROC_ISSUER_URL: ""
   EVROC_CONTROL_PLANE_FLAVOR: "a1a.s"
-  EVROC_IMAGE: "ubuntu.22-04.1"
+  EVROC_IMAGE: "ubuntu.24-04.1"
   EVROC_CONTROL_PLANE_DISK_SIZE: "100"
   # evroc project/credentials (loaded from config.yaml by loadCredentialsFile, duplicated here as fallback)
   EVROC_PROJECT: "<your-evroc-project-uuid>"
   EVROC_CREDENTIALS_SECRET: "evroc-credentials"
   EVROC_SSH_KEY: "<your-ssh-public-key>"
+  EVROC_ALLOWED_CIDR: "<your-trusted-source-cidr>"
   # Custom VPC/subnet for the dual-stack E2E path. OPTIONAL: when unset, the
   # controller uses the project's default VPC and the per-zone default subnet
   # (default-{region}-{zone}).

@@ -106,7 +106,7 @@ metadata:
   namespace: default
 spec:
   replicas: 1
-  version: v1.28.0
+  version: v1.31.14
   machineTemplate:
     spec:
       infrastructureRef:
@@ -137,7 +137,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: se-sto
       computeProfile: a1a.m
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 
       # BYOI: Reference Terraform-created Public IP (NOT managed by CAPI)
@@ -166,7 +166,7 @@ spec:
   template:
     spec:
       clusterName: customer-123-cluster
-      version: v1.28.0
+      version: v1.31.14
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io
@@ -189,7 +189,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: se-sto
       computeProfile: a1a.m
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 100
 
       # Workers share the same Terraform-created security group

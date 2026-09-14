@@ -17,7 +17,7 @@ To create a workload cluster, apply a cluster template:
   clusterctl generate cluster my-cluster \
     --infrastructure evroc \
     --flavor rke2 \
-    --kubernetes-version v1.30.0+rke2r1 \
+    --kubernetes-version v1.31.14+rke2r1 \
     --control-plane-machine-count 3 \
     --worker-machine-count 3 \
     | kubectl apply -f -

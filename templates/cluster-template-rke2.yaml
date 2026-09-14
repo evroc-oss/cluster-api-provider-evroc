@@ -17,19 +17,22 @@
 # Required environment variables:
 #   CLUSTER_NAME:               Name of the cluster
 #   EVROC_PROJECT:              evroc project ID
+#   EVROC_CREDENTIALS_SECRET:   Name of the credentials Secret
+#   EVROC_ALLOWED_CIDR:         Source CIDR for SSH and API access
 #
 # Optional environment variables:
 #   EVROC_SSH_KEY:              SSH key name (as registered in the evroc portal)
 #   EVROC_REGION:               evroc region (default: se-sto)
-#   KUBERNETES_VERSION:         RKE2 Kubernetes version (default: v1.30.0+rke2r1)
+#   EVROC_API_BASE_URL:         API base URL override
+#   EVROC_ISSUER_URL:           OIDC issuer URL override
+#   KUBERNETES_VERSION:         RKE2 Kubernetes version (default: v1.31.14+rke2r1)
 #   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
 #   WORKER_MACHINE_COUNT:        Number of worker nodes (default: 3)
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE:  Control plane VM compute profile (default: a1a.m)
 #   EVROC_WORKER_COMPUTE_PROFILE:         Worker VM compute profile (default: a1a.m)
-#   EVROC_IMAGE:                 OS image (default: ubuntu.22-04.1)
+#   EVROC_IMAGE:                 OS image (default: ubuntu.24-04.1)
 #   EVROC_CONTROL_PLANE_DISK_SIZE: Boot disk size GB (default: 100)
 #   EVROC_WORKER_DISK_SIZE:      Boot disk size GB (default: 100)
-#   EVROC_ALLOWED_CIDR:          Source CIDR for SSH and API access (default: 0.0.0.0/0)
 #   EVROC_VPC_CIDR:              VPC/private network CIDR for intra-cluster rules (default: 10.0.0.0/8)
 #   POD_CIDR:                    Pod CIDR (default: 10.42.0.0/16)
 #   SERVICE_CIDR:                Service CIDR (default: 10.43.0.0/16)
@@ -104,7 +107,7 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 22
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         # kubelet API — metrics-server, log streaming (cluster-internal only)
         - name: kubelet
           direction: Ingress
@@ -131,7 +134,7 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 6443
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         # RKE2 supervisor — worker/CP node registration (cluster-internal only,
         # registration uses private IPs via registrationMethod: internal-first)
         - name: rke2-supervisor
@@ -159,7 +162,7 @@ metadata:
   namespace: ${NAMESPACE:=default}
 spec:
   replicas: ${CONTROL_PLANE_MACHINE_COUNT:=3}
-  version: ${KUBERNETES_VERSION:=v1.30.0+rke2r1}
+  version: ${KUBERNETES_VERSION:=v1.31.14+rke2r1}
   rolloutStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -213,7 +216,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.m}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: ${EVROC_CONTROL_PLANE_DISK_SIZE:=100}
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:
@@ -233,7 +236,7 @@ spec:
   template:
     spec:
       clusterName: ${CLUSTER_NAME}
-      version: ${KUBERNETES_VERSION:=v1.30.0+rke2r1}
+      version: ${KUBERNETES_VERSION:=v1.31.14+rke2r1}
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io
@@ -255,7 +258,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.m}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: ${EVROC_WORKER_DISK_SIZE:=100}
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:

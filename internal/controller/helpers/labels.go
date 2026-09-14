@@ -4,8 +4,6 @@
 package helpers
 
 import (
-	"strings"
-
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/cloud"
 )
@@ -74,29 +72,4 @@ func ResourceLabels(clusterName, clusterID string, additionalLabels ...map[strin
 	labels[cloud.LabelManagedBy] = cloud.ManagedByValue
 
 	return labels
-}
-
-// ValidateLabelKey checks if a label key is valid for evroc cloud resources.
-// Returns true if valid, false otherwise.
-// evroc does not allow "/" in label keys, so keys must use "_" as separator.
-func ValidateLabelKey(key string) bool {
-	if len(key) == 0 || len(key) > 253 {
-		return false
-	}
-	if strings.Contains(key, "/") {
-		return false
-	}
-	return true
-}
-
-// ValidateLabelValue checks if a label value is valid.
-// Returns true if valid, false otherwise.
-func ValidateLabelValue(value string) bool {
-	// Label values must be 63 characters or less
-	// Can be empty
-	// Must begin and end with alphanumeric (if not empty)
-	if len(value) > 63 {
-		return false
-	}
-	return true
 }

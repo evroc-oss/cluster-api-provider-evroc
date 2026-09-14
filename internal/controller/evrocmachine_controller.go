@@ -809,6 +809,9 @@ func (r *EvrocMachineReconciler) getWorkloadClusterClient(ctx context.Context, m
 	if err != nil {
 		return nil, fmt.Errorf("parsing workload kubeconfig: %w", err)
 	}
+	if restCfg.Insecure {
+		return nil, fmt.Errorf("workload kubeconfig must not use insecure-skip-tls-verify")
+	}
 
 	wc, err := client.New(restCfg, client.Options{})
 	if err != nil {
@@ -1210,41 +1213,6 @@ func injectSSHKeyIntoCloudInit(userData, sshKey string) (string, error) {
 	}
 	// Shell scripts and other formats don't support ssh_authorized_keys
 	return "", fmt.Errorf("unsupported cloud-init format: expected #cloud-config, cannot inject SSH key")
-}
-
-// resolveTemplateSSHKey attempts to resolve the SSH key from the machine's template
-// if the machine was cloned from an EvrocMachineTemplate and has no SSH key set.
-func (r *EvrocMachineReconciler) resolveTemplateSSHKey(ctx context.Context, machine *infrav1.EvrocMachine) (string, error) {
-	// If machine already has an SSH key, return empty (don't override)
-	if machine.Spec.SSHKey != "" {
-		return machine.Spec.SSHKey, nil
-	}
-
-	// Check if machine was cloned from a template
-	templateName, hasName := machine.Annotations["cluster.x-k8s.io/cloned-from-name"]
-	groupKind, hasKind := machine.Annotations["cluster.x-k8s.io/cloned-from-groupkind"]
-
-	if !hasName || !hasKind {
-		return "", nil
-	}
-
-	// Only resolve from EvrocMachineTemplate
-	if groupKind != "EvrocMachineTemplate.infrastructure.cluster.x-k8s.io" {
-		return "", nil
-	}
-
-	// Fetch the template
-	template := &infrav1.EvrocMachineTemplate{}
-	templateKey := types.NamespacedName{
-		Name:      templateName,
-		Namespace: machine.Namespace,
-	}
-
-	if err := r.Get(ctx, templateKey, template); err != nil {
-		return "", fmt.Errorf("failed to get template %s: %w", templateName, err)
-	}
-
-	return template.Spec.Template.Spec.SSHKey, nil
 }
 
 // buildNetworking builds networking configuration (public IP and security groups).

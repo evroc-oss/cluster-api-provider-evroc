@@ -20,7 +20,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/cluster-api-provider-evroc
-    tag: v0.3.5
+    tag: v0.4.0
     pullPolicy: IfNotPresent
 
   # Resource limits and requests
@@ -151,8 +151,8 @@ logging:
 
 # Metrics service configuration
 metrics:
-  # Enable Prometheus metrics endpoint
-  enabled: true
+  # Enable Prometheus metrics endpoint and Service
+  enabled: false
 
   # Metrics port
   port: 8080
