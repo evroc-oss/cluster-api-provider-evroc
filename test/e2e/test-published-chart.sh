@@ -64,7 +64,7 @@ create_kind_cluster() {
 
     kind create cluster \
         --name="${KIND_CLUSTER_NAME}" \
-        --image=kindest/node:v1.30.0 \
+        --image=kindest/node:v1.31.14 \
         --wait=5m \
         --quiet
 

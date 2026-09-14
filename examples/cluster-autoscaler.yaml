@@ -98,7 +98,7 @@ metadata:
   namespace: default
 spec:
   replicas: ${CONTROL_PLANE_MACHINE_COUNT:=3}
-  version: ${KUBERNETES_VERSION:=v1.28.0}
+  version: ${KUBERNETES_VERSION:=v1.31.14}
   machineTemplate:
     spec:
       infrastructureRef:
@@ -139,7 +139,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${CONTROL_PLANE_MACHINE_COMPUTE_PROFILE:=a1a.m}
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 ---
 # Standard Worker Pool - Autoscales from 1 to 10 nodes
@@ -164,7 +164,7 @@ spec:
         node-pool: standard
     spec:
       clusterName: ${CLUSTER_NAME}
-      version: ${KUBERNETES_VERSION:=v1.28.0}
+      version: ${KUBERNETES_VERSION:=v1.31.14}
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io
@@ -186,7 +186,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${WORKER_MACHINE_COMPUTE_PROFILE:=a1a.m}  # 4 vCPU, 16GB RAM
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
@@ -230,7 +230,7 @@ spec:
         workload-type: burst
     spec:
       clusterName: ${CLUSTER_NAME}
-      version: ${KUBERNETES_VERSION:=v1.28.0}
+      version: ${KUBERNETES_VERSION:=v1.31.14}
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io
@@ -252,7 +252,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: a1a.s  # 2 vCPU, 8GB RAM (smaller/cheaper than standard)
-      image: ubuntu-22.04
+      image: ubuntu.24-04.1
       rootDiskSize: 30
 ---
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2

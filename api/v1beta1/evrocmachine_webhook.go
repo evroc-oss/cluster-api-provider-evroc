@@ -58,7 +58,7 @@ func (d *EvrocMachineDefaulter) Default(_ context.Context, obj runtime.Object) e
 
 	// Set default image if not specified
 	if r.Spec.Image == "" {
-		r.Spec.Image = string(compute.DiskImageUbuntu2204)
+		r.Spec.Image = string(compute.DiskImageUbuntu2404)
 	}
 
 	// Default to inheriting cluster security groups so machines are never

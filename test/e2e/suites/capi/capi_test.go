@@ -580,7 +580,7 @@ spec:
   project: test-project
   region: se-sto
   computeProfile: a1a.m
-  image: ubuntu.22-04.1
+  image: ubuntu.24-04.1
   rootDiskSize: 5
 `)
 			cmd := exec.CommandContext(ctx, kubectlPath(),
@@ -606,7 +606,7 @@ spec:
   project: test-project
   region: se-sto
   computeProfile: invalid-flavor
-  image: ubuntu.22-04.1
+  image: ubuntu.24-04.1
   rootDiskSize: 100
 `)
 			cmd := exec.CommandContext(ctx, kubectlPath(),
@@ -1294,6 +1294,7 @@ func generateKubeadmClusterYAML(clusterName string) []byte {
 		"EVROC_API_BASE_URL":                  e2eConfig.GetVariable("EVROC_API_BASE_URL"),
 		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
+		"EVROC_ALLOWED_CIDR":                  e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
 		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         e2eConfig.MustGetVariable("CONTROL_PLANE_MACHINE_COUNT"),
 		"WORKER_MACHINE_COUNT":                e2eConfig.MustGetVariable("WORKER_MACHINE_COUNT"),
@@ -1343,6 +1344,7 @@ func generateHALBClusterYAML(clusterName string) []byte {
 		"EVROC_API_BASE_URL":                  e2eConfig.GetVariable("EVROC_API_BASE_URL"),
 		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
+		"EVROC_ALLOWED_CIDR":                  e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
 		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         "3",
 		"WORKER_MACHINE_COUNT":                "0",
@@ -1390,11 +1392,12 @@ func generateRKE2HALBClusterYAML(clusterName string) []byte {
 		"EVROC_API_BASE_URL":                  e2eConfig.GetVariable("EVROC_API_BASE_URL"),
 		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
-		"KUBERNETES_VERSION":                  "v1.30.0+rke2r1",
+		"EVROC_ALLOWED_CIDR":                  e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
+		"KUBERNETES_VERSION":                  "v1.31.14+rke2r1",
 		"CONTROL_PLANE_MACHINE_COUNT":         "3",
 		"WORKER_MACHINE_COUNT":                "0",
 		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.GetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
-		"EVROC_IMAGE":                         "ubuntu.22-04.1",
+		"EVROC_IMAGE":                         "ubuntu.24-04.1",
 		"EVROC_CONTROL_PLANE_DISK_SIZE":       e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_DISK_SIZE"),
 		"EVROC_SSH_KEY":                       e2eConfig.GetVariable("EVROC_SSH_KEY"),
 		"EVROC_CREDENTIALS_SECRET":            e2eConfig.GetVariable("EVROC_CREDENTIALS_SECRET"),

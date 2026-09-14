@@ -22,15 +22,18 @@
 # Required environment variables:
 #   CLUSTER_NAME: Name of the cluster
 #   EVROC_PROJECT: evroc project ID
+#   EVROC_CREDENTIALS_SECRET: Name of the credentials Secret
 #   EVROC_SSH_KEY: SSH public key used for node access
+#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access
 #
 # Optional environment variables:
 #   EVROC_REGION: evroc region (default: se-sto)
+#   EVROC_API_BASE_URL: API base URL override
+#   EVROC_ISSUER_URL: OIDC issuer URL override
 #   KUBERNETES_VERSION: Kubernetes version
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.s)
 #   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.s)
-#   EVROC_IMAGE: OS image (default: ubuntu.22-04.1)
-#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access (default: 0.0.0.0/0)
+#   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
 
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
@@ -79,7 +82,7 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 22
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         # Broad internal rule — covers all intra-cluster traffic (pods, services, etc.)
         - name: cluster-internal
           direction: Ingress
@@ -97,7 +100,7 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 6443
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlane
@@ -169,7 +172,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.s}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: 50
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:
@@ -211,7 +214,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.s}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: 50
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:

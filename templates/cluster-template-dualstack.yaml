@@ -16,15 +16,19 @@
 # Required environment variables:
 #   CLUSTER_NAME: Name of the cluster
 #   EVROC_PROJECT: evroc project ID
+#   EVROC_CREDENTIALS_SECRET: Name of the credentials Secret
 #   EVROC_SSH_KEY: SSH public key used for node access
+#   EVROC_ALLOWED_CIDR: IPv4 source CIDR for SSH and API access
+#   EVROC_ALLOWED_CIDR_V6: IPv6 source CIDR for SSH and API access
 #
 # Optional environment variables:
 #   EVROC_REGION: evroc region (default: se-sto)
+#   EVROC_API_BASE_URL: API base URL override
+#   EVROC_ISSUER_URL: OIDC issuer URL override
 #   KUBERNETES_VERSION: Kubernetes version
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.s)
 #   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.s)
-#   EVROC_IMAGE: OS image (default: ubuntu.22-04.1)
-#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access (default: 0.0.0.0/0)
+#   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
 #   EVROC_STACK_TYPE: IP stack type (default: dual-stack)
 
 apiVersion: cluster.x-k8s.io/v1beta2
@@ -61,8 +65,7 @@ spec:
     apiBaseURL: "${EVROC_API_BASE_URL:=}"
     issuerURL: "${EVROC_ISSUER_URL:=}"
   credentialsRef:
-    name: "${EVROC_CREDENTIALS_SECRET:=}"
-    namespace: "${EVROC_CREDENTIALS_NAMESPACE:=}"
+    name: "${EVROC_CREDENTIALS_SECRET}"
   failureDomains:
   - a
   network:
@@ -79,12 +82,12 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 22
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         - name: ssh-v6
           direction: Ingress
           protocol: TCP
           port: 22
-          remoteCIDR: "::/0"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR_V6}"
         - name: cluster-internal
           direction: Ingress
           protocol: All
@@ -109,12 +112,12 @@ spec:
           direction: Ingress
           protocol: TCP
           port: 6443
-          remoteCIDR: "${EVROC_ALLOWED_CIDR:=0.0.0.0/0}"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
         - name: k8s-api-v6
           direction: Ingress
           protocol: TCP
           port: 6443
-          remoteCIDR: "::/0"
+          remoteCIDR: "${EVROC_ALLOWED_CIDR_V6}"
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlane
@@ -192,7 +195,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.s}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: 50
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:
@@ -234,7 +237,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.s}
-      image: ${EVROC_IMAGE:=ubuntu.22-04.1}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: 50
       sshKey: "${EVROC_SSH_KEY:=}"
       networkingConfig:

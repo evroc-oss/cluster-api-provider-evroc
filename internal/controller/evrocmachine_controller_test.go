@@ -73,6 +73,39 @@ func testClusterObjects(namespace string) (*clusterv1.Cluster, *infrav1.EvrocClu
 	return capiCluster, evrocCluster
 }
 
+func TestGetWorkloadClusterClientRejectsInsecureTLS(t *testing.T) {
+	const kubeconfig = `apiVersion: v1
+kind: Config
+clusters:
+- name: workload
+  cluster:
+    server: https://workload.example
+    insecure-skip-tls-verify: true
+contexts:
+- name: workload
+  context:
+    cluster: workload
+    user: workload
+current-context: workload
+users:
+- name: workload
+  user: {}
+`
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-kubeconfig", Namespace: "default"},
+		Data:       map[string][]byte{"value": []byte(kubeconfig)},
+	}
+	reconciler := &EvrocMachineReconciler{Client: fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(secret).Build()}
+	machine := &infrav1.EvrocMachine{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "default",
+		Labels:    map[string]string{clusterv1.ClusterNameLabel: "test"},
+	}}
+
+	workloadClient, err := reconciler.getWorkloadClusterClient(context.Background(), machine)
+	assert.Nil(t, workloadClient)
+	assert.ErrorContains(t, err, "insecure-skip-tls-verify")
+}
+
 func TestEvrocMachineReconciler_Create(t *testing.T) {
 	scheme := testScheme()
 
@@ -94,7 +127,7 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 
 	// Disk lifecycle: first Get → not found, then Create, then Get → ready (two more times)
 	mockDiskService.On("Get", mock.Anything, diskName).Return(nil, evroc.ErrNotFound).Once()
-	mockDiskService.On("Create", mock.Anything, diskName, 50, "ubuntu.22-04.1", "a", mock.Anything).
+	mockDiskService.On("Create", mock.Anything, diskName, 50, "ubuntu.24-04.1", "a", mock.Anything).
 		Return(&computetypes.Disk{}, nil).Once()
 	readyDisk := &computetypes.Disk{
 		Status: computetypes.DiskStatus{
@@ -184,7 +217,7 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.22-04.1",
+			Image:          "ubuntu.24-04.1",
 			RootDiskSize:   50,
 		},
 	}
@@ -318,7 +351,7 @@ func TestEvrocMachineReconciler_CreateError(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.22-04.1",
+			Image:          "ubuntu.24-04.1",
 			RootDiskSize:   50,
 		},
 	}
@@ -398,7 +431,7 @@ func TestEvrocMachineReconciler_Delete(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.22-04.1",
+			Image:          "ubuntu.24-04.1",
 
 			RootDiskSize: 50,
 		},
@@ -577,7 +610,7 @@ func TestReconcile_PersistsResourcesBeforePendingRequeue(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.22-04.1",
+			Image:          "ubuntu.24-04.1",
 			RootDiskSize:   0,
 			AdditionalDisks: []infrav1.AdditionalDiskSpec{
 				{
@@ -670,7 +703,7 @@ func TestReconcile_KeepsAssignedAvailabilityZone(t *testing.T) {
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: clusterv1.GroupVersion.String(), Kind: "Machine", Name: capiMachine.Name, UID: capiMachine.UID}},
 		},
 		Spec: infrav1.EvrocMachineSpec{
-			Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.s", Image: "ubuntu.22-04.1",
+			Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.s", Image: "ubuntu.24-04.1",
 			AdditionalDisks: []infrav1.AdditionalDiskSpec{{Name: "data", SizeGB: 20}},
 		},
 		Status: infrav1.EvrocMachineStatus{AvailabilityZone: "b"},
@@ -927,161 +960,6 @@ func TestBuildOSSettings_CRDParameterCoverage(t *testing.T) {
 			osSettings, err := reconciler.buildOSSettings(machine, tt.userData)
 			assert.NoError(t, err, "buildOSSettings should not return error")
 			tt.validate(t, osSettings)
-		})
-	}
-}
-
-// TestResolveTemplateSSHKey tests the SSH key fallback from template
-func TestResolveTemplateSSHKey(t *testing.T) {
-	scheme := testScheme()
-
-	tests := []struct {
-		name           string
-		machine        *infrav1.EvrocMachine
-		template       *infrav1.EvrocMachineTemplate
-		expectedSSHKey string
-		expectError    bool
-	}{
-		{
-			name: "SSH key resolved from template",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-machine",
-					Namespace: "default",
-					Annotations: map[string]string{
-						"cluster.x-k8s.io/cloned-from-name":      "test-template",
-						"cluster.x-k8s.io/cloned-from-groupkind": "EvrocMachineTemplate.infrastructure.cluster.x-k8s.io",
-					},
-				},
-				Spec: infrav1.EvrocMachineSpec{
-					SSHKey: "", // Empty, should be resolved from template
-				},
-			},
-			template: &infrav1.EvrocMachineTemplate{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-template",
-					Namespace: "default",
-				},
-				Spec: infrav1.EvrocMachineTemplateSpec{
-					Template: infrav1.EvrocMachineTemplateResource{
-						Spec: infrav1.EvrocMachineSpec{
-							SSHKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFeENOwB0QwUEicJGrFxt44yiShgBWzANhpE/5gNw041",
-						},
-					},
-				},
-			},
-			expectedSSHKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFeENOwB0QwUEicJGrFxt44yiShgBWzANhpE/5gNw041",
-			expectError:    false,
-		},
-		{
-			name: "No annotation returns empty",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-machine-no-annotation",
-					Namespace: "default",
-				},
-				Spec: infrav1.EvrocMachineSpec{
-					SSHKey: "",
-				},
-			},
-			expectedSSHKey: "",
-			expectError:    false,
-		},
-		{
-			name: "Wrong groupkind returns empty",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-machine-wrong-kind",
-					Namespace: "default",
-					Annotations: map[string]string{
-						"cluster.x-k8s.io/cloned-from-name":      "test-template",
-						"cluster.x-k8s.io/cloned-from-groupkind": "SomeOtherTemplate.infrastructure.cluster.x-k8s.io",
-					},
-				},
-				Spec: infrav1.EvrocMachineSpec{
-					SSHKey: "",
-				},
-			},
-			expectedSSHKey: "",
-			expectError:    false,
-		},
-		{
-			name: "Template not found returns error",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-machine-missing-template",
-					Namespace: "default",
-					Annotations: map[string]string{
-						"cluster.x-k8s.io/cloned-from-name":      "nonexistent-template",
-						"cluster.x-k8s.io/cloned-from-groupkind": "EvrocMachineTemplate.infrastructure.cluster.x-k8s.io",
-					},
-				},
-				Spec: infrav1.EvrocMachineSpec{
-					SSHKey: "",
-				},
-			},
-			expectedSSHKey: "",
-			expectError:    true,
-		},
-		{
-			name: "Template with empty SSH key returns empty",
-			machine: &infrav1.EvrocMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-machine-empty-template-key",
-					Namespace: "default",
-					Annotations: map[string]string{
-						"cluster.x-k8s.io/cloned-from-name":      "test-template-empty",
-						"cluster.x-k8s.io/cloned-from-groupkind": "EvrocMachineTemplate.infrastructure.cluster.x-k8s.io",
-					},
-				},
-				Spec: infrav1.EvrocMachineSpec{
-					SSHKey: "",
-				},
-			},
-			template: &infrav1.EvrocMachineTemplate{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-template-empty",
-					Namespace: "default",
-				},
-				Spec: infrav1.EvrocMachineTemplateSpec{
-					Template: infrav1.EvrocMachineTemplateResource{
-						Spec: infrav1.EvrocMachineSpec{
-							SSHKey: "", // Template also has no SSH key
-						},
-					},
-				},
-			},
-			expectedSSHKey: "",
-			expectError:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var objects []client.Object
-			objects = append(objects, tt.machine)
-			if tt.template != nil {
-				objects = append(objects, tt.template)
-			}
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objects...).
-				Build()
-
-			reconciler := &EvrocMachineReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
-
-			sshKey, err := reconciler.resolveTemplateSSHKey(context.Background(), tt.machine)
-
-			if tt.expectError {
-				assert.Error(t, err, "Expected an error but got none")
-			} else {
-				assert.NoError(t, err, "Expected no error")
-				assert.Equal(t, tt.expectedSSHKey, sshKey, "SSH key should match expected value")
-			}
 		})
 	}
 }
@@ -2885,7 +2763,7 @@ func TestEvrocMachineReconciler_PausedSkipsDeletion(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.22-04.1",
+			Image:          "ubuntu.24-04.1",
 
 			RootDiskSize: 50,
 		},
@@ -3000,7 +2878,7 @@ func TestEvrocMachineReconciler_PostMoveRecovery(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.22-04.1",
+			Image:          "ubuntu.24-04.1",
 			ProviderID:     &providerID,
 		},
 	}

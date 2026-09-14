@@ -62,7 +62,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: a1a.m  # 4 vCPU, 16GB RAM
-      image: ubuntu.22-04.1
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
@@ -76,7 +76,7 @@ spec:
       project: ${EVROC_PROJECT}
       region: ${EVROC_REGION:=se-sto}
       computeProfile: a1a.s  # 2 vCPU, 8GB RAM
-      image: ubuntu.22-04.1
+      image: ubuntu.24-04.1
       rootDiskSize: 50
 ---
 # Bootstrap Templates
@@ -194,7 +194,7 @@ spec:
 # spec:
 #   topology:
 #     class: evroc-basic
-#     version: v1.28.0
+#     version: v1.31.14
 #     controlPlane:
 #       replicas: 3
 #     workers:

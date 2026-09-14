@@ -436,7 +436,7 @@ spec:
   project: %s
   region: se-sto
   computeProfile: nonexistent-flavor
-  image: ubuntu.22-04.1
+  image: ubuntu.24-04.1
   rootDiskSize: 50
 `, randomSuffix(), os.Getenv("EVROC_PROJECT")))
 
@@ -690,6 +690,7 @@ func generateClusterYAML(clusterName string) []byte {
 		"EVROC_API_BASE_URL":          os.Getenv("EVROC_API_BASE_URL"),
 		"EVROC_ISSUER_URL":            os.Getenv("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":     evrocAvailabilityZone(),
+		"EVROC_ALLOWED_CIDR":          e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
 		"KUBERNETES_VERSION":          e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT": "1",
 		"WORKER_MACHINE_COUNT":        "0",
@@ -746,6 +747,7 @@ func generateClusterYAMLWithWorkers(clusterName string, workerCount int) []byte 
 		"EVROC_API_BASE_URL":          os.Getenv("EVROC_API_BASE_URL"),
 		"EVROC_ISSUER_URL":            os.Getenv("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":     evrocAvailabilityZone(),
+		"EVROC_ALLOWED_CIDR":          e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
 		"KUBERNETES_VERSION":          e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT": "1",
 		"WORKER_MACHINE_COUNT":        fmt.Sprintf("%d", workerCount),

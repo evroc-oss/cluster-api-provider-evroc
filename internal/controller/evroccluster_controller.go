@@ -181,7 +181,6 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 	}
 	evrocCluster.Status.Network.SubnetIDs = subnetIDs
 
-	// Reconcile control plane load balancer (auto-created or existing).
 	// Reconcile control plane load balancer (always auto-created).
 	{
 		lbName, err := resolveLoadBalancerName(evrocCluster)
@@ -300,7 +299,6 @@ func (r *EvrocClusterReconciler) reconcileAutoCreatedLoadBalancer(
 	return r.useLoadBalancer(ctx, cluster, lb)
 }
 
-// reconcileExistingLoadBalancer uses a pre-existing load balancer (not managed by CAPI).
 // useLoadBalancer stores LoadBalancer information in cluster status and sets controlPlaneEndpoint.
 func (r *EvrocClusterReconciler) useLoadBalancer(
 	_ context.Context,

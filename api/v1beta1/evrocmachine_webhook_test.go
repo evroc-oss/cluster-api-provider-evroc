@@ -40,7 +40,7 @@ func TestEvrocMachineDefault(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					NetworkingConfig: &MachineNetworkingConfig{
 						SecurityGroups: &MachineSecurityGroupsConfig{InheritFromCluster: true},
 					},
@@ -61,7 +61,7 @@ func TestEvrocMachineDefault(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					NetworkingConfig: &MachineNetworkingConfig{
 						SecurityGroups: &MachineSecurityGroupsConfig{InheritFromCluster: true},
 					},
@@ -96,7 +96,7 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -115,7 +115,7 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -135,7 +135,7 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 					NetworkingConfig: &MachineNetworkingConfig{
 						SecurityGroups: &MachineSecurityGroupsConfig{
@@ -235,7 +235,7 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "gn-l40s.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -275,7 +275,7 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   20,
 				},
 			},
@@ -290,7 +290,7 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 					AdditionalDisks: []AdditionalDiskSpec{
 						{Name: "data", SizeGB: 100},
@@ -328,7 +328,7 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.m",
-			Image:          string(compute.DiskImageUbuntu2204),
+			Image:          string(compute.DiskImageUbuntu2404),
 			RootDiskSize:   100,
 		},
 	}
@@ -345,7 +345,7 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -358,7 +358,7 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 					Project:        "different-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -371,7 +371,7 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "eu-sto",
 					ComputeProfile: "a1a.m",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -384,7 +384,7 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.l",
-					Image:          string(compute.DiskImageUbuntu2204),
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
@@ -424,11 +424,6 @@ func TestEvrocMachineBYOIValidation(t *testing.T) {
 		machine     *EvrocMachine
 		expectError bool
 	}{
-		{
-			name:        "valid ubuntu 22.04",
-			machine:     validBase(string(compute.DiskImageUbuntu2204)),
-			expectError: false,
-		},
 		{
 			name:        "valid ubuntu 24.04",
 			machine:     validBase(string(compute.DiskImageUbuntu2404)),

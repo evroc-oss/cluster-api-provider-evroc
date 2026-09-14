@@ -9,8 +9,6 @@ type LoadBalancerStatus string
 const (
 	LoadBalancerStatusCreating LoadBalancerStatus = "Creating"
 	LoadBalancerStatusActive   LoadBalancerStatus = "Active"
-	LoadBalancerStatusError    LoadBalancerStatus = "Error"
-	LoadBalancerStatusDeleting LoadBalancerStatus = "Deleting"
 )
 
 // LoadBalancerCreateRequest defines the parameters for creating a load balancer.
@@ -49,7 +47,7 @@ type LoadBalancer struct {
 	Name     string
 	ID       string
 	Address  string             // Public IPv4 address allocated to the LB
-	Status   LoadBalancerStatus // Creating, Active, Error, Deleting
+	Status   LoadBalancerStatus // Creating or Active
 	Backends []Backend
 }
 

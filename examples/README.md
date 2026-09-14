@@ -14,7 +14,7 @@ Use these examples when you need to compose advanced infrastructure behavior dir
 export CLUSTER_NAME="example-cluster"
 export EVROC_PROJECT="your-project-id"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.28.0"
+export KUBERNETES_VERSION="v1.31.14"
 ```
 
 ## Example Catalog

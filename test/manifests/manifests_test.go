@@ -38,7 +38,9 @@ var templateVars = map[string]string{
 	"EVROC_PROJECT":               "test-project",
 	"EVROC_SSH_KEY":               "ssh-rsa AAAAB3Nza",
 	"EVROC_CREDENTIALS_SECRET":    "evroc-credentials",
-	"KUBERNETES_VERSION":          "v1.28.0",
+	"EVROC_ALLOWED_CIDR":          "192.0.2.10/32",
+	"EVROC_ALLOWED_CIDR_V6":       "2001:db8::10/128",
+	"KUBERNETES_VERSION":          "v1.31.14",
 	"CONTROL_PLANE_MACHINE_COUNT": "3",
 	"WORKER_MACHINE_COUNT":        "3",
 }
@@ -228,6 +230,60 @@ func TestChartRendersValidYAML(t *testing.T) {
 				t.Error("no Deployment rendered")
 			}
 		})
+	}
+}
+
+func TestChartLoggingValuesBecomeManagerFlags(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not found in PATH; skipping chart logging validation")
+	}
+
+	out, err := exec.CommandContext(t.Context(), "helm", "template", "test", chartDir,
+		"--set", "fullnameOverride=test",
+		"--set", "logging.level=debug",
+		"--set", "logging.format=text",
+		"--set", "debug=true",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template failed: %v\n%s", err, out)
+	}
+
+	want := map[string]bool{
+		"--zap-log-level=debug": false,
+		"--zap-encoder=console": false,
+	}
+
+	for _, doc := range strings.Split(string(out), "\n---") {
+		obj := map[string]interface{}{}
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			t.Fatalf("unparseable rendered YAML: %v", err)
+		}
+		if kind, _ := obj["kind"].(string); kind != "Deployment" {
+			continue
+		}
+
+		podSpec := nestedMap(obj, "spec", "template", "spec")
+		containers, _ := podSpec["containers"].([]interface{})
+		for _, item := range containers {
+			container, _ := item.(map[string]interface{})
+			if container["name"] != "manager" {
+				continue
+			}
+			args, _ := container["args"].([]interface{})
+			for _, arg := range args {
+				if value, ok := arg.(string); ok {
+					if _, tracked := want[value]; tracked {
+						want[value] = true
+					}
+				}
+			}
+		}
+	}
+
+	for flag, found := range want {
+		if !found {
+			t.Errorf("rendered manager args do not contain %q", flag)
+		}
 	}
 }
 
