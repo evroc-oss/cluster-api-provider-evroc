@@ -20,7 +20,7 @@ controller:
 
   image:
     repository: ghcr.io/evroc-oss/cluster-api-provider-evroc
-    tag: v0.4.0
+    tag: v0.4.1
     pullPolicy: IfNotPresent
 
   # Resource limits and requests

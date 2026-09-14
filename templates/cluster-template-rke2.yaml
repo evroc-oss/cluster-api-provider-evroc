@@ -135,6 +135,12 @@ spec:
           protocol: TCP
           port: 6443
           remoteCIDR: "${EVROC_ALLOWED_CIDR}"
+        # Managed load balancers reach API server backends over the VPC network.
+        - name: k8s-api-load-balancer
+          direction: Ingress
+          protocol: TCP
+          port: 6443
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
         # RKE2 supervisor — worker/CP node registration (cluster-internal only,
         # registration uses private IPs via registrationMethod: internal-first)
         - name: rke2-supervisor
