@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-15
+
+### Fixed
+
+- Let public-cloud cluster templates render without explicit API and issuer
+  variables, and clarify project-scoped service account setup in the quick start.
+
 ## [0.4.1] - 2026-09-14
 
 ### Fixed
@@ -208,7 +215,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.4.2...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -235,3 +242,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.5]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.3.5
 [0.4.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.0
 [0.4.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.1
+[0.4.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.2
