@@ -9,7 +9,7 @@ metadata:
   name: infrastructure-evroc
   labels:
     cluster.x-k8s.io/provider: infrastructure-evroc
-    cluster.x-k8s.io/version: v0.4.1
+    cluster.x-k8s.io/version: v0.4.2
 
 # Supported CAPI contract versions
 releaseSeries:
@@ -18,7 +18,7 @@ releaseSeries:
     contract: v1beta2
 
 # Latest version in this release series
-latest: v0.4.1
+latest: v0.4.2
 
 # Target namespace for provider installation
 namespace: capi-evroc-system

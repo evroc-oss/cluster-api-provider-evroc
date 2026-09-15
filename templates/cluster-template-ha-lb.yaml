@@ -63,8 +63,8 @@ spec:
   # Endpoint overrides for private/non-production evroc deployments.
   # Leave unset to use the public evroc cloud.
   endpoints:
-    apiBaseURL: "${EVROC_API_BASE_URL:=}"
-    issuerURL: "${EVROC_ISSUER_URL:=}"
+    apiBaseURL: "${EVROC_API_BASE_URL:=https://api.evroc.com}"
+    issuerURL: "${EVROC_ISSUER_URL:=https://authn.iam.evroc.com/realms/evroc-customer}"
   credentialsRef:
     name: "${EVROC_CREDENTIALS_SECRET}"
   failureDomains:

@@ -84,7 +84,8 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
 ### 1) Create a management cluster
 
 ```bash
-kind create cluster --name capi-mgmt
+kind create cluster --name capi-mgmt \
+  --image kindest/node:v1.31.14@sha256:6f86cf509dbb42767b6e79debc3f2c32e4ee01386f0489b3b2be24b0a55aac2b
 kubectl cluster-info
 ```
 
@@ -151,9 +152,15 @@ kubectl get crd | grep evroc
 
 ### 6) Create a service account
 
-The provider uses service account authentication. Create a service account and credential using the evroc CLI:
+The provider uses project-scoped service accounts. Role bindings grant an
+account permissions within its project; they do not make the account global.
+Select the target project first, then create the service account and credential
+using the evroc CLI:
 
 ```bash
+# The service account and workload cluster must use the same project.
+export EVROC_PROJECT="$(evroc config current-project)"
+
 # Create the service account
 evroc iam serviceaccount create my-capi-sa
 
@@ -164,7 +171,7 @@ evroc iam serviceaccount credential create my-key --service-account my-capi-sa
 Assign the required roles:
 
 ```bash
-SA_PRINCIPAL="/iam/projects/<your-project-id>/serviceAccounts/my-capi-sa"
+SA_PRINCIPAL="/iam/projects/${EVROC_PROJECT}/serviceAccounts/my-capi-sa"
 
 evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/computeOperator
 evroc iam rolebinding assign --principal "$SA_PRINCIPAL" --role /iam/roles/networkingOperator
@@ -271,7 +278,7 @@ under **Available flavors** below and always pass `--control-plane-machine-count
 
 ```bash
 export CLUSTER_NAME="my-cluster"
-export EVROC_PROJECT="your-project-id"
+export EVROC_PROJECT="$(evroc config current-project)"
 export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 export EVROC_REGION="se-sto"
 export KUBERNETES_VERSION="v1.31.14"
@@ -336,8 +343,11 @@ See [templates/](./templates/) for all flavor variables and defaults.
 ### 9) Monitor cluster creation
 
 ```bash
-# Watch cluster and machine status
-kubectl get cluster,kubeadmcontrolplane,machinedeployment -w
+# Show aggregate cluster status
+kubectl get cluster,kubeadmcontrolplane,machinedeployment
+
+# Watch machines progress through provisioning
+kubectl get machines -w
 
 # Watch evroc-specific resources
 kubectl get evroccluster,evrocmachine -A
@@ -346,7 +356,7 @@ kubectl get evroccluster,evrocmachine -A
 clusterctl describe cluster "${CLUSTER_NAME}"
 ```
 
-Typical provisioning takes 3-5 minutes. Machines progress through phases:
+Typical provisioning takes 5-10 minutes. Machines progress through phases:
 `Pending` → `Provisioning` → `Running`
 
 The control plane machine provisions first. Workers start provisioning once the control plane API endpoint is available.
