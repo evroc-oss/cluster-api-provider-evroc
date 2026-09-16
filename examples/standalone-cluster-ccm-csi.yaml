@@ -75,7 +75,8 @@
 #   export EVROC_API_BASE_URL="https://api.evroc.com"
 #   export EVROC_ISSUER_URL="https://authn.iam.evroc.com/realms/evroc-customer"
 #   export EVROC_TOKEN_URL="${EVROC_ISSUER_URL}/protocol/openid-connect/token"
-#   export KUBERNETES_VERSION="v1.31.14"
+#   export KUBERNETES_VERSION="v1.35.8"
+#   export CALICO_VERSION="v3.32.2"
 #   export CONTROL_PLANE_MACHINE_COUNT=1
 #   export WORKER_MACHINE_COUNT=2
 #   export CONTROL_PLANE_MACHINE_COMPUTE_PROFILE="a1a.m"
@@ -282,7 +283,7 @@ spec:
       - |
         if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
         if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node >/dev/null 2>&1; then exit 0; fi
-        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION:=v3.32.2}/manifests/calico.yaml
     # cloud-provider=external hands node initialisation to the CCM. Both the
     # init and join paths need it: without it on either, those nodes keep the
     # in-tree provider's behaviour and the CCM never manages them.
@@ -534,7 +535,7 @@ data:
           - name: helm
             # alpine/k8s ships both helm and kubectl. alpine/helm has helm only,
             # so the install log could not be reported back out of the cluster.
-            image: alpine/k8s:1.31.0
+            image: alpine/k8s:1.35.8
             env:
             - name: GITHUB_USER
               valueFrom:

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-16
+
+### Changed
+
+- Align templates, examples, and tests on Kubernetes 1.35.8 and centralize the
+  tested CAPI, Kubernetes, and CNI versions.
+
+### Fixed
+
+- Make Kubernetes upgrades reliable with CAPI v1.12.11, consistent bootstrap
+  versions, and retried Node deletion.
+- Correct default-flavor generation and clarify the full control-plane and
+  worker upgrade sequence.
+
 ## [0.4.2] - 2026-09-15
 
 ### Fixed
@@ -215,7 +229,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.5.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -243,3 +257,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.4.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.0
 [0.4.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.1
 [0.4.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.2
+[0.5.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.0

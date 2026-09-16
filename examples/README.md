@@ -12,9 +12,9 @@ Use these examples when you need to compose advanced infrastructure behavior dir
 
 ```bash
 export CLUSTER_NAME="example-cluster"
-export EVROC_PROJECT="your-project-id"
+export EVROC_PROJECT="$(evroc config current-project)"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.31.14"
+export KUBERNETES_VERSION="v1.35.8"
 ```
 
 ## Example Catalog

@@ -91,6 +91,12 @@ func (c *capiE2EConfig) GetIntervals(group, name string) []interface{} {
 	return []interface{}{"30m", "30s"}
 }
 
+func requiredStackValue(name string) string {
+	value := os.Getenv(name)
+	Expect(value).NotTo(BeEmpty(), "%s must be supplied by versions.env (run the suite through Make)", name)
+	return value
+}
+
 // ─── Suite globals ────────────────────────────────────────────────────────────
 
 // Test suite entry point
@@ -684,9 +690,6 @@ spec:
 			By("Generating HA RKE2 cluster manifest with LB (3 CP)")
 			clusterYAML := generateRKE2HALBClusterYAML(clusterName)
 
-			By("Applying cluster resources")
-			applyManifest(ctx, kubeconfigPath, clusterYAML, clusterName)
-
 			defer func() {
 				collectClusterArtifacts(ctx, kubeconfigPath, clusterName, namespace)
 
@@ -696,6 +699,9 @@ spec:
 				By("Verifying cluster resources are cleaned up after deletion")
 				verifyClusterDeleted(ctx, kubeconfigPath, clusterName, namespace)
 			}()
+
+			By("Applying cluster resources")
+			applyManifest(ctx, kubeconfigPath, clusterYAML, clusterName)
 
 			By("Waiting for EvrocCluster to become ready")
 			waitForEvrocClusterReady(ctx, kubeconfigPath, clusterName, namespace,
@@ -758,6 +764,7 @@ func createKindCluster(ctx context.Context, name, kubeconfigOut string) {
 
 	cmd := exec.CommandContext(ctx, "kind", "create", "cluster",
 		"--name", name,
+		"--image", requiredStackValue("KIND_NODE_IMAGE"),
 		"--kubeconfig", kubeconfigOut,
 		"--wait", "5m",
 	)
@@ -1064,9 +1071,8 @@ func clusterctlInit(ctx context.Context, kubeconfig string, useLocalImage bool) 
 	configFile := filepath.Join(homeDir, "capi-clusterctl.yaml")
 	Expect(os.WriteFile(configFile, []byte(configContent), 0600)).To(Succeed())
 
-	// Pin the CAPI stack to the same major version our provider was built against
-	// (v1.12.x with v1beta2 contract).
-	capiVersion := "v1.12.0"
+	// Pin the installed management stack to the version validated by this release.
+	capiVersion := requiredStackValue("CAPI_VERSION")
 	cmd := exec.CommandContext(ctx, clusterctlPath(),
 		"init",
 		"--core", "cluster-api:"+capiVersion,
@@ -1295,7 +1301,7 @@ func generateKubeadmClusterYAML(clusterName string) []byte {
 		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
 		"EVROC_ALLOWED_CIDR":                  e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
-		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
+		"KUBERNETES_VERSION":                  requiredStackValue("DEFAULT_WORKLOAD_K8S_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         e2eConfig.MustGetVariable("CONTROL_PLANE_MACHINE_COUNT"),
 		"WORKER_MACHINE_COUNT":                e2eConfig.MustGetVariable("WORKER_MACHINE_COUNT"),
 		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
@@ -1345,7 +1351,7 @@ func generateHALBClusterYAML(clusterName string) []byte {
 		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
 		"EVROC_ALLOWED_CIDR":                  e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
-		"KUBERNETES_VERSION":                  e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
+		"KUBERNETES_VERSION":                  requiredStackValue("DEFAULT_WORKLOAD_K8S_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         "3",
 		"WORKER_MACHINE_COUNT":                "0",
 		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.MustGetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
@@ -1393,7 +1399,7 @@ func generateRKE2HALBClusterYAML(clusterName string) []byte {
 		"EVROC_ISSUER_URL":                    e2eConfig.GetVariable("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":             e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE"),
 		"EVROC_ALLOWED_CIDR":                  e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
-		"KUBERNETES_VERSION":                  "v1.31.14+rke2r1",
+		"KUBERNETES_VERSION":                  requiredStackValue("RKE2_WORKLOAD_K8S_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT":         "3",
 		"WORKER_MACHINE_COUNT":                "0",
 		"EVROC_CONTROL_PLANE_COMPUTE_PROFILE": e2eConfig.GetVariable("EVROC_CONTROL_PLANE_FLAVOR"),
@@ -1427,7 +1433,7 @@ func generateRKE2HALBClusterYAML(clusterName string) []byte {
 // providers from their GitHub release YAMLs. Variable placeholders are replaced
 // with defaults before applying.
 func installCAPRKE2(ctx context.Context, kubeconfig string) {
-	caprke2Version := "v0.24.1"
+	caprke2Version := "v0.24.4"
 	baseURL := "https://github.com/rancher/cluster-api-provider-rke2/releases/download/" + caprke2Version
 
 	varPattern := regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*:=([^}]*)\}`)
@@ -1453,6 +1459,11 @@ func installCAPRKE2(ctx context.Context, kubeconfig string) {
 		Expect(applyErr).ToNot(HaveOccurred(), "Failed to apply CAPRKE2 %s: %s", comp, string(out))
 		GinkgoWriter.Printf("Applied CAPRKE2 %s successfully\n", comp)
 	}
+
+	// Endpoints can appear before the webhook process is listening. Wait for
+	// both provider Deployments to report ready before applying RKE2 resources.
+	waitForAllDeploymentsReady(ctx, kubeconfig, "rke2-bootstrap-system", 5*time.Minute)
+	waitForAllDeploymentsReady(ctx, kubeconfig, "rke2-control-plane-system", 5*time.Minute)
 
 	// Wait for CAPRKE2 CRDs to be available.
 	for _, crd := range []string{
@@ -1999,7 +2010,7 @@ func waitForAPIServerReachable(ctx context.Context, kubeconfig string, timeout t
 // can be scheduled on the single-node workload cluster.
 // Calico auto-detects the pod CIDR from kubeadm's cluster configuration.
 func installCalicoCNI(ctx context.Context, kubeconfig string) {
-	calicoURL := "https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/calico.yaml"
+	calicoURL := fmt.Sprintf("https://raw.githubusercontent.com/projectcalico/calico/%s/manifests/calico.yaml", requiredStackValue("CALICO_VERSION"))
 	cmd := exec.CommandContext(ctx, kubectlPath(),
 		"--kubeconfig", kubeconfig,
 		"apply", "-f", calicoURL,

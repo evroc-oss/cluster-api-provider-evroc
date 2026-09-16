@@ -1,14 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 evroc
 
-# Include .env file if it exists
+# Tested management and workload stack versions.
+include versions.env
+
+# Include .env file if it exists (local overrides).
 -include .env
+
+export CAPI_VERSION
+export MANAGEMENT_K8S_VERSION
+export DEFAULT_WORKLOAD_K8S_VERSION
+export RKE2_WORKLOAD_K8S_VERSION
+export KIND_NODE_IMAGE
+export CALICO_VERSION
+export CILIUM_VERSION
+export CILIUM_CLI_VERSION
 
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 
 # Kubernetes version used by controller-runtime envtest.
-ENVTEST_K8S_VERSION ?= 1.31.0
+ENVTEST_K8S_VERSION ?= 1.35.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -43,6 +55,7 @@ manifests: controller-gen ## Generate CRD manifests.
 .PHONY: generate-templates
 generate-templates: ## Generate templates/infrastructure-components.yaml from Helm chart.
 	helm template cluster-api-provider-evroc helm/cluster-api-provider-evroc \
+		--kube-version $(MANAGEMENT_K8S_VERSION) \
 		--namespace capi-evroc-system \
 		--set controller.image.tag="$(shell cat VERSION)" \
 		--set fullnameOverride=cluster-api-provider-evroc \
@@ -177,7 +190,7 @@ test-e2e-rancher-turtles: e2e-image ## Run Rancher Turtles E2E certification tes
 	HELM_EXTRA_VALUES_FOLDER=$(PWD)/_artifacts \
 	XDG_CONFIG_HOME=$(PWD)/_artifacts/xdg \
 	CAPI_KUBECTL_PATH=$(shell which kubectl) \
-	CLUSTERCTL_BINARY_PATH=$(CLUSTERCTL_V112) \
+	CLUSTERCTL_BINARY_PATH=$(CLUSTERCTL_BIN) \
 	REPO_ROOT=$(PWD) \
 	EVROC_CREDENTIALS_FILE=$(EVROC_CREDENTIALS_FILE) \
 	E2E_LOCAL_IMAGE=$(E2E_LOCAL_IMAGE) \
@@ -191,7 +204,7 @@ test-e2e-capi: ## Run upstream CAPI QuickStart E2E tests (requires live evroc cr
 	CAPI_E2E_CONFIG_PATH=$(PWD)/test/e2e/capi-e2e-config.yaml \
 	ARTIFACTS_FOLDER=$(PWD)/_artifacts \
 	CAPI_KUBECTL_PATH=$(shell which kubectl) \
-	CLUSTERCTL_BINARY_PATH=$(CLUSTERCTL_V112) \
+	CLUSTERCTL_BINARY_PATH=$(CLUSTERCTL_BIN) \
 	REPO_ROOT=$(PWD) \
 	EVROC_CREDENTIALS_FILE=$(EVROC_CREDENTIALS_FILE) \
 	E2E_LOCAL_IMAGE=$(E2E_LOCAL_IMAGE) \
@@ -212,9 +225,8 @@ E2E_LOG_FILE ?= $(PWD)/_artifacts/rancher-turtles-e2e-$(shell date +%Y%m%d-%H%M%
 # so the whole suite needs above ginkgo's 1h default to run all 11 specs.
 GINKGO_TIMEOUT ?= 2h30m
 
-# Pin clusterctl to v1.12 for v1beta2 compatibility.
-# The run-e2e-tests.sh downloads this to /tmp if not already present.
-CLUSTERCTL_V112 ?= $(HOME)/.local/bin/clusterctl-v1.12
+# Pin clusterctl to the CAPI management stack version.
+CLUSTERCTL_BIN ?= $(HOME)/.local/bin/clusterctl-$(CAPI_VERSION)
 
 .PHONY: e2e-image
 e2e-image: ## Build and tag the provider image for local E2E use (uses local SDK copy).

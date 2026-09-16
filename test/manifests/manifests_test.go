@@ -40,9 +40,17 @@ var templateVars = map[string]string{
 	"EVROC_CREDENTIALS_SECRET":    "evroc-credentials",
 	"EVROC_ALLOWED_CIDR":          "192.0.2.10/32",
 	"EVROC_ALLOWED_CIDR_V6":       "2001:db8::10/128",
-	"KUBERNETES_VERSION":          "v1.31.14",
+	"KUBERNETES_VERSION":          requiredStackValue("DEFAULT_WORKLOAD_K8S_VERSION"),
 	"CONTROL_PLANE_MACHINE_COUNT": "3",
 	"WORKER_MACHINE_COUNT":        "3",
+}
+
+func requiredStackValue(name string) string {
+	value := os.Getenv(name)
+	if value == "" {
+		panic(name + " must be supplied by versions.env (run tests through Make)")
+	}
+	return value
 }
 
 var varPattern = regexp.MustCompile(`\$\{([A-Z_]+)(?::=([^}]*))?\}`)
@@ -205,7 +213,7 @@ func TestChartRendersValidYAML(t *testing.T) {
 
 	for _, tc := range chartRenderCases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"template", "test", chartDir, "--set", "fullnameOverride=test"}, tc.args...)
+			args := append([]string{"template", "test", chartDir, "--kube-version", requiredStackValue("MANAGEMENT_K8S_VERSION"), "--set", "fullnameOverride=test"}, tc.args...)
 			out, err := exec.CommandContext(t.Context(), "helm", args...).CombinedOutput()
 			if err != nil {
 				t.Fatalf("helm template failed: %v\n%s", err, out)
@@ -239,6 +247,7 @@ func TestChartLoggingValuesBecomeManagerFlags(t *testing.T) {
 	}
 
 	out, err := exec.CommandContext(t.Context(), "helm", "template", "test", chartDir,
+		"--kube-version", requiredStackValue("MANAGEMENT_K8S_VERSION"),
 		"--set", "fullnameOverride=test",
 		"--set", "logging.level=debug",
 		"--set", "logging.format=text",

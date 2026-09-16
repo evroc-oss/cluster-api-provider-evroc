@@ -9,6 +9,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=../versions.env
+source "$REPO_ROOT/versions.env"
+
 if [ -z "$1" ]; then
     echo "Error: Version number required"
     echo "Usage: ./scripts/bump-version.sh <version>"
@@ -56,6 +61,7 @@ sed -i "s/tag: v[0-9]*\.[0-9]*\.[0-9]*/tag: $NEW_TAG/" "$VALUES_FILE"
 echo "Generating templates/infrastructure-components.yaml for $NEW_TAG..."
 if command -v helm >/dev/null 2>&1; then
     helm template cluster-api-provider-evroc helm/cluster-api-provider-evroc \
+        --kube-version "$MANAGEMENT_K8S_VERSION" \
         --namespace capi-evroc-system \
         --set controller.image.tag="$NEW_TAG" \
         --set fullnameOverride=cluster-api-provider-evroc \

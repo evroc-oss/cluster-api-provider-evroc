@@ -10,6 +10,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATES_DIR="$REPO_ROOT/templates"
+# shellcheck source=../versions.env
+source "$REPO_ROOT/versions.env"
 
 # Check for python3 (needed for YAML validation)
 if ! command -v python3 &>/dev/null; then
@@ -24,7 +26,10 @@ export CLUSTER_NAME="validate-test"
 export EVROC_PROJECT="00000000-0000-0000-0000-000000000000"
 export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.31.14"
+export KUBERNETES_VERSION="$DEFAULT_WORKLOAD_K8S_VERSION"
+export CALICO_VERSION
+export CILIUM_VERSION
+export CILIUM_CLI_VERSION
 export EVROC_SSH_KEY="ssh-ed25519 AAAA test@test"
 export NAMESPACE="default"
 export EVROC_AVAILABILITY_ZONE="a"

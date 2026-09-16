@@ -8,6 +8,9 @@ set -euo pipefail
 # This validates that the released artifacts work correctly
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../../versions.env
+source "$REPO_ROOT/versions.env"
 CHART_VERSION="${CHART_VERSION:-latest}"
 TEST_NAMESPACE="${TEST_NAMESPACE:-cape-test-published}"
 RELEASE_NAME="${RELEASE_NAME:-cape}"
@@ -64,7 +67,7 @@ create_kind_cluster() {
 
     kind create cluster \
         --name="${KIND_CLUSTER_NAME}" \
-        --image=kindest/node:v1.31.14 \
+        --image="${KIND_NODE_IMAGE}" \
         --wait=5m \
         --quiet
 

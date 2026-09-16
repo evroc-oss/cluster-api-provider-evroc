@@ -4,8 +4,9 @@ Cluster API infrastructure provider for [evroc Cloud](https://evroc.com). Deploy
 
 ## Prerequisites
 
-- Kubernetes >= 1.27
-- Cluster API (CAPI) core components installed (v1.11+)
+- Kubernetes 1.31-1.36 on the management cluster
+- Cluster API (CAPI) core and kubeadm components v1.12.8 or newer (tested with
+  v1.12.11)
 - cert-manager (if `webhook.certManager.enabled: true`)
 - An evroc Cloud account with API credentials
 

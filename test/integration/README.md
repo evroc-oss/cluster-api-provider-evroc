@@ -56,6 +56,6 @@ make test-integration
 Or directly:
 
 ```bash
-KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use 1.31.0 -p path)" \
+KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use 1.35.0 -p path)" \
   INTEGRATION_TEST=1 go test -v -timeout 30m ./test/integration/...
 ```

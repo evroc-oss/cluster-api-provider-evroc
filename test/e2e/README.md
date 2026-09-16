@@ -8,7 +8,7 @@ Before running certification tests, ensure you have the following tools installe
 
 ### Required Dependencies
 
-1. **Go 1.24+**
+1. **Go 1.25+**
    ```bash
    # Verify installation
    go version
@@ -32,10 +32,10 @@ Before running certification tests, ensure you have the following tools installe
    docker version
    ```
 
-3. **kubectl v1.31.14+**
+3. **kubectl v1.35.8+**
    ```bash
    # Install kubectl
-   curl -LO "https://dl.k8s.io/release/v1.31.14/bin/linux/amd64/kubectl"
+   curl -LO "https://dl.k8s.io/release/v1.35.8/bin/linux/amd64/kubectl"
    chmod +x kubectl
    sudo mv kubectl /usr/local/bin/
 
@@ -43,10 +43,10 @@ Before running certification tests, ensure you have the following tools installe
    kubectl version --client
    ```
 
-4. **kind v0.20.0+**
+4. **kind v0.33.0+**
    ```bash
    # Install kind
-   curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+   curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
    chmod +x ./kind
    sudo mv ./kind /usr/local/bin/kind
 
@@ -92,11 +92,11 @@ sudo usermod -aG docker $USER
 newgrp docker
 
 # 3. Install kubectl
-curl -LO "https://dl.k8s.io/release/v1.31.14/bin/linux/amd64/kubectl"
+curl -LO "https://dl.k8s.io/release/v1.35.8/bin/linux/amd64/kubectl"
 chmod +x kubectl && sudo mv kubectl /usr/local/bin/
 
 # 4. Install kind
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
 chmod +x kind && sudo mv kind /usr/local/bin/
 
 # 5. Install Helm
@@ -150,7 +150,7 @@ ls -la ../../_artifacts/
 Edit `config.yaml` to customize test parameters and credentials:
 
 - Kubernetes versions
-- Rancher/Turtles versions
+- Rancher version (Turtles is bundled with Rancher 2.15)
 - Test environment type
 - Cleanup behavior
 - `variables.EVROC_*` credentials used by the e2e suites
