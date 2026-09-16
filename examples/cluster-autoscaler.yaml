@@ -98,7 +98,7 @@ metadata:
   namespace: default
 spec:
   replicas: ${CONTROL_PLANE_MACHINE_COUNT:=3}
-  version: ${KUBERNETES_VERSION:=v1.31.14}
+  version: ${KUBERNETES_VERSION:=v1.35.8}
   machineTemplate:
     spec:
       infrastructureRef:
@@ -164,7 +164,7 @@ spec:
         node-pool: standard
     spec:
       clusterName: ${CLUSTER_NAME}
-      version: ${KUBERNETES_VERSION:=v1.31.14}
+      version: ${KUBERNETES_VERSION:=v1.35.8}
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io
@@ -230,7 +230,7 @@ spec:
         workload-type: burst
     spec:
       clusterName: ${CLUSTER_NAME}
-      version: ${KUBERNETES_VERSION:=v1.31.14}
+      version: ${KUBERNETES_VERSION:=v1.35.8}
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io

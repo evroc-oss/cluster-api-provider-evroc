@@ -262,8 +262,10 @@ jobs:
 
       - name: Generate infrastructure-components.yaml
         run: |
+          source versions.env
           VERSION=${{ steps.get_version.outputs.VERSION }}
           helm template cluster-api-provider-evroc helm/cluster-api-provider-evroc \
+            --kube-version "${MANAGEMENT_K8S_VERSION}" \
             --namespace capi-evroc-system \
             --set controller.image.tag=${VERSION} \
             --set fullnameOverride=cluster-api-provider-evroc \

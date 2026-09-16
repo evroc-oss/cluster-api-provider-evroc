@@ -29,10 +29,12 @@
 #   EVROC_ISSUER_URL: OIDC issuer URL override
 #   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
 #   WORKER_MACHINE_COUNT: Number of worker nodes (default: 3)
-#   KUBERNETES_VERSION: Kubernetes version (required; example: v1.31.14)
+#   KUBERNETES_VERSION: Kubernetes version (required; example: v1.35.8)
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.m)
 #   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.m)
 #   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
+#   CILIUM_VERSION: Cilium release installed on new clusters (default: 1.19.7)
+#   CILIUM_CLI_VERSION: Cilium CLI used for installation (default: v0.20.0)
 #   POD_CIDR: Pod CIDR (default: 10.244.0.0/16)
 #   SERVICE_CIDR: Service CIDR (default: 10.96.0.0/12)
 #
@@ -139,6 +141,8 @@ spec:
   version: ${KUBERNETES_VERSION}
   machineTemplate:
     spec:
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
       infrastructureRef:
         apiGroup: infrastructure.cluster.x-k8s.io
         kind: EvrocMachineTemplate
@@ -194,8 +198,8 @@ spec:
         export KUBECONFIG=/etc/kubernetes/admin.conf
         if kubectl get daemonset -n kube-system cilium 2>/dev/null; then exit 0; fi
 
-        CILIUM_CLI_VERSION="${CILIUM_CLI_VERSION:=v0.16.24}"
-        CILIUM_VERSION="${CILIUM_VERSION:=1.16.5}"
+        CILIUM_CLI_VERSION="${CILIUM_CLI_VERSION:=v0.20.0}"
+        CILIUM_VERSION="${CILIUM_VERSION:=1.19.7}"
         CLI_ARCH=amd64
         curl -fsSL --retry 5 -o /tmp/cilium.tar.gz \
           "https://github.com/cilium/cilium-cli/releases/download/$CILIUM_CLI_VERSION/cilium-linux-$CLI_ARCH.tar.gz"
@@ -242,6 +246,8 @@ spec:
   template:
     spec:
       clusterName: ${CLUSTER_NAME}
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
       version: ${KUBERNETES_VERSION}
       bootstrap:
         configRef:

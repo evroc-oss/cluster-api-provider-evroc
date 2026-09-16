@@ -39,6 +39,12 @@ func TestE2E(t *testing.T) {
 	RunSpecs(t, "SUSE Rancher integration test suite")
 }
 
+func requiredStackValue(name string) string {
+	value := os.Getenv(name)
+	Expect(value).NotTo(BeEmpty(), "%s must be supplied by versions.env (run the suite through Make)", name)
+	return value
+}
+
 var (
 	ctx            context.Context
 	cancelFunc     context.CancelFunc
@@ -67,6 +73,7 @@ var _ = BeforeSuite(func() {
 
 	e2eConfig = turtlesframework.LoadE2EConfig(configPath)
 	Expect(e2eConfig).ToNot(BeNil(), "Failed to load E2E config from %s", configPath)
+	e2eConfig.Variables["KUBERNETES_MANAGEMENT_VERSION"] = requiredStackValue("MANAGEMENT_K8S_VERSION")
 
 	By(fmt.Sprintf("E2E config loaded from: %s", configPath))
 
@@ -106,9 +113,8 @@ var _ = BeforeSuite(func() {
 	Expect(turtlesframework.Parse(&rancherInput)).To(Succeed())
 	testenv.DeployRancher(ctx, rancherInput)
 
-	// Rancher v2.14+ bundles Turtles (embedded-cluster-api=true), so we skip
-	// the standalone Turtles install and let Rancher manage CAPI Operator.
-	By("Skipping standalone Turtles install (embedded in Rancher v2.14+)")
+	// Rancher 2.15 bundles Turtles, so Rancher owns its runtime version and CAPI.
+	By("Using Turtles bundled with Rancher 2.15")
 
 	// Wait for core CAPI CRDs to be available (deployed by Rancher's embedded CAPI).
 	By("Waiting for core CAPI CRDs to be available")
@@ -219,7 +225,7 @@ var _ = BeforeSuite(func() {
 	// The release YAMLs contain ${VARIABLE} placeholders (for clusterctl substitution),
 	// so we replace them with defaults before applying via kubectl.
 	By("Installing CAPRKE2 bootstrap and control-plane providers")
-	caprke2Version := "v0.24.1"
+	caprke2Version := "v0.24.4"
 	caprke2BaseURL := "https://github.com/rancher/cluster-api-provider-rke2/releases/download/" + caprke2Version
 	caprke2Components := []string{
 		"bootstrap-components.yaml",
@@ -267,6 +273,18 @@ var _ = BeforeSuite(func() {
 			return nil
 		}, e2eConfig.GetIntervals("default", "wait-controllers")...).Should(Succeed(),
 			"CRD not established: "+crd)
+	}
+
+	// Webhook endpoints can appear before the provider processes are accepting
+	// requests. Wait for CAPI and both RKE2 Deployments before applying resources.
+	for _, namespace := range []string{"cattle-capi-system", "rke2-bootstrap-system", "rke2-control-plane-system"} {
+		cmd := exec.CommandContext(ctx, kubectlBin,
+			"--kubeconfig", setupResult.BootstrapClusterProxy.GetKubeconfigPath(),
+			"wait", "--for=condition=Available", "deployment", "--all",
+			"-n", namespace, "--timeout=5m",
+		)
+		out, err := cmd.CombinedOutput()
+		Expect(err).ToNot(HaveOccurred(), "CAPRKE2 Deployments not ready in %s: %s", namespace, string(out))
 	}
 
 	// Wait for CAPRKE2 webhook endpoints to be ready
@@ -336,9 +354,22 @@ var _ = Describe("[evroc] Rancher Turtles Integration", Label("rancher-turtles")
 
 			By("Creating cluster resources via clusterctl generate")
 			clusterYAML := generateClusterYAML(clusterName)
+			applied := false
+			defer func() {
+				By("Deleting the shared workload cluster")
+				if applied {
+					deleteCluster(ctx, clusterName, "default")
+				} else {
+					deleteYAML(setupResult.BootstrapClusterProxy, clusterYAML)
+				}
+				waitForClusterResourcesDeleted(ctx, clusterName, "default")
+			}()
 
 			By("Applying cluster resources to management cluster")
-			Expect(applyYAML(setupResult.BootstrapClusterProxy, clusterYAML)).To(Succeed())
+			Eventually(func() error {
+				return applyYAML(setupResult.BootstrapClusterProxy, clusterYAML)
+			}, e2eConfig.GetIntervals("default", "wait-controllers")...).Should(Succeed())
+			applied = true
 
 			By("Waiting for cluster control plane to be ready")
 			waitForClusterControlPlaneReady(ctx, clusterName, "default")
@@ -368,9 +399,6 @@ var _ = Describe("[evroc] Rancher Turtles Integration", Label("rancher-turtles")
 			patchMachineDeploymentReplicas(ctx, clusterName, "default", 0)
 			waitForMachineDeploymentReady(ctx, clusterName, "default", 0)
 
-			By("Deleting the shared workload cluster")
-			deleteCluster(ctx, clusterName, "default")
-			waitForClusterResourcesDeleted(ctx, clusterName, "default")
 		})
 	})
 
@@ -691,7 +719,7 @@ func generateClusterYAML(clusterName string) []byte {
 		"EVROC_ISSUER_URL":            os.Getenv("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":     evrocAvailabilityZone(),
 		"EVROC_ALLOWED_CIDR":          e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
-		"KUBERNETES_VERSION":          e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
+		"KUBERNETES_VERSION":          requiredStackValue("RKE2_WORKLOAD_K8S_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT": "1",
 		"WORKER_MACHINE_COUNT":        "0",
 		"XDG_CONFIG_HOME":             filepath.Join(artifactFolder, "xdg"),
@@ -748,7 +776,7 @@ func generateClusterYAMLWithWorkers(clusterName string, workerCount int) []byte 
 		"EVROC_ISSUER_URL":            os.Getenv("EVROC_ISSUER_URL"),
 		"EVROC_AVAILABILITY_ZONE":     evrocAvailabilityZone(),
 		"EVROC_ALLOWED_CIDR":          e2eConfig.MustGetVariable("EVROC_ALLOWED_CIDR"),
-		"KUBERNETES_VERSION":          e2eConfig.MustGetVariable("KUBERNETES_VERSION"),
+		"KUBERNETES_VERSION":          requiredStackValue("RKE2_WORKLOAD_K8S_VERSION"),
 		"CONTROL_PLANE_MACHINE_COUNT": "1",
 		"WORKER_MACHINE_COUNT":        fmt.Sprintf("%d", workerCount),
 		"XDG_CONFIG_HOME":             filepath.Join(artifactFolder, "xdg"),
@@ -892,7 +920,7 @@ func deleteCluster(delCtx context.Context, clusterName, namespace string) {
 	cmd := exec.CommandContext(delCtx, "kubectl",
 		"--kubeconfig", kubeconfigPath,
 		"-n", namespace,
-		"delete", "cluster.cluster.x-k8s.io", clusterName,
+		"delete", "cluster.cluster.x-k8s.io", clusterName, "--wait=false",
 	)
 	out, err := cmd.CombinedOutput()
 	Expect(err).ToNot(HaveOccurred(), "Failed to delete cluster %s: %s", clusterName, string(out))
@@ -918,4 +946,14 @@ func applyYAML(clusterProxy capiframework.ClusterProxy, yamlBytes []byte) error 
 		return fmt.Errorf("kubectl apply failed: %w\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 	return nil
+}
+
+// deleteYAML removes any resources accepted during a partially successful apply.
+func deleteYAML(clusterProxy capiframework.ClusterProxy, yamlBytes []byte) {
+	kubeconfigPath := clusterProxy.GetKubeconfigPath()
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "--kubeconfig", kubeconfigPath,
+		"-f", "-", "--ignore-not-found", "--wait=false")
+	cmd.Stdin = bytes.NewReader(yamlBytes)
+	out, err := cmd.CombinedOutput()
+	Expect(err).ToNot(HaveOccurred(), "Failed to clean up partially applied resources: %s", string(out))
 }

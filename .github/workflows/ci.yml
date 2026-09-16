@@ -59,7 +59,8 @@ jobs:
 
       - name: Lint Helm chart
         run: |
-          helm lint ./helm/cluster-api-provider-evroc
+          source versions.env
+          helm lint ./helm/cluster-api-provider-evroc --kube-version "${MANAGEMENT_K8S_VERSION}"
 
   # CAPI contract compliance + manifest schema validation
   compliance:

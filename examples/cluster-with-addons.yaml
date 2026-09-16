@@ -9,7 +9,7 @@
 #      export CLUSTER_NAME="my-cluster"
 #      export EVROC_PROJECT="your-project-id"
 #      export EVROC_REGION="se-sto"
-#      export KUBERNETES_VERSION="v1.31.14"
+#      export KUBERNETES_VERSION="v1.35.8"
 #      export CONTROL_PLANE_MACHINE_COUNT=1  # optional
 #
 #   2. Apply (choose one method):
@@ -23,7 +23,8 @@
 #        | kubectl apply -f -
 #
 #   3. Watch cluster creation:
-#      kubectl get cluster,kubeadmcontrolplane,machinedeployment -w
+#      kubectl get cluster,kubeadmcontrolplane,machinedeployment
+#      kubectl get machines -w
 #
 #   4. Get kubeconfig when ready:
 #      clusterctl get kubeconfig ${CLUSTER_NAME} > ${CLUSTER_NAME}.kubeconfig
@@ -178,7 +179,7 @@ metadata:
   namespace: default
 data:
   calico.yaml: |
-    # Calico v3.27.0 - Minimal configuration for pod networking
+    # Calico v3.32.2 - Minimal configuration for pod networking
     ---
     kind: Namespace
     apiVersion: v1
@@ -251,7 +252,7 @@ data:
           priorityClassName: system-node-critical
           initContainers:
           - name: install-cni
-            image: docker.io/calico/cni:v3.27.0
+            image: docker.io/calico/cni:v3.32.2
             command: ["/opt/cni/bin/install"]
             env:
             - name: CNI_CONF_NAME
@@ -279,7 +280,7 @@ data:
               name: cni-net-dir
           containers:
           - name: calico-node
-            image: docker.io/calico/node:v3.27.0
+            image: docker.io/calico/node:v3.32.2
             env:
             - name: DATASTORE_TYPE
               value: "kubernetes"

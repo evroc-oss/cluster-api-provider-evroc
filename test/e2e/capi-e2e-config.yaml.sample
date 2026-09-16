@@ -37,7 +37,7 @@ intervals:
 
 variables:
   NAMESPACE: "default"
-  KUBERNETES_VERSION: "v1.31.14"
+  # Kubernetes versions come from the repository-level versions.env.
   EVROC_PROVIDER_VERSION: "latest"
   CONTROL_PLANE_MACHINE_COUNT: "1"
   WORKER_MACHINE_COUNT: "1"

@@ -5,7 +5,7 @@
 # This is a minimal working example with 1 control plane node and 3 worker nodes.
 # Uses SUSE Linux Enterprise Micro 6.1 (SL Micro) with RKE2.
 #
-# Compatible with CAPI v1.12+ and CAPRKE2 v0.12+
+# Compatible with CAPI v1.12.x and CAPRKE2 v0.24.x
 #
 # Usage:
 #   1. Update the values below (project, region, ssh key)
@@ -119,7 +119,7 @@ metadata:
   namespace: default
 spec:
   replicas: 1
-  version: v1.31.14+rke2r1
+  version: v1.35.8+rke2r1
   # Nodes register with the control plane over their private VPC addresses.
   # Without this, RKE2 agents wait on the control plane's public LB and fail to join.
   registrationMethod: internal-first
@@ -195,7 +195,7 @@ spec:
   template:
     spec:
       clusterName: rke2-sl-micro
-      version: v1.31.14+rke2r1
+      version: v1.35.8+rke2r1
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io

@@ -13,14 +13,16 @@ set -euo pipefail
 #   Latest: RANCHER_VERSION=2.15.0 RANCHER_REPO_NAME=rancher-latest RANCHER_REPO_URL=https://releases.rancher.com/server-charts/latest ./test-rancher-integration.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../../versions.env
+source "$REPO_ROOT/versions.env"
 
 # Configuration
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-rancher-test-$(date +%s)}"
 RANCHER_HOSTNAME="${RANCHER_HOSTNAME:-rancher.local}"
-RANCHER_VERSION="${RANCHER_VERSION:-2.14.0}"
-RANCHER_REPO_NAME="${RANCHER_REPO_NAME:-rancher-stable}"
-RANCHER_REPO_URL="${RANCHER_REPO_URL:-https://releases.rancher.com/server-charts/stable}"
-TURTLES_VERSION="${TURTLES_VERSION:-0.26.0}"
+RANCHER_VERSION="${RANCHER_VERSION:-2.15.1}"
+RANCHER_REPO_NAME="${RANCHER_REPO_NAME:-rancher-latest}"
+RANCHER_REPO_URL="${RANCHER_REPO_URL:-https://releases.rancher.com/server-charts/latest}"
 EVROC_PROVIDER_VERSION="${EVROC_PROVIDER_VERSION:-latest}"
 CERT_MANAGER_VERSION="${CERT_MANAGER_VERSION:-v1.16.2}"
 
@@ -84,7 +86,7 @@ create_kind_cluster() {
 
     kind create cluster \
         --name="${KIND_CLUSTER_NAME}" \
-        --image=kindest/node:v1.31.14 \
+        --image="${KIND_NODE_IMAGE}" \
         --wait=5m \
         --quiet
 
@@ -147,127 +149,20 @@ install_rancher() {
     log_info ""
 }
 
-# Install Rancher Turtles
-install_capi_operator() {
-    log_step "Installing CAPI Operator..."
-
-    # Add CAPI Operator Helm repo
-    helm repo add capi-operator https://kubernetes-sigs.github.io/cluster-api-operator
-    helm repo update
-
-    # Install CAPI Operator
-    log_info "Installing CAPI Operator Helm chart..."
-    if helm install capi-operator capi-operator/cluster-api-operator \
-        --create-namespace \
-        --namespace capi-operator-system \
-        --wait \
-        --timeout=5m; then
-        log_info "CAPI Operator Helm release created"
-    else
-        log_error "CAPI Operator Helm install failed"
-        helm list -A
-        kubectl get pods -n capi-operator-system
-        return 1
-    fi
-
-    # Wait for deployment to exist and be ready
-    log_info "Waiting for CAPI Operator to be ready..."
-    kubectl wait --for=condition=available --timeout=5m \
-        -n capi-operator-system deployment/capi-operator-cluster-api-operator
-
-    log_info "Creating CoreProvider for CAPI v1.12..."
-    cat <<EOF | kubectl apply -f -
-apiVersion: operator.cluster.x-k8s.io/v1alpha2
-kind: CoreProvider
-metadata:
-  name: cluster-api
-  namespace: capi-operator-system
-spec:
-  version: v1.12.0
-EOF
-
-    log_info "[OK] CAPI Operator and CoreProvider configured"
-}
-
-install_turtles() {
-    log_step "Installing Rancher Turtles ${TURTLES_VERSION}..."
-
-    # Add Rancher Turtles Helm repo
-    helm repo add turtles https://rancher.github.io/turtles
-    helm repo update
-
-    # Create required namespaces
-    kubectl create namespace cattle-turtles-system --dry-run=client -o yaml | kubectl apply -f -
-    kubectl create namespace cattle-capi-system --dry-run=client -o yaml | kubectl apply -f -
-
-    # Install Turtles WITHOUT CAPI Operator (already installed separately)
-    helm upgrade --install rancher-turtles turtles/rancher-turtles \
-        --namespace cattle-turtles-system \
-        --version="${TURTLES_VERSION}" \
-        --create-namespace \
-        --set cluster-api-operator.enabled=false \
-        --set cluster-api-operator.cluster-api.enabled=false \
-        --wait \
-        --timeout=10m
-
-    log_info "Waiting for Turtles controller to be ready..."
-    kubectl wait --for=condition=available --timeout=5m \
-        -n cattle-turtles-system deployment/rancher-turtles-controller-manager
-
-    log_info "[OK] Rancher Turtles installed"
-}
-
-# Ensure CAPI core is installed
+# Rancher 2.15 bundles Turtles and owns the CAPI installation.
 ensure_capi_core() {
     log_step "Waiting for CAPI core to be ready..."
 
-    # Wait for CAPI Operator to create the default CoreProvider
-    log_info "Waiting for CoreProvider to be created by CAPI Operator..."
-    for i in {1..60}; do
-        if kubectl get coreprovider cluster-api -n capi-operator-system &>/dev/null 2>&1; then
-            log_info "CoreProvider found, waiting for it to be ready..."
-            break
-        fi
-        if [ $i -eq 60 ]; then
-            log_error "CoreProvider not created after 5 minutes"
-            log_error "Checking CAPI Operator status..."
-            kubectl get pods -n capi-operator-system || echo "CAPI Operator namespace not found"
-            kubectl get coreprovider -A || echo "No CoreProviders found"
-            return 1
+    for i in {1..120}; do
+        if kubectl get crd clusters.cluster.x-k8s.io &>/dev/null; then
+            log_info "[OK] Rancher's bundled CAPI core is ready"
+            return 0
         fi
         sleep 5
     done
 
-    # Wait for CoreProvider to be ready
-    kubectl wait --for=condition=ready --timeout=5m \
-        -n capi-operator-system coreprovider/cluster-api || {
-        log_warn "CoreProvider not ready yet, checking status..."
-        kubectl describe coreprovider cluster-api -n capi-operator-system || true
-        kubectl get pods -n cattle-provisioning-capi-system || echo "CAPI controllers namespace not found"
-    }
-
-    # Wait for CAPI webhook service (may be in capi-operator-system or cattle-provisioning-capi-system)
-    log_info "Waiting for CAPI webhook service..."
-    for i in {1..60}; do
-        if kubectl get service -A -l cluster.x-k8s.io/provider=cluster-api 2>/dev/null | grep -q webhook 2>/dev/null; then
-            log_info "[OK] CAPI core is ready"
-            return 0
-        fi
-        if kubectl get service -n capi-operator-system capi-webhook-service &>/dev/null 2>&1; then
-            log_info "[OK] CAPI core is ready (webhook in capi-operator-system)"
-            return 0
-        fi
-        if kubectl get service -n cattle-provisioning-capi-system capi-webhook-service &>/dev/null 2>&1; then
-            log_info "[OK] CAPI core is ready (webhook in cattle-provisioning-capi-system)"
-            return 0
-        fi
-        sleep 2
-    done
-
-    log_error "CAPI webhook service not found after 2 minutes"
-    log_error "Debugging CAPI core installation:"
-    kubectl get svc -A 2>&1 | grep -i capi || echo "No CAPI services found"
-    kubectl get coreprovider -A 2>&1 || echo "No CoreProviders found"
+    log_error "Rancher's bundled CAPI core was not ready after 10 minutes"
+    kubectl get pods -A 2>&1 | grep -E 'capi|turtles' || true
     return 1
 }
 
@@ -587,7 +482,6 @@ display_access_info() {
     log_info "Cleanup:"
     log_info "   kubectl delete cluster test-rancher-cluster"
     log_info "   kubectl delete capiprovider evroc -n cattle-turtles-system"
-    log_info "   helm uninstall rancher-turtles -n cattle-turtles-system"
     log_info "   helm uninstall rancher -n cattle-system"
     log_info ""
 }
@@ -640,7 +534,7 @@ main() {
     log_info "Configuration:"
     log_info "  Cluster: ${KIND_CLUSTER_NAME}"
     log_info "  Rancher: ${RANCHER_VERSION} (${RANCHER_REPO_NAME})"
-    log_info "  Turtles: ${TURTLES_VERSION}"
+    log_info "  Turtles: bundled with Rancher"
     log_info "  evroc Provider: ${EVROC_PROVIDER_VERSION}$([ "${USE_LOCAL_PROVIDER:-false}" == "true" ] && echo " (local)" || echo "")"
     log_info ""
 
@@ -651,8 +545,6 @@ main() {
     create_kind_cluster
     install_cert_manager
     install_rancher
-    install_capi_operator
-    install_turtles
     ensure_capi_core
     verify_credentials
     create_provider_secret

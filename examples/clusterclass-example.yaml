@@ -194,7 +194,7 @@ spec:
 # spec:
 #   topology:
 #     class: evroc-basic
-#     version: v1.31.14
+#     version: v1.35.8
 #     controlPlane:
 #       replicas: 3
 #     workers:

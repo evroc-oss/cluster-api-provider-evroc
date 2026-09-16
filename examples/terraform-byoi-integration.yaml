@@ -106,7 +106,7 @@ metadata:
   namespace: default
 spec:
   replicas: 1
-  version: v1.31.14
+  version: v1.35.8
   machineTemplate:
     spec:
       infrastructureRef:
@@ -166,7 +166,7 @@ spec:
   template:
     spec:
       clusterName: customer-123-cluster
-      version: v1.31.14
+      version: v1.35.8
       bootstrap:
         configRef:
           apiGroup: bootstrap.cluster.x-k8s.io

@@ -4,7 +4,7 @@
 # Calico cluster template for evroc CAPI provider (kubeadm, --flavor calico)
 #
 # Same topology as the default kubeadm flavor, but ships Calico as the CNI
-# instead of Cilium. Calico v3.28.0 is installed automatically via
+# instead of Cilium. Calico v3.32.2 is installed automatically via
 # postKubeadmCommands on the first control plane node. Use this flavor if you
 # specifically want Calico (e.g. existing network-policy tooling); otherwise the
 # default flavor (Cilium) is recommended.
@@ -22,7 +22,8 @@
 #   EVROC_ISSUER_URL: OIDC issuer URL override
 #   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
 #   WORKER_MACHINE_COUNT: Number of worker nodes (default: 3)
-#   KUBERNETES_VERSION: Kubernetes version (required; example: v1.31.14)
+#   KUBERNETES_VERSION: Kubernetes version (required; example: v1.35.8)
+#   CALICO_VERSION: Calico release installed on new clusters (default: v3.32.2)
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.m)
 #   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.m)
 #   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
@@ -132,6 +133,8 @@ spec:
   version: ${KUBERNETES_VERSION}
   machineTemplate:
     spec:
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
       infrastructureRef:
         apiGroup: infrastructure.cluster.x-k8s.io
         kind: EvrocMachineTemplate
@@ -184,7 +187,7 @@ spec:
       - |
         if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
         if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
-        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION:=v3.32.2}/manifests/calico.yaml
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachineTemplate
@@ -217,6 +220,8 @@ spec:
   template:
     spec:
       clusterName: ${CLUSTER_NAME}
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
       version: ${KUBERNETES_VERSION}
       bootstrap:
         configRef:

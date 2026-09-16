@@ -3,7 +3,7 @@
 
 # Minimal Cluster Template (--flavor minimal)
 #
-# This is a quickstart template. Calico v3.28.0 is installed automatically via
+# This is a quickstart template. Calico v3.32.2 is installed automatically via
 # postKubeadmCommands on the first control plane node. To use a different CNI,
 # remove that block and install your own after the control plane is up.
 #
@@ -31,6 +31,7 @@
 #   EVROC_API_BASE_URL: API base URL override
 #   EVROC_ISSUER_URL: OIDC issuer URL override
 #   KUBERNETES_VERSION: Kubernetes version
+#   CALICO_VERSION: Calico release installed on new clusters (default: v3.32.2)
 #   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.s)
 #   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.s)
 #   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
@@ -112,6 +113,8 @@ spec:
   version: ${KUBERNETES_VERSION}
   machineTemplate:
     spec:
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
       infrastructureRef:
         apiGroup: infrastructure.cluster.x-k8s.io
         kind: EvrocMachineTemplate
@@ -159,7 +162,7 @@ spec:
       - |
         if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
         if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
-        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION:=v3.32.2}/manifests/calico.yaml
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachineTemplate
@@ -192,6 +195,8 @@ spec:
   template:
     spec:
       clusterName: ${CLUSTER_NAME}
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
       version: ${KUBERNETES_VERSION}
       bootstrap:
         configRef:

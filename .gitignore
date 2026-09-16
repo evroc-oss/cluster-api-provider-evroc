@@ -38,6 +38,7 @@ tmp/
 # Credentials - NEVER commit these!
 .env
 *.env
+!versions.env
 .netrc
 /config.yaml
 credentials.yaml

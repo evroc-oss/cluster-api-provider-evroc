@@ -85,7 +85,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
 
 ```bash
 kind create cluster --name capi-mgmt \
-  --image kindest/node:v1.31.14@sha256:6f86cf509dbb42767b6e79debc3f2c32e4ee01386f0489b3b2be24b0a55aac2b
+  --image kindest/node:v1.35.8
 kubectl cluster-info
 ```
 
@@ -103,11 +103,13 @@ kubectl wait --for=condition=Available deployment/cert-manager-webhook -n cert-m
 
 ### 3) Install clusterctl
 
-This provider targets Cluster API **v1beta2**, which requires clusterctl **v1.12+**.
+This provider targets Cluster API **v1beta2**. For Kubernetes 1.35.5 and newer,
+use clusterctl and CAPI core/kubeadm providers **v1.12.8 or newer**; this guide
+pins the tested v1.12.11 release.
 
 ```bash
-# Download clusterctl v1.12.2
-curl -L https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.12.2/clusterctl-linux-amd64 \
+# Download clusterctl v1.12.11
+curl -L https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.12.11/clusterctl-linux-amd64 \
   -o ~/.local/bin/clusterctl
 chmod +x ~/.local/bin/clusterctl
 
@@ -132,8 +134,12 @@ EOF
 ### 5) Initialize Cluster API with evroc provider
 
 ```bash
-# Installs CAPI core, kubeadm bootstrap/control-plane, and evroc infrastructure provider
-clusterctl init --infrastructure evroc
+# Installs the tested CAPI core, kubeadm bootstrap/control-plane, and evroc provider
+clusterctl init \
+  --core cluster-api:v1.12.11 \
+  --bootstrap kubeadm:v1.12.11 \
+  --control-plane kubeadm:v1.12.11 \
+  --infrastructure evroc
 ```
 
 Verify:
@@ -281,7 +287,7 @@ export CLUSTER_NAME="my-cluster"
 export EVROC_PROJECT="$(evroc config current-project)"
 export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.31.14"
+export KUBERNETES_VERSION="v1.35.8"
 export EVROC_ALLOWED_CIDR="192.0.2.10/32" # CIDR allowed to access SSH (22) and the Kubernetes API (6443)
 export EVROC_SSH_KEY="your-ssh-public-key"  # may be empty (""), but MUST be exported — clusterctl errors on unset variables even when the template declares a default
 
@@ -299,10 +305,10 @@ clusterctl generate cluster "${CLUSTER_NAME}" \
 ```bash
 # Export required variables (defaults won't be substituted by envsubst)
 export CLUSTER_NAME="my-cluster"
-export EVROC_PROJECT="your-project-id"
+export EVROC_PROJECT="$(evroc config current-project)"
 export EVROC_CREDENTIALS_SECRET="evroc-credentials"
 export EVROC_REGION="se-sto"
-export KUBERNETES_VERSION="v1.31.14"
+export KUBERNETES_VERSION="v1.35.8"
 export EVROC_ALLOWED_CIDR="192.0.2.10/32" # CIDR allowed to access SSH (22) and the Kubernetes API (6443)
 export NAMESPACE="default"
 export EVROC_AVAILABILITY_ZONE="a"
@@ -316,7 +322,7 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 
 **Available flavors:**
 - `minimal` - 1 control plane, 1 worker, Calico CNI pre-installed (dev/test)
-- `default` - multi-zone, Cilium CNI (eBPF) via `postKubeadmCommands` (production)
+- `default` - multi-zone, Cilium CNI (eBPF) via `postKubeadmCommands` (production; select it by omitting `--flavor`)
 - `calico` - same topology as `default`, with Calico CNI instead of Cilium (opt-in)
 - `dualstack` - single-zone IPv4/IPv6 cluster with Calico CNI
 - `ha-lb` - multi-zone control plane behind an L4 load balancer, Calico CNI (high availability)
@@ -331,7 +337,7 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 >
 > ```bash
 > clusterctl generate cluster "${CLUSTER_NAME}" \
->   --infrastructure evroc --flavor default \
+>   --infrastructure evroc \
 >   --kubernetes-version "${KUBERNETES_VERSION}" \
 >   --control-plane-machine-count 3 \
 >   --worker-machine-count 3 \
@@ -382,8 +388,9 @@ ssh evroc-user@<PUBLIC_IP>
 
 ```bash
 # Only needed for custom templates without built-in CNI:
+export CALICO_VERSION="v3.32.2"
 kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" apply -f \
-  https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
+  "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
 
 # Wait for nodes Ready
 kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" wait \
@@ -436,11 +443,13 @@ helm install evroc-provider \
   --wait
 ```
 
-This requires that CAPI core components are already installed (e.g., via `clusterctl init` without `--infrastructure`, or via Rancher Turtles).
+This requires that CAPI core components are already installed (e.g., via
+`clusterctl init` without `--infrastructure`, or via Rancher 2.15).
 
 ### Rancher with Turtles
 
-Rancher Turtles installs CAPI core components automatically:
+Rancher 2.15 bundles Turtles and installs CAPI core components automatically;
+do not install a separate Turtles chart:
 
 ```bash
 # Install Rancher
@@ -451,14 +460,6 @@ helm upgrade --install rancher rancher-prime/rancher \
   --set replicas=1 --set bootstrapPassword=admin \
   --set ingress.tls.source=rancher --wait --timeout=10m
 
-# Install Rancher Turtles (deploys CAPI + RKE2 providers)
-helm repo add turtles https://rancher.github.io/turtles
-helm upgrade --install rancher-turtles turtles/rancher-turtles \
-  --namespace rancher-turtles-system --create-namespace \
-  --set cluster-api-operator.enabled=true \
-  --set cluster-api-operator.cluster-api.enabled=true \
-  --wait --timeout=10m
-
 # Then install the evroc provider via Helm (step above)
 ```
 
@@ -468,13 +469,13 @@ The `rke2` flavor requires the [CAPRKE2](https://github.com/rancher/cluster-api-
 
 ```bash
 clusterctl init --infrastructure evroc \
-  --bootstrap rke2 \
-  --control-plane rke2
+  --bootstrap rke2:v0.24.4 \
+  --control-plane rke2:v0.24.4
 
 clusterctl generate cluster rke2-prod \
   --infrastructure evroc \
   --flavor rke2 \
-  --kubernetes-version v1.31.14+rke2r1 \
+  --kubernetes-version v1.35.8+rke2r1 \
   | kubectl apply -f -
 ```
 
@@ -515,7 +516,7 @@ metadata:
 spec:
   topology:
     class: evroc-basic
-    version: v1.31.14
+    version: v1.35.8
     controlPlane:
       replicas: 3
     workers:
@@ -529,7 +530,7 @@ EOF
 The ClusterClass handles all the infrastructure templates, bootstrap configurations, and machine definitions automatically. This approach is far more concise than the 200+ line traditional cluster manifests.
 
 **Prerequisites:**
-- CAPI core v1.2+ (topology feature; satisfied by v1.12+ requirement)
+- CAPI core v1.2+ (topology feature; satisfied by the v1.12.8+ requirement)
 - Bootstrap/control-plane providers:
   - Kubeadm (for standard Kubernetes) - installed via `clusterctl init`
   - RKE2 (for SUSE enterprise Kubernetes) - only if using RKE2 flavor
@@ -562,11 +563,73 @@ kubectl edit evroccluster ${CLUSTER_NAME}
 
 ### Upgrade Kubernetes Version
 
+These steps apply to the kubeadm flavors (`default`, `minimal`, `calico`,
+`dualstack`, and `ha-lb`). The templates use a generic Ubuntu image and install
+an exact Kubernetes package version in `preKubeadmCommands`. Consequently,
+changing only a CAPI `spec.version` field is not sufficient: replacement
+machines would install the original version from their bootstrap commands.
+
+Check that the target version is supported by the CAPI components installed on
+the management cluster, and upgrade one Kubernetes minor version at a time.
+Kubernetes 1.35.5 and newer require CAPI core, kubeadm bootstrap, and kubeadm
+control-plane v1.12.8 or newer for safe control-plane rollouts; v1.12.11 is the
+tested version. Earlier CAPI patches can leave the rollout stuck because they
+do not create kubeadm's required API-server-to-kubelet ClusterRoleBinding.
+For clusters created before v0.5.0, set
+`spec.machineTemplate.spec.deletion.nodeDeletionTimeoutSeconds: 0` on the
+`KubeadmControlPlane` and
+`spec.template.spec.deletion.nodeDeletionTimeoutSeconds: 0` on each
+`MachineDeployment` before starting. This makes CAPI retry Node removal instead
+of leaving a stale Node after its default 10-second timeout.
+Before upgrading Kubernetes, upgrade Cilium or Calico if the target Kubernetes
+version is not supported by the CNI currently running in the workload cluster.
+The CNI pin in `postKubeadmCommands` is only used to create a new cluster; the
+command skips installation when the CNI already exists and therefore does not
+upgrade a running CNI. Follow the upstream [Cilium upgrade
+guide](https://docs.cilium.io/en/stable/operations/upgrade/) or [Calico upgrade
+guide](https://docs.tigera.io/calico/latest/operations/upgrading/) separately.
+
+Upgrade the control plane first:
+
 ```bash
 kubectl edit kubeadmcontrolplane ${CLUSTER_NAME}-control-plane
-# Change spec.version to a supported target version
-# Control plane upgrades first, then workers
+# In the same edit:
+# 1. Change spec.version to the target version.
+# 2. Replace the old version in every
+#    spec.kubeadmConfigSpec.preKubeadmCommands entry.
+
+kubectl get kubeadmcontrolplane ${CLUSTER_NAME}-control-plane -w
+# Continue when VERSION is the target and READY/UP-TO-DATE match the desired replicas.
 ```
+
+Then update every worker `KubeadmConfigTemplate` before changing its
+`MachineDeployment` version. Updating the bootstrap template alone does not
+roll existing Machines; changing the MachineDeployment version starts the
+worker rollout and ensures the replacement Machines use the updated commands.
+
+```bash
+kubectl edit kubeadmconfigtemplate ${CLUSTER_NAME}-workers
+# Replace the old version in every
+# spec.template.spec.preKubeadmCommands entry.
+
+kubectl edit machinedeployment ${CLUSTER_NAME}-workers
+# Change spec.template.spec.version to the same target version.
+
+kubectl get machines -w
+```
+
+Verify both CAPI Machines and workload Nodes after the rollout:
+
+```bash
+kubectl get machines -o wide
+kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" get nodes -o wide
+```
+
+If a deleted control-plane VM leaves a stale Node and KubeadmControlPlane
+reports that the Node has no corresponding Machine, first confirm that both the
+CAPI Machine and the evroc VM are gone. Only then remove the stale workload
+cluster object with
+`kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" delete node <node-name>`.
 
 ### Delete a Workload Cluster
 
