@@ -44,6 +44,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
   - [Scale Workers](#scale-workers)
   - [Scale Control Plane](#scale-control-plane)
   - [Update Security Groups](#update-security-groups)
+  - [Upgrade the evroc Provider](#upgrade-the-evroc-provider)
   - [Upgrade Kubernetes Version](#upgrade-kubernetes-version)
   - [Delete a Workload Cluster](#delete-a-workload-cluster)
   - [Uninstall the Provider](#uninstall-the-provider)
@@ -80,6 +81,16 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
 - `kubectl` and `kind` installed
 - [cert-manager](https://cert-manager.io/) installed on the management cluster (required for admission webhooks)
 - evroc service account (either existing, or created in step 6)
+
+The release is validated with the following stack:
+
+| Component | Version |
+|-----------|---------|
+| Kubernetes management and kubeadm workload clusters | 1.35.8 |
+| RKE2 workload clusters | 1.35.8+rke2r1 |
+| Standalone CAPI core and kubeadm providers | 1.12.11 |
+| CAPRKE2 | 0.24.4 |
+| Rancher Community and Rancher Prime | 2.15.1 |
 
 ### 1) Create a management cluster
 
@@ -448,20 +459,55 @@ This requires that CAPI core components are already installed (e.g., via
 
 ### Rancher with Turtles
 
-Rancher 2.15 bundles Turtles and installs CAPI core components automatically;
-do not install a separate Turtles chart:
+Rancher 2.15 bundles Turtles and installs CAPI core components automatically.
+Do not install a separate Turtles chart. Rancher Community and Rancher Prime
+use the same provider flow after Rancher is running, but have different chart
+and image sources.
+
+For Rancher Community:
 
 ```bash
-# Install Rancher
+helm repo add rancher-latest https://releases.rancher.com/server-charts/latest
+helm upgrade --install rancher rancher-latest/rancher \
+  --version 2.15.1 \
+  --namespace cattle-system --create-namespace \
+  --set hostname="rancher.example.com" \
+  --set replicas=1 --set bootstrapPassword='<strong-password>' \
+  --set ingress.tls.source=rancher --wait --timeout=10m
+```
+
+For Rancher Prime, obtain the registry username and password from the
+[SUSE Customer Center](https://scc.suse.com/) under the subscribed
+organization's **Settings → Organization Credentials**. Create the pull secret
+before installing the Prime chart:
+
+```bash
+export RANCHER_PRIME_REGISTRY_USERNAME='<SCC organization username>'
+export RANCHER_PRIME_REGISTRY_PASSWORD='<SCC organization password>'
+
+kubectl create namespace cattle-system
+kubectl create secret docker-registry rancher-prime-registry \
+  --namespace cattle-system \
+  --docker-server=registry.rancher.com \
+  --docker-username="$RANCHER_PRIME_REGISTRY_USERNAME" \
+  --docker-password="$RANCHER_PRIME_REGISTRY_PASSWORD"
+unset RANCHER_PRIME_REGISTRY_USERNAME RANCHER_PRIME_REGISTRY_PASSWORD
+
 helm repo add rancher-prime https://charts.rancher.com/server-charts/prime
 helm upgrade --install rancher rancher-prime/rancher \
+  --version 2.15.1 \
   --namespace cattle-system --create-namespace \
-  --set hostname="rancher.$(curl -s ifconfig.me).nip.io" \
-  --set replicas=1 --set bootstrapPassword=admin \
-  --set ingress.tls.source=rancher --wait --timeout=10m
-
-# Then install the evroc provider via Helm (step above)
+  --set hostname="rancher.example.com" \
+  --set replicas=1 --set bootstrapPassword='<strong-password>' \
+  --set ingress.tls.source=rancher \
+  --set-string 'imagePullSecrets[0].name=rancher-prime-registry' \
+  --set systemRegistryInheritsPullSecrets=true \
+  --wait --timeout=10m
 ```
+
+Then install the evroc provider using the Helm command above. The Prime pull
+secret is only for images from `registry.rancher.com`; evroc credentials remain
+per workload cluster as described in step 7.
 
 ### RKE2 Flavor
 
@@ -478,6 +524,9 @@ clusterctl generate cluster rke2-prod \
   --kubernetes-version v1.35.8+rke2r1 \
   | kubectl apply -f -
 ```
+
+Custom RKE2 manifests must keep `disableComponents.kubernetesComponents: [cloudController]`.
+Otherwise RKE2's embedded CCM sets `rke2://` node providerIDs and the evroc provider cannot link Machines to Nodes.
 
 ---
 
@@ -561,7 +610,36 @@ kubectl edit evroccluster ${CLUSTER_NAME}
 # Changes apply automatically to all existing VMs with inheritFromCluster enabled
 ```
 
+### Upgrade the evroc Provider
+
+Upgrading the infrastructure provider on the management cluster does not
+upgrade Kubernetes in existing workload clusters.
+
+If the provider was installed with `clusterctl`, inspect the plan and apply an
+explicit evroc version so unrelated providers are not changed:
+
+```bash
+clusterctl upgrade plan
+clusterctl upgrade apply --infrastructure evroc:v0.5.1 --wait-providers
+```
+
+If the provider was installed with Helm, apply the new CRDs before upgrading
+the chart because Helm does not upgrade files from a chart's `crds/` directory:
+
+```bash
+helm pull oci://ghcr.io/evroc-oss/charts/cluster-api-provider-evroc \
+  --version 0.5.1 --untar --untardir /tmp
+kubectl apply --server-side \
+  -f /tmp/cluster-api-provider-evroc/crds/
+
+helm upgrade evroc-provider \
+  oci://ghcr.io/evroc-oss/charts/cluster-api-provider-evroc \
+  --version 0.5.1 --namespace capi-evroc-system --wait
+```
+
 ### Upgrade Kubernetes Version
+
+#### kubeadm flavors
 
 These steps apply to the kubeadm flavors (`default`, `minimal`, `calico`,
 `dualstack`, and `ha-lb`). The templates use a generic Ubuntu image and install
@@ -630,6 +708,32 @@ reports that the Node has no corresponding Machine, first confirm that both the
 CAPI Machine and the evroc VM are gone. Only then remove the stale workload
 cluster object with
 `kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" delete node <node-name>`.
+
+#### RKE2 flavor
+
+Upgrade the RKE2 control plane first, using the complete RKE2 version including
+its revision (for example, `v1.35.8+rke2r1`):
+
+```bash
+kubectl edit rke2controlplane ${CLUSTER_NAME}-control-plane
+# Change spec.version, then wait for the control-plane rollout to finish.
+
+kubectl get rke2controlplane ${CLUSTER_NAME}-control-plane -w
+```
+
+Then update each worker MachineDeployment to exactly the same version:
+
+```bash
+kubectl edit machinedeployment ${CLUSTER_NAME}-md-0
+# Change spec.template.spec.version.
+
+kubectl get machines -w
+kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" get nodes -o wide
+```
+
+The current RKE2 template does not embed the Kubernetes version in its
+`RKE2ConfigTemplate`, so no bootstrap-template version replacement is needed.
+RKE2 also manages its bundled CNI as part of the RKE2 release.
 
 ### Delete a Workload Cluster
 

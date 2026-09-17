@@ -79,8 +79,11 @@ MAJOR=$(echo "$NEW_VERSION" | cut -d. -f1)
 MINOR=$(echo "$NEW_VERSION" | cut -d. -f2)
 sed -i "s/cluster.x-k8s.io\/version: .*/cluster.x-k8s.io\/version: $NEW_TAG/" metadata.yaml
 sed -i "s/^latest: .*/latest: $NEW_TAG/" metadata.yaml
-sed -i "s/major: [0-9]*/major: $MAJOR/" metadata.yaml
-sed -i "s/minor: [0-9]*/minor: $MINOR/" metadata.yaml
+# Prepend a release series for this minor unless it is already listed. Older
+# series must stay so clusterctl can plan upgrades from them.
+if ! awk -v M="$MAJOR" -v m="$MINOR" '$1=="-" && $2=="major:" {maj=$3} $1=="minor:" && maj==M && $2==m {found=1} END {exit !found}' metadata.yaml; then
+    sed -i "/^releaseSeries:/a\  - major: $MAJOR\n    minor: $MINOR\n    contract: v1beta2" metadata.yaml
+fi
 
 # Update VERSION file
 echo "Updating VERSION file..."

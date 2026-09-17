@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-16
+
+### Fixed
+
+- Keep the v0.4 release series in `metadata.yaml` so `clusterctl upgrade plan`
+  and `clusterctl upgrade apply` work from v0.4 installs.
+- Disable RKE2's embedded cloud controller manager in the `rke2` flavor and
+  examples so it no longer sets `rke2://` node providerIDs that block the evroc
+  provider from linking Machines to Nodes.
+
+### Documentation
+
+- Document tested Rancher Community and Rancher Prime 2.15 installation paths,
+  provider upgrades, and kubeadm and RKE2 workload upgrades.
+
 ## [0.5.0] - 2026-09-16
 
 ### Changed
@@ -229,7 +244,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.5.1...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -258,3 +273,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.4.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.1
 [0.4.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.2
 [0.5.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.0
+[0.5.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.1

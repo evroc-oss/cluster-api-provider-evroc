@@ -9,16 +9,21 @@ metadata:
   name: infrastructure-evroc
   labels:
     cluster.x-k8s.io/provider: infrastructure-evroc
-    cluster.x-k8s.io/version: v0.5.0
+    cluster.x-k8s.io/version: v0.5.1
 
-# Supported CAPI contract versions
+# Supported CAPI contract versions. Keep every published series listed:
+# clusterctl upgrade plan reads this file from the latest release and rejects
+# an installed version that matches no series.
 releaseSeries:
   - major: 0
     minor: 5
     contract: v1beta2
+  - major: 0
+    minor: 4
+    contract: v1beta2
 
 # Latest version in this release series
-latest: v0.5.0
+latest: v0.5.1
 
 # Target namespace for provider installation
 namespace: capi-evroc-system
