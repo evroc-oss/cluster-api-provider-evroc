@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-17
+
+### Fixed
+
+- Publish the repository `metadata.yaml` as the release asset instead of a
+  generated single-series file, so `clusterctl upgrade plan` and
+  `clusterctl upgrade apply` work from v0.4 installs.
+
 ## [0.5.1] - 2026-09-16
 
 ### Fixed
@@ -244,7 +252,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.5.2...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -274,3 +282,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.4.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.4.2
 [0.5.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.0
 [0.5.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.1
+[0.5.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.2

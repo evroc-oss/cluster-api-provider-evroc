@@ -248,17 +248,12 @@ jobs:
           cosign sign-blob --yes cluster-api-provider-evroc-${VERSION}.tgz --bundle cluster-api-provider-evroc-${VERSION}.tgz.bundle
           cd ..
 
-      - name: Generate clusterctl metadata
+      - name: Stage clusterctl metadata
         run: |
-          VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
+          # Publish the repo metadata.yaml as-is: clusterctl upgrade plan reads
+          # it from the latest release and needs every published series listed.
           mkdir -p clusterctl-metadata
-          cat > clusterctl-metadata/metadata.yaml <<EOF
-          apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3
-          releaseSeries:
-            - major: $(echo ${VERSION} | cut -d. -f1)
-              minor: $(echo ${VERSION} | cut -d. -f2)
-              contract: v1beta2
-          EOF
+          cp metadata.yaml clusterctl-metadata/metadata.yaml
 
       - name: Generate infrastructure-components.yaml
         run: |
