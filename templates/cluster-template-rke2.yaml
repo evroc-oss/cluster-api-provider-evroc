@@ -180,6 +180,10 @@ spec:
   serverConfig:
     cni: canal
     cloudProviderName: external
+    # Stop RKE2's embedded CCM from setting rke2:// providerIDs; the evroc provider owns providerID.
+    disableComponents:
+      kubernetesComponents:
+        - cloudController
     tlsSan:
     - ${CLUSTER_NAME}.${EVROC_REGION:=se-sto}.evroc.cloud
   preRKE2Commands:

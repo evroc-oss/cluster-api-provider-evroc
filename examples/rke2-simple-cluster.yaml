@@ -122,6 +122,10 @@ spec:
   serverConfig:
     cni: canal
     cloudProviderName: external
+    # Stop RKE2's embedded CCM from setting rke2:// providerIDs; the evroc provider owns providerID.
+    disableComponents:
+      kubernetesComponents:
+        - cloudController
   rolloutStrategy:
     type: RollingUpdate
     rollingUpdate:
