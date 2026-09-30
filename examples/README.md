@@ -26,6 +26,7 @@ export KUBERNETES_VERSION="v1.35.8"
 | `clusterclass-example.yaml` | topology-driven multi-cluster pattern; requires ClusterClass CRD (CAPI topology feature) |
 | `rke2-simple-cluster.yaml` | minimal RKE2 cluster with 1 CP + 3 workers on SL Micro |
 | `rke2-sl-micro-cluster.yaml` | production-ready RKE2 cluster on SL Micro with Canal CNI config |
+| `rke2-rancher-ccm-cluster.yaml` | RKE2 with its built-in CCM left enabled, as Rancher provisions it; the evroc provider adopts the `rke2://` providerIDs (v0.5.3+) |
 | `terraform-byoi-integration.yaml` | externally managed networking/public resources |
 
 ## Usage Pattern

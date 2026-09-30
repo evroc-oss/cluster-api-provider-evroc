@@ -10,6 +10,10 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
+// DeleteCSIDisksAnnotation set to "true" makes cluster deletion also delete the
+// disks the evroc CSI driver created. Disks are retained by default.
+const DeleteCSIDisksAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/delete-csi-disks"
+
 // EvrocClusterSpec defines the desired state of EvrocCluster
 type EvrocClusterSpec struct {
 	// Project is the evroc project name

@@ -2984,3 +2984,85 @@ func TestReconcileNodeInitialization(t *testing.T) {
 		})
 	}
 }
+
+func TestAdoptNodeProviderID(t *testing.T) {
+	const foreignID = "other-cloud://instance-42"
+	tests := []struct {
+		name       string
+		node       *corev1.Node
+		wantLinked bool
+	}{
+		{name: "node not joined"},
+		{name: "node not initialized by CCM", node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "machine-1"}}},
+		{name: "adopts CCM providerID", node: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "machine-1"}, Spec: corev1.NodeSpec{ProviderID: foreignID}}, wantLinked: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := testScheme()
+			machine := &infrav1.EvrocMachine{ObjectMeta: metav1.ObjectMeta{Name: "machine-1", Namespace: "default"}}
+			mgmt := fake.NewClientBuilder().WithScheme(scheme).WithObjects(machine).Build()
+			wb := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.node != nil {
+				wb = wb.WithObjects(tt.node)
+			}
+			reconciler := &EvrocMachineReconciler{Client: mgmt}
+
+			linked, err := reconciler.adoptNodeProviderID(context.Background(), machine, wb.Build())
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantLinked, linked)
+
+			updated := &infrav1.EvrocMachine{}
+			assert.NoError(t, mgmt.Get(context.Background(), client.ObjectKeyFromObject(machine), updated))
+			if tt.wantLinked {
+				assert.Equal(t, foreignID, *updated.Spec.ProviderID)
+			} else {
+				assert.Nil(t, updated.Spec.ProviderID)
+			}
+		})
+	}
+}
+
+// With the external-cloud-provider annotation CAPE must not invent a providerID.
+func TestReconcileExistingVM_ExternalCCMOwnsProviderID(t *testing.T) {
+	scheme := testScheme()
+	vmName, privateIP, running := "owned-machine", "10.0.1.43", "Running"
+
+	mockClient := new(mocks.MockClient)
+	mockVMService := new(mocks.MockVirtualMachineService)
+	mockClient.On("VirtualMachines").Return(mockVMService)
+	mockVMService.On("Get", mock.Anything, vmName).Return(&computetypes.VirtualMachine{
+		Metadata: computetypes.RegionalMetadataResponse{Uid: uuid.New(), Id: vmName},
+		Status: computetypes.VirtualMachineStatus{
+			Conditions:           &[]computetypes.VirtualMachineStatusConditionsItem{{Type: "Ready", Status: "True"}},
+			Networking:           &computetypes.VirtualMachineStatusNetworking{PrivateIPv4Address: &privateIP},
+			VirtualMachineStatus: &running,
+		},
+	}, nil)
+
+	capiMachine := &clusterv1.Machine{
+		ObjectMeta: metav1.ObjectMeta{Name: "capi-owned", Namespace: "default", UID: "capi-uid-2"},
+		Spec:       clusterv1.MachineSpec{FailureDomain: "a", InfrastructureRef: clusterv1.ContractVersionedObjectReference{Kind: "EvrocMachineTemplate", Name: "test-template"}},
+	}
+	capiCluster, evrocCluster := testClusterObjects("default")
+	evrocCluster.Annotations = map[string]string{externalCloudProviderAnnotation: "true"}
+	evrocMachine := &infrav1.EvrocMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: vmName, Namespace: "default", Finalizers: []string{machineFinalizer},
+			Annotations:     map[string]string{machineOwnershipIDAnnotation: "owned-machine-owner"},
+			Labels:          map[string]string{clusterv1.ClusterNameLabel: "test-cluster"},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: clusterv1.GroupVersion.String(), Kind: "Machine", Name: capiMachine.Name, UID: capiMachine.UID}},
+		},
+		Spec: infrav1.EvrocMachineSpec{Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.s", Image: "ubuntu.24-04.1"},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(capiCluster, evrocCluster, capiMachine, evrocMachine).WithStatusSubresource(evrocMachine).Build()
+	reconciler := &EvrocMachineReconciler{Client: fakeClient, Scheme: scheme, clientFactory: staticClientFactory(mockClient)}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vmName, Namespace: "default"}})
+	assert.NoError(t, err)
+	assert.Equal(t, requeueMedium, result.RequeueAfter)
+
+	var updated infrav1.EvrocMachine
+	assert.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(evrocMachine), &updated))
+	assert.True(t, updated.Status.Ready)
+	assert.Nil(t, updated.Spec.ProviderID, "providerID must come from the CCM's node")
+}

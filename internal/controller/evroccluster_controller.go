@@ -42,6 +42,10 @@ const (
 	// The resource prefix preserves deterministic cloud resource names across
 	// clusterctl move. It is deliberately not used as an ownership identity.
 	clusterResourcePrefixAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/resource-prefix"
+
+	// Set to "true" to delete CSI-provisioned disks together with the cluster.
+	// Disks are retained by default because they hold user data.
+	deleteCSIDisksAnnotation = infrav1.DeleteCSIDisksAnnotation
 )
 
 var errCloudResourcesDeleting = errors.New("cloud resources still deleting")
@@ -628,6 +632,16 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 
 	var errs []error
 	var stillDeleting []string
+
+	// Resources the CCM and CSI drivers created inside the workload cluster
+	// carry managed-by=<ownership ID>. The drivers are gone with the nodes, so
+	// the provider removes them (see README "Cluster ownership ID").
+	deleteDisks := cluster.Annotations[deleteCSIDisksAnnotation] == "true" // validated by the webhook
+	if pending, err := cloudClient.WorkloadResources().Cleanup(ctx, clusterID, deleteDisks); err != nil {
+		errs = append(errs, fmt.Errorf("failed to clean up workload driver resources: %w", err))
+	} else if pending {
+		stillDeleting = append(stillDeleting, "driver resources labelled managed-by="+clusterID)
+	}
 
 	// Delete the managed LoadBalancer and its sub-resources (BackendPool,
 	// BackendService, L4Route, PublicIP). The LB name is deterministic; its
