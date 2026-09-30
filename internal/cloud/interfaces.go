@@ -23,6 +23,7 @@ type ClientInterface interface {
 	PlacementGroups() PlacementGroupServiceInterface
 	VirtualMachines() VirtualMachineServiceInterface
 	LoadBalancers() LoadBalancerServiceInterface
+	WorkloadResources() WorkloadResourceServiceInterface
 	SDKClient() *evroc.Client
 }
 
@@ -213,6 +214,14 @@ type LoadBalancerServiceInterface interface {
 	WaitForDeleted(ctx context.Context, name string, timeout time.Duration) error
 }
 
+// WorkloadResourceServiceInterface removes resources that the workload
+// cluster's CCM and CSI drivers created under the cluster's ownership ID.
+type WorkloadResourceServiceInterface interface {
+	// Cleanup deletes the owned driver resources, CSI disks only when
+	// deleteDisks is set, and reports pending while any still exist.
+	Cleanup(ctx context.Context, clusterID string, deleteDisks bool) (pending bool, err error)
+}
+
 // Ensure our implementation satisfies the interfaces.
 var _ ClientInterface = (*Client)(nil)
 var _ DiskServiceInterface = (*DiskService)(nil)
@@ -221,3 +230,4 @@ var _ SecurityGroupServiceInterface = (*SecurityGroupService)(nil)
 var _ PlacementGroupServiceInterface = (*PlacementGroupService)(nil)
 var _ VirtualMachineServiceInterface = (*VirtualMachineService)(nil)
 var _ LoadBalancerServiceInterface = (*LoadBalancerService)(nil)
+var _ WorkloadResourceServiceInterface = (*WorkloadResourceService)(nil)

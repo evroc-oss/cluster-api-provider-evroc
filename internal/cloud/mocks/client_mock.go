@@ -44,6 +44,11 @@ func (m *MockClient) LoadBalancers() cloud.LoadBalancerServiceInterface {
 	return args.Get(0).(cloud.LoadBalancerServiceInterface)
 }
 
+func (m *MockClient) WorkloadResources() cloud.WorkloadResourceServiceInterface {
+	args := m.Called()
+	return args.Get(0).(cloud.WorkloadResourceServiceInterface)
+}
+
 func (m *MockClient) SDKClient() *evroc.Client {
 	args := m.Called()
 	if args.Get(0) == nil {

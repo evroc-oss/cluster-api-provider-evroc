@@ -443,6 +443,13 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 		}
 	}
 
+	switch v := c.Annotations[DeleteCSIDisksAnnotation]; v {
+	case "", "true", "false":
+	default:
+		allErrs = append(allErrs, field.NotSupported(
+			field.NewPath("metadata", "annotations").Key(DeleteCSIDisksAnnotation), v, []string{"true", "false"}))
+	}
+
 	if len(allErrs) > 0 {
 		return warnings, allErrs.ToAggregate()
 	}

@@ -505,23 +505,8 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 		return ctrl.Result{}, err
 	}
 
-	// Set provider ID in spec if not already set (must be done before status update to avoid race)
-	needsSpecUpdate := false
-	if machine.Spec.ProviderID == nil {
-		providerID := fmt.Sprintf("evroc://%s", evrocVM.Metadata.Uid.String())
-		machine.Spec.ProviderID = &providerID
-		needsSpecUpdate = true
-	}
-
-	// Update spec first if needed, then re-fetch to get latest resource version
-	if needsSpecUpdate {
-		if err := r.Update(ctx, machine); err != nil {
-			log.Error(err, "failed to update spec")
-			return ctrl.Result{}, err
-		}
-		if err := r.Get(ctx, client.ObjectKeyFromObject(machine), machine); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
+	if err := r.ensureMachineProviderID(ctx, machine, evrocVM, evrocCluster); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Update status using SDK helper
@@ -555,9 +540,9 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 		"machineID", machine.Status.MachineID,
 		"addressCount", len(machine.Status.Addresses))
 
-	// Patch the workload-cluster node's spec.providerID so CAPI can link the node
-	// to this Machine and transition it to Running. Without this, an external CCM
-	// would be required to set the providerID, which we don't have.
+	// Link the node to this Machine so CAPI can transition it to Running. Node
+	// providerID is immutable once set, so when an external CCM owns it CAPE
+	// adopts the CCM's value instead of patching the node.
 	if machine.Status.Ready {
 		wc, err := r.getWorkloadClusterClient(ctx, machine)
 		if err != nil {
@@ -569,10 +554,14 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 			return ctrl.Result{RequeueAfter: requeueMedium}, nil
 		}
 
-		if patched, err := r.patchNodeProviderID(ctx, machine, wc); err != nil {
-			log.Error(err, "failed to patch node providerID (will retry)")
+		link := r.patchNodeProviderID
+		if usesExternalCloudProvider(evrocCluster) {
+			link = r.adoptNodeProviderID
+		}
+		if linked, err := link(ctx, machine, wc); err != nil {
+			log.Error(err, "failed to link node providerID (will retry)")
 			return ctrl.Result{RequeueAfter: requeueMedium}, nil
-		} else if !patched {
+		} else if !linked {
 			// Node not yet available; retry shortly.
 			return ctrl.Result{RequeueAfter: requeueMedium}, nil
 		}
@@ -849,13 +838,58 @@ func (r *EvrocMachineReconciler) patchNodeProviderID(ctx context.Context, machin
 	return true, nil
 }
 
+// ensureMachineProviderID sets spec.providerID to the VM's UID if it is
+// not set yet (before the status update, to avoid a race), then re-fetches the
+// machine for the latest resource version. An external CCM assigns its own
+// providerID instead; see adoptNodeProviderID.
+func (r *EvrocMachineReconciler) ensureMachineProviderID(ctx context.Context, machine *infrav1.EvrocMachine, evrocVM *computetypes.VirtualMachine, evrocCluster *infrav1.EvrocCluster) error {
+	if machine.Spec.ProviderID != nil || usesExternalCloudProvider(evrocCluster) {
+		return nil
+	}
+	providerID := fmt.Sprintf("evroc://%s", evrocVM.Metadata.Uid.String())
+	machine.Spec.ProviderID = &providerID
+	if err := r.Update(ctx, machine); err != nil {
+		return fmt.Errorf("updating spec: %w", err)
+	}
+	return r.Get(ctx, client.ObjectKeyFromObject(machine), machine)
+}
+
+// adoptNodeProviderID copies the providerID an external CCM set on the node
+// into this EvrocMachine. Returns (false, nil) until the CCM has set it.
+func (r *EvrocMachineReconciler) adoptNodeProviderID(ctx context.Context, machine *infrav1.EvrocMachine, wc client.Client) (bool, error) {
+	if machine.Spec.ProviderID != nil {
+		return true, nil
+	}
+	node := &corev1.Node{}
+	if err := wc.Get(ctx, types.NamespacedName{Name: machine.Name}, node); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting workload cluster node: %w", err)
+	}
+	if node.Spec.ProviderID == "" {
+		return false, nil
+	}
+	patch := client.MergeFrom(machine.DeepCopy())
+	providerID := node.Spec.ProviderID
+	machine.Spec.ProviderID = &providerID
+	if err := r.Patch(ctx, machine, patch); err != nil {
+		return false, fmt.Errorf("adopting node providerID: %w", err)
+	}
+	return true, nil
+}
+
+func usesExternalCloudProvider(evrocCluster *infrav1.EvrocCluster) bool {
+	return evrocCluster != nil && strings.EqualFold(strings.TrimSpace(evrocCluster.Annotations[externalCloudProviderAnnotation]), "true")
+}
+
 // reconcileNodeInitialization keeps node initialization self-contained in CAPE
 // unless the cluster delegates it to an external CCM. Delegating clusters leave
 // the uninitialized taint in place: upstream's
 // cloud-node-controller uses that taint to select the path which populates
 // topology, addresses, and instance metadata before removing it.
 func (r *EvrocMachineReconciler) reconcileNodeInitialization(ctx context.Context, machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster, wc client.Client) error {
-	if evrocCluster != nil && strings.EqualFold(strings.TrimSpace(evrocCluster.Annotations[externalCloudProviderAnnotation]), "true") {
+	if usesExternalCloudProvider(evrocCluster) {
 		log.FromContext(ctx).V(2).Info("Leaving node initialization to the external cloud provider", "machine", machine.Name)
 		return nil
 	}

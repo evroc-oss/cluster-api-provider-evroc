@@ -499,6 +499,7 @@ func TestEvrocClusterReconciler_Delete(t *testing.T) {
 	// SGs are cleaned up by ownership label; none owned here.
 	mockSG := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSG)
+	expectNoWorkloadResources(mockClient)
 	mockSG.On("ListByOwner", mock.Anything, "test-cluster-delete-test-uid").Return([]string{}, nil)
 
 	// Create reconciler
@@ -796,6 +797,7 @@ func TestCleanupResources_DeletesLB(t *testing.T) {
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	mockSGCleanup := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	expectNoWorkloadResources(mockClient)
 	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
 
 	// Expect delete and exists check
@@ -850,6 +852,7 @@ func TestCleanupResources_PreservesExistingLBPublicIP(t *testing.T) {
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	mockSGCleanup := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	expectNoWorkloadResources(mockClient)
 	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
 	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", false).Return(nil)
 	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", false).Return(true, nil)
@@ -898,6 +901,7 @@ func TestCleanupResources_LBDeleteError(t *testing.T) {
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	mockSGCleanup := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	expectNoWorkloadResources(mockClient)
 	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
 
 	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).
@@ -944,6 +948,7 @@ func TestCleanupResources_WaitsForLBDeletion(t *testing.T) {
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	mockSGCleanup := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSGCleanup)
+	expectNoWorkloadResources(mockClient)
 	mockSGCleanup.On("ListByOwner", mock.Anything, "test-cluster-abcd1234").Return([]string{}, nil)
 	mockLB.On("Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(nil)
 	mockLB.On("DeletionComplete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true).Return(false, nil)
@@ -988,6 +993,7 @@ func TestCleanupResources(t *testing.T) {
 				mockLB.On("Delete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(nil)
 				mockLB.On("DeletionComplete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(true, nil)
 				mc.On("SecurityGroups").Return(sg)
+				expectNoWorkloadResources(mc)
 				sg.On("ListByOwner", mock.Anything, "test-test-uid").Return([]string{}, nil)
 			},
 			expectError: false,
@@ -1010,6 +1016,7 @@ func TestCleanupResources(t *testing.T) {
 				mockLB.On("Delete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(nil)
 				mockLB.On("DeletionComplete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(true, nil)
 				mc.On("SecurityGroups").Return(sg)
+				expectNoWorkloadResources(mc)
 				// First call returns the owned SG; after Delete, the recheck is empty.
 				sg.On("ListByOwner", mock.Anything, "test-test-uid").Return([]string{"test-sg"}, nil).Once()
 				sg.On("Delete", mock.Anything, "test-sg").Return(nil)
@@ -1073,6 +1080,7 @@ func TestCleanupResources_DeletesSecurityGroupsWithoutStatus(t *testing.T) {
 
 	mockSG := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSG)
+	expectNoWorkloadResources(mockClient)
 	// Selection is by the stable prefix (annotation), NOT the new UID.
 	mockSG.On("ListByOwner", mock.Anything, "moved-olduid00").Return([]string{"moved-olduid00-common-sg", "moved-olduid00-cp-sg"}, nil).Once()
 	mockSG.On("Delete", mock.Anything, "moved-olduid00-common-sg").Return(nil)
@@ -1834,6 +1842,67 @@ func TestResolveSubnetName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, resolveSubnetName(tt.cluster, tt.zone))
+		})
+	}
+}
+
+// expectNoWorkloadResources satisfies the driver cleanup call with nothing owned.
+func expectNoWorkloadResources(mc *mocks.MockClient) {
+	workload := new(mocks.MockWorkloadResourceService)
+	mc.On("WorkloadResources").Return(workload)
+	workload.On("Cleanup", mock.Anything, mock.Anything, false).Return(false, nil)
+}
+
+// Driver resources are cleaned up alongside the CAPI-owned ones: a pending
+// cleanup holds the finalizer, and the disk policy comes from the annotation.
+func TestCleanupResources_WorkloadDrivers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	tests := []struct {
+		name        string
+		annotation  string
+		deleteDisks bool
+		pending     bool
+		wantErr     error
+	}{
+		{name: "retains disks by default"},
+		{name: "deletes disks when requested", annotation: "true", deleteDisks: true},
+		{name: "holds finalizer while pending", pending: true, wantErr: errCloudResourcesDeleting},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test", Namespace: "default", UID: "test-uid",
+					Annotations: map[string]string{
+						clusterOwnershipIDAnnotation:    "test-test-uid",
+						clusterResourcePrefixAnnotation: "test-test-uid",
+						deleteCSIDisksAnnotation:        tt.annotation,
+					},
+				},
+			}
+			mockClient := new(mocks.MockClient)
+			mockLB := new(mocks.MockLoadBalancerService)
+			mockClient.On("LoadBalancers").Return(mockLB)
+			mockLB.On("Delete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(nil)
+			mockLB.On("DeletionComplete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(true, nil)
+			mockSG := new(mocks.MockSecurityGroupService)
+			mockClient.On("SecurityGroups").Return(mockSG)
+			mockSG.On("ListByOwner", mock.Anything, "test-test-uid").Return([]string{}, nil)
+			workload := new(mocks.MockWorkloadResourceService)
+			mockClient.On("WorkloadResources").Return(workload)
+			workload.On("Cleanup", mock.Anything, "test-test-uid", tt.deleteDisks).Return(tt.pending, nil)
+
+			reconciler := &EvrocClusterReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), Scheme: scheme}
+			err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+			workload.AssertExpectations(t)
 		})
 	}
 }

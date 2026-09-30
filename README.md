@@ -61,6 +61,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
   - [Cluster-Level Labels](#cluster-level-labels)
   - [Machine-Level Labels](#machine-level-labels)
   - [Automatic Ownership Labels](#automatic-ownership-labels)
+  - [Cluster Ownership ID](#cluster-ownership-id)
 - [Build and Test](#build-and-test)
   - [Service Account Setup for E2E Tests](#service-account-setup-for-e2e-tests)
 - [Documentation](#documentation)
@@ -525,8 +526,11 @@ clusterctl generate cluster rke2-prod \
   | kubectl apply -f -
 ```
 
-Custom RKE2 manifests must keep `disableComponents.kubernetesComponents: [cloudController]`.
-Otherwise RKE2's embedded CCM sets `rke2://` node providerIDs and the evroc provider cannot link Machines to Nodes.
+RKE2's embedded CCM sets `rke2://` node providerIDs, which the evroc provider cannot overwrite. Either keep
+`disableComponents.kubernetesComponents: [cloudController]` as the template does, or, when RKE2's CCM must stay
+enabled (Rancher-provisioned clusters), annotate the `EvrocCluster` with
+`infrastructure.cluster.x-k8s.io/external-cloud-provider: "true"` so the provider adopts the CCM's providerIDs
+(see `examples/rke2-rancher-ccm-cluster.yaml`).
 
 ---
 
@@ -752,6 +756,33 @@ kubectl get evrocmachines,evrocclusters -A -w
 The controller deletes resources in order: workers first, then control plane, then the EvrocCluster (which cleans up shared resources like security groups). This typically takes 1-2 minutes.
 
 > **Important:** Always delete clusters via `kubectl delete cluster` rather than deleting individual machines. Deleting the Cluster resource ensures proper ordering and finalizer-based cleanup. Deleting machines directly can leave orphaned cloud resources.
+
+#### Driver resource cleanup
+
+Load balancers created by the evroc CCM for `type: LoadBalancer` Services and
+disks provisioned by the evroc CSI driver are not CAPI resources, and the
+drivers that created them are gone once the nodes are. If the drivers were
+installed with the [cluster ownership ID](#cluster-ownership-id) as their
+identifier, the provider removes their resources as part of cluster deletion:
+
+- CCM load balancers, routes, backend services, backend pools and public IPs
+  are deleted.
+- CSI disk attachments are deleted once the cluster's VMs are gone.
+- CSI disks are **retained**, because they hold user data. To delete them with
+  the cluster, annotate the `EvrocCluster` before deleting:
+
+  ```bash
+  kubectl annotate evroccluster ${CLUSTER_NAME} \
+    evroccluster.infrastructure.cluster.x-k8s.io/delete-csi-disks=true
+  ```
+
+  This deletes **every** disk labelled with the ownership ID regardless of the
+  PersistentVolume reclaim policy.
+
+The `EvrocCluster` finalizer is held until these resources are gone. Drivers
+installed with any other identifier are outside the cluster's scope and are
+left untouched. If an owned disk is still attached to a VM outside the cluster,
+deletion stops with an error naming the VM; detach it to continue.
 
 ### Uninstall the Provider
 
@@ -987,6 +1018,36 @@ The provider automatically adds ownership labels to every cloud resource. These 
 
 > **Note:** evroc does not allow `/` in label keys, so the provider uses `_` as a separator (e.g., `capi_cluster-name` instead of `capi/cluster-name`).
 
+### Cluster Ownership ID
+
+The value of `capi_cluster-id` is the **cluster ownership ID**. The controller
+generates it once, on the first reconcile of an `EvrocCluster`, and stores it in
+the annotation:
+
+```
+evroccluster.infrastructure.cluster.x-k8s.io/ownership-id
+```
+
+It never changes afterwards. Unlike the object's `metadata.uid`, which
+`clusterctl move` replaces, the annotation travels with the object, so the
+provider can still find every cloud resource it owns after a move or when the
+`EvrocCluster` status is empty. Teardown selects resources by this ID rather
+than by name or status.
+
+Read it with:
+
+```bash
+kubectl get evroccluster ${CLUSTER_NAME} \
+  -o jsonpath='{.metadata.annotations.evroccluster\.infrastructure\.cluster\.x-k8s\.io/ownership-id}'
+```
+
+The evroc [CCM](https://github.com/evroc-oss/evroc-ccm) and
+[CSI driver](https://github.com/evroc-oss/evroc-csi-driver) label everything
+they create with `managed-by=<identifier>`. Install them with the ownership ID
+as their `ccm.identifier` / `csi.identifier` and the provider can clean up
+their resources when the cluster is deleted; see
+[Driver resource cleanup](#driver-resource-cleanup).
+
 ## Build and Test
 
 ```bash
@@ -1111,3 +1172,4 @@ support channels.
 ## License
 
 Apache License 2.0. See `LICENSE`.
+

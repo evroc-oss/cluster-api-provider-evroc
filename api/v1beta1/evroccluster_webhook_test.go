@@ -154,6 +154,19 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "invalid delete-csi-disks annotation",
+			cluster: &EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{DeleteCSIDisksAnnotation: "yes"}},
+				Spec: EvrocClusterSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					FailureDomains: []string{"a"},
+					CredentialsRef: &SecretReference{Name: "test-creds"},
+				},
+			},
+			expectError: true,
+		},
+		{
 			name: "missing credentialsRef",
 			cluster: &EvrocCluster{
 				Spec: EvrocClusterSpec{
