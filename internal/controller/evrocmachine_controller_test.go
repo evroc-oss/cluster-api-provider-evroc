@@ -107,6 +107,18 @@ users:
 }
 
 func TestEvrocMachineReconciler_Create(t *testing.T) {
+	for _, image := range []string{
+		"ubuntu.24-04.1",
+		"/compute/global/diskImages/evroc/ubuntu.24-04.1",
+		"custom:node-v1",
+		"/compute/projects/test-project/regions/se-sto/customDiskImages/node-v1",
+	} {
+		t.Run(image, func(t *testing.T) { testMachineCreateWithImage(t, image) })
+	}
+}
+
+func testMachineCreateWithImage(t *testing.T, image string) {
+	t.Helper()
 	scheme := testScheme()
 
 	vmID := uuid.New()
@@ -127,7 +139,7 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 
 	// Disk lifecycle: first Get → not found, then Create, then Get → ready (two more times)
 	mockDiskService.On("Get", mock.Anything, diskName).Return(nil, evroc.ErrNotFound).Once()
-	mockDiskService.On("Create", mock.Anything, diskName, 50, "ubuntu.24-04.1", "a", mock.Anything).
+	mockDiskService.On("Create", mock.Anything, diskName, 50, image, "a", mock.Anything).
 		Return(&computetypes.Disk{}, nil).Once()
 	readyDisk := &computetypes.Disk{
 		Status: computetypes.DiskStatus{
@@ -217,7 +229,7 @@ func TestEvrocMachineReconciler_Create(t *testing.T) {
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.s",
-			Image:          "ubuntu.24-04.1",
+			Image:          image,
 			RootDiskSize:   50,
 		},
 	}
@@ -3065,4 +3077,30 @@ func TestReconcileExistingVM_ExternalCCMOwnsProviderID(t *testing.T) {
 	assert.NoError(t, fakeClient.Get(context.Background(), client.ObjectKeyFromObject(evrocMachine), &updated))
 	assert.True(t, updated.Status.Ready)
 	assert.Nil(t, updated.Spec.ProviderID, "providerID must come from the CCM's node")
+}
+
+func TestCustomImageRejectsDifferentClusterScope(t *testing.T) {
+	for _, tc := range []struct{ name, project, region string }{
+		{"project", "other-project", "se-sto"}, {"region", "test-project", "fr-par"},
+	} {
+		for _, shorthand := range []bool{false, true} {
+			for _, additional := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/additional=%t/shorthand=%t", tc.name, additional, shorthand), func(t *testing.T) {
+					image := "/compute/projects/" + tc.project + "/regions/" + tc.region + "/customDiskImages/node-v1"
+					if shorthand {
+						image = "custom:node-v1"
+					}
+					machine := &infrav1.EvrocMachine{Spec: infrav1.EvrocMachineSpec{Project: tc.project, Region: tc.region, Image: image}}
+					if additional {
+						machine.Spec.Image = "ubuntu.24-04.1"
+						machine.Spec.AdditionalDisks = []infrav1.AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &image}}
+					}
+					cluster := &infrav1.EvrocCluster{Spec: infrav1.EvrocClusterSpec{Project: "test-project", Region: "se-sto"}}
+					// No client: scope mismatches must fail before any cloud operation.
+					_, err := (&EvrocMachineReconciler{}).reconcileNormal(context.Background(), machine, nil, cluster)
+					assert.ErrorContains(t, err, "requires machine project and region to match")
+				})
+			}
+		}
+	}
 }

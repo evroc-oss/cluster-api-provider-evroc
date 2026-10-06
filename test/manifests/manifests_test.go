@@ -144,7 +144,20 @@ func TestManifestsMatchCRDSchemas(t *testing.T) {
 				t.Fatalf("read: %v", err)
 			}
 
-			for _, doc := range strings.Split(render(string(raw)), "\n---") {
+			text := string(raw)
+			if filepath.Base(path) == "cluster-template-prebuilt.yaml" {
+				// Supply the required image only for this flavor so stock-image
+				// defaults remain covered by the other templates.
+				text = strings.ReplaceAll(text, "${EVROC_IMAGE}",
+					"/compute/projects/test-project/regions/se-sto/customDiskImages/node-v1")
+			}
+			rendered := render(text)
+			// Standalone examples also contain placeholders for separately supplied
+			// credentials; require complete substitution for clusterctl flavors.
+			if strings.HasPrefix(filepath.Base(path), "cluster-template") && strings.Contains(rendered, "<<UNSET:") {
+				t.Fatal("cluster template contains unresolved variables")
+			}
+			for _, doc := range strings.Split(rendered, "\n---") {
 				if strings.TrimSpace(doc) == "" {
 					continue
 				}

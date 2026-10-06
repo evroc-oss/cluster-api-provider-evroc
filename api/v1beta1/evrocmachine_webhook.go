@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/diskimage"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -21,8 +23,10 @@ var evrocmachinelog = logf.Log.WithName("evrocmachine-resource")
 
 var (
 	// Compiled regexes for validation
-	regionPattern            = regexp.MustCompile(`^[a-z]{2}-[a-z]{3}$`)
-	gpuComputeProfilePattern = regexp.MustCompile(`^gn-(l40s|b200)\.`)
+	regionPattern              = regexp.MustCompile(`^[a-z]{2}-[a-z]{3}$`)
+	gpuComputeProfilePattern   = regexp.MustCompile(`^gn-(l40s|b200)\.`)
+	customDiskImageRefPattern  = regexp.MustCompile(`^/compute/projects/([^/]+)/regions/([^/]+)/customDiskImages/([^/]+)$`)
+	customDiskImageNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 )
 
 // EvrocMachineDefaulter implements admission.CustomDefaulter for EvrocMachine.
@@ -213,13 +217,8 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 		))
 	}
 
-	// Validate disk image using SDK
-	if m.Spec.Image != "" && !compute.IsValidDiskImage(m.Spec.Image) {
-		allErrs = append(allErrs, field.Invalid(
-			field.NewPath("spec", "image"),
-			m.Spec.Image,
-			fmt.Sprintf("must be a valid disk image. Valid options: %s", compute.GetValidDiskImagesString()),
-		))
+	if m.Spec.Image != "" {
+		allErrs = append(allErrs, m.validateImage(m.Spec.Image, field.NewPath("spec", "image"))...)
 	}
 
 	// Validate region format
@@ -289,6 +288,9 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 		seenDiskNames := make(map[string]bool)
 		for i, disk := range m.Spec.AdditionalDisks {
 			diskPath := field.NewPath("spec", "additionalDisks").Index(i)
+			if disk.Image != nil && *disk.Image != "" {
+				allErrs = append(allErrs, m.validateImage(*disk.Image, diskPath.Child("image"))...)
+			}
 			if seenDiskNames[disk.Name] {
 				allErrs = append(allErrs, field.Duplicate(diskPath.Child("name"), disk.Name))
 			}
@@ -356,4 +358,45 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	}
 
 	return warnings, allErrs
+}
+
+// validateImage accepts stock names or refs from the SDK allowlist, custom
+// shorthand, and custom disk image refs. The evroc API only allows custom images from the
+// disk's own project and region, so the ref must match spec.project and spec.region.
+func (m *EvrocMachine) validateImage(image string, fldPath *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if name, custom := strings.CutPrefix(image, "custom:"); custom {
+		if !customDiskImageNamePattern.MatchString(name) {
+			return field.ErrorList{field.Invalid(fldPath, image,
+				"custom image must be custom:<name>; name must start with an alphanumeric character and contain only letters, digits, dots, underscores or hyphens")}
+		}
+		return nil
+	}
+
+	stockName := diskimage.StockName(image)
+	if !strings.HasPrefix(stockName, "/") {
+		if !compute.IsValidDiskImage(stockName) {
+			allErrs = append(allErrs, field.Invalid(fldPath, image,
+				fmt.Sprintf("must be a valid disk image name or stock ref (/compute/global/diskImages/evroc/<name>), custom:<name>, or a custom disk image ref "+
+					"(/compute/projects/<project>/regions/<region>/customDiskImages/<name>). Valid options: %s",
+					compute.GetValidDiskImagesString()),
+			))
+		}
+		return allErrs
+	}
+
+	match := customDiskImageRefPattern.FindStringSubmatch(image)
+	if match == nil {
+		return append(allErrs, field.Invalid(fldPath, image,
+			"custom disk image ref must have the form /compute/projects/<project>/regions/<region>/customDiskImages/<name>"))
+	}
+	if project := match[1]; m.Spec.Project != "" && project != m.Spec.Project {
+		allErrs = append(allErrs, field.Invalid(fldPath, image,
+			fmt.Sprintf("custom disk image must be in the machine's project %q", m.Spec.Project)))
+	}
+	if region := match[2]; m.Spec.Region != "" && region != m.Spec.Region {
+		allErrs = append(allErrs, field.Invalid(fldPath, image,
+			fmt.Sprintf("custom disk image must be in the machine's region %q", m.Spec.Region)))
+	}
+	return allErrs
 }

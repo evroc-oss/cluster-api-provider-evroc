@@ -21,6 +21,7 @@ export KUBERNETES_VERSION="v1.35.8"
 
 | File / Directory | What it demonstrates |
 |---|---|
+| [custom-images/](custom-images/README.md) | externally managed boot images, a baking recipe, and the prebuilt kubeadm flavor |
 | `cluster-autoscaler.yaml` | machine deployment autoscaling configuration |
 | `cluster-with-addons.yaml` | post-provision addon bootstrap patterns; use `envsubst` for variable substitution (see file header) |
 | `clusterclass-example.yaml` | topology-driven multi-cluster pattern; requires ClusterClass CRD (CAPI topology feature) |

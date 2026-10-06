@@ -1233,6 +1233,7 @@ spec:
                     image:
                       description: |-
                         Image is the OS image for the disk (optional, for bootable disks).
+                        Accepts the same forms as EvrocMachineSpec.Image.
                         If not specified, the disk will be empty.
                       type: string
                     name:
@@ -1263,7 +1264,13 @@ spec:
                   "a1a.m" for 4 vCPU, 16GB RAM)
                 type: string
               image:
-                description: Image is the OS image to use for the VM (e.g., "ubuntu.24-04.1")
+                description: |-
+                  Image is the OS image to use for the VM. Either an evroc image name
+                  (e.g., "ubuntu.24-04.1"), a stock image ref
+                  ("/compute/global/diskImages/evroc/<name>"), "custom:<name>",
+                  or a custom disk image ref in the machine's
+                  project and region:
+                  "/compute/projects/<project>/regions/<region>/customDiskImages/<name>".
                 type: string
               networkingConfig:
                 description: |-
@@ -1725,6 +1732,7 @@ spec:
                             image:
                               description: |-
                                 Image is the OS image for the disk (optional, for bootable disks).
+                                Accepts the same forms as EvrocMachineSpec.Image.
                                 If not specified, the disk will be empty.
                               type: string
                             name:
@@ -1755,8 +1763,13 @@ spec:
                           (e.g., "a1a.m" for 4 vCPU, 16GB RAM)
                         type: string
                       image:
-                        description: Image is the OS image to use for the VM (e.g.,
-                          "ubuntu.24-04.1")
+                        description: |-
+                          Image is the OS image to use for the VM. Either an evroc image name
+                          (e.g., "ubuntu.24-04.1"), a stock image ref
+                          ("/compute/global/diskImages/evroc/<name>"), "custom:<name>",
+                          or a custom disk image ref in the machine's
+                          project and region:
+                          "/compute/projects/<project>/regions/<region>/customDiskImages/<name>".
                         type: string
                       networkingConfig:
                         description: |-
@@ -1923,11 +1936,11 @@ kind: Namespace
 metadata:
   name: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1942,11 +1955,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1956,11 +1969,11 @@ kind: ClusterRole
 metadata:
   name: cluster-api-provider-evroc-manager-role
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2070,11 +2083,11 @@ kind: ClusterRoleBinding
 metadata:
   name: cluster-api-provider-evroc-manager-rolebinding
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2093,11 +2106,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-role
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2140,11 +2153,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-rolebinding
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2167,11 +2180,11 @@ metadata:
   name: cluster-api-provider-evroc-webhook-service
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2196,11 +2209,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2227,7 +2240,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.5.3"
+        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.6.0"
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect
@@ -2301,11 +2314,11 @@ metadata:
   name: cluster-api-provider-evroc-serving-cert
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2324,11 +2337,11 @@ metadata:
   name: cluster-api-provider-evroc-selfsigned-issuer
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2344,11 +2357,11 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-mutating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:
@@ -2405,11 +2418,11 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-validating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.5.3
+    helm.sh/chart: cluster-api-provider-evroc-0.6.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.5.3"
+    app.kubernetes.io/version: "0.6.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:

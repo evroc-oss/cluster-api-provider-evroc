@@ -1,0 +1,277 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Prebuilt-image cluster template for evroc CAPI provider (kubeadm)
+# See examples/custom-images/README.md for image prerequisites and a baking example.
+# The image is externally managed; it must contain matching Kubernetes binaries.
+#
+# This is a starter template. The default kubeadm flavor ships Cilium as the CNI
+# with simple, reliable defaults for a cloud VPC: VXLAN tunnel routing, which
+# works across VPC subnets and zones without coordinating a native-routing pod
+# CIDR. kube-proxy is left in place. Advanced tuning (e.g. kube-proxy
+# replacement, native routing) belongs in your own manifests once you outgrow
+# the starter template.
+#
+# Cilium is installed automatically via postKubeadmCommands on the first control
+# plane node using the pinned Cilium CLI. To pin a different Cilium version set
+# CILIUM_VERSION; the CLI version is CILIUM_CLI_VERSION.
+#
+# Prefer Calico instead? Use --flavor calico (cluster-template-calico.yaml).
+#
+# Required environment variables:
+#   CLUSTER_NAME: Name of the cluster
+#   EVROC_PROJECT: evroc project ID
+#   EVROC_CREDENTIALS_SECRET: Name of the credentials Secret
+#   EVROC_SSH_KEY: SSH public key used for node access
+#   EVROC_ALLOWED_CIDR: Source CIDR for SSH and API access
+#
+# Optional environment variables:
+#   EVROC_REGION: evroc region (default: se-sto)
+#   EVROC_API_BASE_URL: API base URL override
+#   EVROC_ISSUER_URL: OIDC issuer URL override
+#   CONTROL_PLANE_MACHINE_COUNT: Number of control plane nodes (default: 3)
+#   WORKER_MACHINE_COUNT: Number of worker nodes (default: 3)
+#   KUBERNETES_VERSION: Kubernetes version (required; example: v1.35.8)
+#   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.m)
+#   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.m)
+#   EVROC_IMAGE: custom:<name> or /compute/projects/<project>/regions/<region>/customDiskImages/<name> (required)
+#   CILIUM_VERSION: Cilium release installed on new clusters (default: 1.19.7)
+#   CILIUM_CLI_VERSION: Cilium CLI used for installation (default: v0.20.0)
+#   POD_CIDR: Pod CIDR (default: 10.244.0.0/16)
+#   SERVICE_CIDR: Service CIDR (default: 10.96.0.0/12)
+#
+# Note: This template uses failureDomains [a, b, c] for multi-zone
+# distribution. Region labels are set via kubeletExtraArgs, but zone
+# labels are NOT set because CAPI assigns zones dynamically via
+# failureDomains. Zone labels require an evroc Cloud Controller Manager
+# (CCM). If your CSI driver needs zone labels, use per-zone
+# MachineDeployments (see README.md "Topology Labels" section).
+
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks:
+      - ${POD_CIDR:=10.244.0.0/16}
+    services:
+      cidrBlocks:
+      - ${SERVICE_CIDR:=10.96.0.0/12}
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: ${CLUSTER_NAME}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+spec:
+  project: ${EVROC_PROJECT}
+  region: ${EVROC_REGION:=se-sto}
+  # Endpoint overrides for private/non-production evroc deployments.
+  # Leave unset to use the public evroc cloud.
+  endpoints:
+    apiBaseURL: "${EVROC_API_BASE_URL:=https://api.evroc.com}"
+    issuerURL: "${EVROC_ISSUER_URL:=https://authn.iam.evroc.com/realms/evroc-customer}"
+  # The credential Secret must be in the same namespace as this EvrocCluster.
+  credentialsRef:
+    name: "${EVROC_CREDENTIALS_SECRET}"
+  failureDomains:
+  - a
+  - b
+  - c
+  securityGroups:
+    common:
+      inlineSecurityGroups:
+      - name: common-sg
+        rules:
+        - name: ssh
+          direction: Ingress
+          protocol: TCP
+          port: 22
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
+        - name: kubelet
+          direction: Ingress
+          protocol: TCP
+          port: 10250
+          remoteCIDR: "10.0.0.0/8"
+        # Broad internal rule — covers all intra-cluster traffic (pods, services, etc.)
+        - name: cluster-internal
+          direction: Ingress
+          protocol: All
+          remoteCIDR: "10.0.0.0/8"
+        - name: allow-all-egress
+          direction: Egress
+          protocol: All
+          remoteCIDR: "0.0.0.0/0"
+    controlPlane:
+      inlineSecurityGroups:
+      - name: control-plane-sg
+        rules:
+        - name: k8s-api
+          direction: Ingress
+          protocol: TCP
+          port: 6443
+          remoteCIDR: "${EVROC_ALLOWED_CIDR}"
+        - name: etcd-client
+          direction: Ingress
+          protocol: TCP
+          port: 2379
+          remoteCIDR: "10.0.0.0/8"
+        - name: etcd-peer
+          direction: Ingress
+          protocol: TCP
+          port: 2380
+          remoteCIDR: "10.0.0.0/8"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+  version: ${KUBERNETES_VERSION}
+  machineTemplate:
+    spec:
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+  kubeadmConfigSpec:
+    preKubeadmCommands:
+      - 'test "$(kubeadm version -o short)" = "${KUBERNETES_VERSION}"'
+      - 'test "$(kubelet --version)" = "Kubernetes ${KUBERNETES_VERSION}"'
+      - systemctl enable --now containerd
+      - systemctl enable kubelet
+    initConfiguration:
+      localAPIEndpoint:
+        advertiseAddress: "0.0.0.0"
+        bindPort: 6443
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: node-labels
+          value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+    joinConfiguration:
+      nodeRegistration:
+        criSocket: unix:///var/run/containerd/containerd.sock
+        kubeletExtraArgs:
+        - name: node-labels
+          value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"
+    postKubeadmCommands:
+      - |
+        # Install Cilium once, from the first control plane node only.
+        if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        if kubectl get daemonset -n kube-system cilium 2>/dev/null; then exit 0; fi
+
+        CILIUM_CLI_VERSION="${CILIUM_CLI_VERSION:=v0.20.0}"
+        CILIUM_VERSION="${CILIUM_VERSION:=1.19.7}"
+        CLI_ARCH=amd64
+        curl -fsSL --retry 5 -o /tmp/cilium.tar.gz \
+          "https://github.com/cilium/cilium-cli/releases/download/$CILIUM_CLI_VERSION/cilium-linux-$CLI_ARCH.tar.gz"
+        tar -C /usr/local/bin -xzf /tmp/cilium.tar.gz
+        rm -f /tmp/cilium.tar.gz
+
+        # Starter defaults: kube-proxy stays in place and Cilium uses VXLAN tunnel
+        # routing, which works across VPC subnets/zones without a native-routing
+        # pod CIDR. Tune (e.g. kube-proxy replacement) in your own manifests once
+        # you outgrow the starter template.
+        cilium install --version "$CILIUM_VERSION" \
+          --set routingMode=tunnel \
+          --set tunnelProtocol=vxlan \
+          --set ipam.mode=kubernetes
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.m}
+      image: ${EVROC_IMAGE}
+      rootDiskSize: ${EVROC_CONTROL_PLANE_DISK_SIZE:=100}
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT}
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
+      version: ${KUBERNETES_VERSION}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-md-0
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-md-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.m}
+      image: ${EVROC_IMAGE}
+      rootDiskSize: ${EVROC_WORKER_DISK_SIZE:=100}
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - 'test "$(kubeadm version -o short)" = "${KUBERNETES_VERSION}"'
+        - 'test "$(kubelet --version)" = "Kubernetes ${KUBERNETES_VERSION}"'
+        - systemctl enable --now containerd
+        - systemctl enable kubelet
+      joinConfiguration:
+        nodeRegistration:
+          criSocket: unix:///var/run/containerd/containerd.sock
+          kubeletExtraArgs:
+          - name: node-labels
+            value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto}"

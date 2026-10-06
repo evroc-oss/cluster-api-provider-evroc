@@ -105,6 +105,10 @@ test-integration: manifests generate envtest ## Run integration tests (requires 
 	KUBEBUILDER_ASSETS="$(shell $(LOCALBIN)/setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" \
 	INTEGRATION_TEST=1 go test -v -timeout 30m ./test/integration/...
 
+.PHONY: test-integration-binary
+test-integration-binary: ## Build a static binary of the cloud client integration tests (for air-gapped or private sites).
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o $(LOCALBIN)/cape-cloud-integration.test ./test/integration/
+
 .PHONY: test-published-chart
 test-published-chart: ## Test the published Helm chart from GHCR (requires cluster + credentials).
 	@./test/e2e/test-published-chart.sh
