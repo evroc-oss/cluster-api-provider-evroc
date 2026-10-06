@@ -59,3 +59,48 @@ Or directly:
 KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use 1.35.0 -p path)" \
   INTEGRATION_TEST=1 go test -v -timeout 30m ./test/integration/...
 ```
+
+## Running against an air-gapped or private deployment
+
+The `TestCloudClient_*` tests in `cloud_integration_test.go` only call the evroc
+API. They don't use envtest and read their credentials from
+`test/e2e/credentials.yaml`, so they can run from any host that can reach the
+API, without Go or the repository.
+
+Build a static binary:
+
+```bash
+make test-integration-binary   # writes bin/cape-cloud-integration.test
+```
+
+Copy it to the target host with a `test/e2e/credentials.yaml` next to it.
+`api.base_url` and `auth.token_url` point the client at the deployment instead
+of the public evroc cloud:
+
+```yaml
+api:
+  base_url: https://api.<domain>
+auth:
+  token_url: https://authn.<domain>/realms/evroc-customer/protocol/openid-connect/token
+  # a user...
+  username: <user>
+  password: <password>
+  # ...or a service account
+  # service_account_id: <name>
+  # service_account_secret: <base64 JWK>
+context:
+  project: <project>
+  region: <region>
+  organization: <organization-id>
+```
+
+Run it from the directory that contains `test/`. If the deployment uses a
+private CA, point `SSL_CERT_FILE` at a bundle that includes it:
+
+```bash
+SSL_CERT_FILE=/path/to/ca-bundle.crt INTEGRATION_TEST=1 \
+  ./cape-cloud-integration.test -test.v -test.run 'TestCloudClient_' -test.timeout 15m
+```
+
+`TestCloudClient_SecurityGroupLifecycle` creates and deletes a security group in
+the project; the other tests are read-only.

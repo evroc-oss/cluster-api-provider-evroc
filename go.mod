@@ -3,7 +3,7 @@ module github.com/evroc-oss/cluster-api-provider-evroc
 go 1.25.0
 
 require (
-	github.com/evroc-oss/evroc-go-sdk v0.7.3
+	github.com/evroc-oss/evroc-go-sdk v0.9.2
 	github.com/google/uuid v1.6.0
 	github.com/onsi/gomega v1.39.1
 	github.com/stretchr/testify v1.11.1

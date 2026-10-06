@@ -44,6 +44,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
   - [Scale Workers](#scale-workers)
   - [Scale Control Plane](#scale-control-plane)
   - [Update Security Groups](#update-security-groups)
+  - [Use a Custom Disk Image](#use-a-custom-disk-image)
   - [Upgrade the evroc Provider](#upgrade-the-evroc-provider)
   - [Upgrade Kubernetes Version](#upgrade-kubernetes-version)
   - [Delete a Workload Cluster](#delete-a-workload-cluster)
@@ -335,12 +336,13 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 **Available flavors:**
 - `minimal` - 1 control plane, 1 worker, Calico CNI pre-installed (dev/test)
 - `default` - multi-zone, Cilium CNI (eBPF) via `postKubeadmCommands` (production; select it by omitting `--flavor`)
+- `prebuilt` - multi-zone kubeadm with Cilium, using your existing custom image; skips package installation (see [image prerequisites and baking example](examples/custom-images/README.md))
 - `calico` - same topology as `default`, with Calico CNI instead of Cilium (opt-in)
 - `dualstack` - single-zone IPv4/IPv6 cluster with Calico CNI
 - `ha-lb` - multi-zone control plane behind an L4 load balancer, Calico CNI (high availability)
 - `rke2` - RKE2 (SUSE enterprise-hardened Kubernetes) with Canal CNI
 
-> **Replica counts:** the `default`, `ha-lb`, and `rke2` templates leave
+> **Replica counts:** the `default`, `prebuilt`, `ha-lb`, and `rke2` templates leave
 > `spec.replicas` bound to `${CONTROL_PLANE_MACHINE_COUNT}` /
 > `${WORKER_MACHINE_COUNT}` **without a substituted default** — `clusterctl`
 > renders an unset count as empty, which yields 1 control plane / 0 workers, not
@@ -396,7 +398,7 @@ kubectl get evrocmachine -o wide
 ssh evroc-user@<PUBLIC_IP>
 ```
 
-**CNI note:** The `minimal`, `calico`, and `ha-lb` flavors install Calico automatically via `postKubeadmCommands`. The `default` flavor installs Cilium the same way. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
+**CNI note:** The `minimal`, `calico`, and `ha-lb` flavors install Calico automatically via `postKubeadmCommands`. The `default` and `prebuilt` flavors install Cilium the same way. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
 
 ```bash
 # Only needed for custom templates without built-in CNI:
@@ -614,6 +616,37 @@ kubectl edit evroccluster ${CLUSTER_NAME}
 # Changes apply automatically to all existing VMs with inheritFromCluster enabled
 ```
 
+### Use a Custom Disk Image
+
+Disk images accept stock names or full references.
+
+Register the image in the cluster's project and region first, with the evroc
+SDK or API. Then set `image` (or `EVROC_IMAGE` in the templates) to `custom:<name>`
+instead of an evroc image name:
+
+```yaml
+kind: EvrocMachineTemplate
+spec:
+  template:
+    spec:
+      project: my-project
+      region: se-sto
+      image: custom:my-image-v1
+      rootDiskSize: 50   # at least the image's virtual size
+```
+
+The shorthand resolves in the machine's `project` and `region`. Full refs such as
+`/compute/projects/my-project/regions/se-sto/customDiskImages/my-image-v1`
+remain supported, including on additional disks.
+
+The ref's project and region must match `project` and `region`, because evroc
+does not allow custom images across projects. `image` is immutable; roll out a
+new image by creating a new machine template.
+
+See the [custom image baking example](examples/custom-images/README.md) for
+image preparation and the `prebuilt` kubeadm flavor, which skips package
+installation at first boot.
+
 ### Upgrade the evroc Provider
 
 Upgrading the infrastructure provider on the management cluster does not
@@ -642,6 +675,8 @@ helm upgrade evroc-provider \
 ```
 
 ### Upgrade Kubernetes Version
+
+For the `prebuilt` flavor, follow the [custom-image upgrade procedure](examples/custom-images/README.md#upgrading-prebuilt-clusters). Update the versioned image and bootstrap checks together; the package-install procedure below applies to stock-image flavors.
 
 #### kubeadm flavors
 
@@ -1172,4 +1207,3 @@ support channels.
 ## License
 
 Apache License 2.0. See `LICENSE`.
-

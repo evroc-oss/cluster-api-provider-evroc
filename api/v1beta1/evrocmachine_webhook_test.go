@@ -5,6 +5,7 @@ package v1beta1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/evroc-oss/evroc-go-sdk/compute"
@@ -378,6 +379,19 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "change image to custom disk image ref (immutable)",
+			newMachine: &EvrocMachine{
+				Spec: EvrocMachineSpec{
+					Project:        "test-project",
+					Region:         "se-sto",
+					ComputeProfile: "a1a.m",
+					Image:          "/compute/projects/test-project/regions/se-sto/customDiskImages/my-image",
+					RootDiskSize:   100,
+				},
+			},
+			expectError: true,
+		},
+		{
 			name: "change compute profile (immutable)",
 			newMachine: &EvrocMachine{
 				Spec: EvrocMachineSpec{
@@ -469,6 +483,31 @@ func TestEvrocMachineBYOIValidation(t *testing.T) {
 			machine:     validBase(""),
 			expectError: true,
 		},
+		{
+			name:        "valid custom disk image ref",
+			machine:     validBase("/compute/projects/test-project/regions/se-sto/customDiskImages/my-image"),
+			expectError: false,
+		},
+		{
+			name:        "custom disk image ref in another project",
+			machine:     validBase("/compute/projects/other-project/regions/se-sto/customDiskImages/my-image"),
+			expectError: true,
+		},
+		{
+			name:        "custom disk image ref in another region",
+			machine:     validBase("/compute/projects/test-project/regions/fr-par/customDiskImages/my-image"),
+			expectError: true,
+		},
+		{
+			name:        "custom disk image ref without name",
+			machine:     validBase("/compute/projects/test-project/regions/se-sto/customDiskImages/"),
+			expectError: true,
+		},
+		{
+			name:        "full global image ref",
+			machine:     validBase("/compute/global/diskImages/evroc/ubuntu.24-04.1"),
+			expectError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -478,6 +517,56 @@ func TestEvrocMachineBYOIValidation(t *testing.T) {
 				g.Expect(err).To(HaveOccurred())
 			} else {
 				g.Expect(err).ToNot(HaveOccurred())
+			}
+		})
+	}
+}
+
+func TestCustomImageShorthandValidation(t *testing.T) {
+	for _, image := range []string{"custom:node-v1", "custom:", "custom:../node", "custom:node/other", "custom:node name", "custom:node?x", "custom:."} {
+		for _, additional := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/additional=%t", image, additional), func(t *testing.T) {
+				machine := &EvrocMachine{Spec: EvrocMachineSpec{Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.m", RootDiskSize: 50, Image: image}}
+				field := "spec.image"
+				if additional {
+					machine.Spec.Image = "ubuntu.24-04.1"
+					machine.Spec.AdditionalDisks = []AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &image}}
+					field = "spec.additionalDisks[0].image"
+				}
+				_, err := machineValidator.ValidateCreate(context.Background(), machine)
+				if image == "custom:node-v1" {
+					assert.NoError(t, err)
+				} else {
+					assert.ErrorContains(t, err, field)
+				}
+			})
+		}
+	}
+}
+
+func TestAdditionalDiskImageValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, image string
+		invalid     bool
+	}{
+		{"blank", "", false},
+		{"stock", "ubuntu.24-04.1", false},
+		{"custom", "/compute/projects/test-project/regions/se-sto/customDiskImages/node-v1", false},
+		{"wrong project", "/compute/projects/other/regions/se-sto/customDiskImages/node-v1", true},
+		{"wrong region", "/compute/projects/test-project/regions/fr-par/customDiskImages/node-v1", true},
+		{"missing name", "/compute/projects/test-project/regions/se-sto/customDiskImages/", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			machine := &EvrocMachine{Spec: EvrocMachineSpec{
+				Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.m",
+				Image: "ubuntu.24-04.1", RootDiskSize: 50,
+				AdditionalDisks: []AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &tc.image}},
+			}}
+			_, err := machineValidator.ValidateCreate(context.Background(), machine)
+			if tc.invalid {
+				assert.ErrorContains(t, err, "spec.additionalDisks[0].image")
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}
@@ -544,4 +633,36 @@ func TestEvrocMachineDeepCopy(t *testing.T) {
 
 	copy.Spec.Project = "other-project"
 	assert.NotEqual(t, original.Spec.Project, copy.Spec.Project)
+}
+
+func TestStockImageReferenceValidation(t *testing.T) {
+	for _, tc := range []struct {
+		image string
+		valid bool
+	}{
+		{"/compute/global/diskImages/evroc/ubuntu.24-04.1", true},
+		{"/compute/global/diskImages/evroc/", false},
+		{"/compute/global/diskImages/evroc/unknown-image", false},
+		{"/compute/global/diskImages/evroc/ubuntu.24-04.1/extra", false},
+		{"/compute/global/diskImages/other/ubuntu.24-04.1", false},
+		{"/compute/global/diskImages/evroc/ubuntu.24-04.1?x=1", false},
+	} {
+		for _, additional := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/additional=%t", tc.image, additional), func(t *testing.T) {
+				machine := &EvrocMachine{Spec: EvrocMachineSpec{Project: "test-project", Region: "fr-par", ComputeProfile: "a1a.m", RootDiskSize: 50, Image: tc.image}}
+				field := "spec.image"
+				if additional {
+					machine.Spec.Image = "ubuntu.24-04.1"
+					machine.Spec.AdditionalDisks = []AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &tc.image}}
+					field = "spec.additionalDisks[0].image"
+				}
+				_, err := machineValidator.ValidateCreate(context.Background(), machine)
+				if tc.valid {
+					assert.NoError(t, err)
+				} else {
+					assert.ErrorContains(t, err, field)
+				}
+			})
+		}
+	}
 }

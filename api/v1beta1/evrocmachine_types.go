@@ -20,7 +20,12 @@ type EvrocMachineSpec struct {
 	// ComputeProfile specifies the VM compute profile (e.g., "a1a.m" for 4 vCPU, 16GB RAM)
 	ComputeProfile string `json:"computeProfile"`
 
-	// Image is the OS image to use for the VM (e.g., "ubuntu.24-04.1")
+	// Image is the OS image to use for the VM. Either an evroc image name
+	// (e.g., "ubuntu.24-04.1"), a stock image ref
+	// ("/compute/global/diskImages/evroc/<name>"), "custom:<name>",
+	// or a custom disk image ref in the machine's
+	// project and region:
+	// "/compute/projects/<project>/regions/<region>/customDiskImages/<name>".
 	Image string `json:"image"`
 
 	// SSHKey is the SSH public key for access
@@ -119,6 +124,7 @@ type AdditionalDiskSpec struct {
 	SizeGB int `json:"sizeGB"`
 
 	// Image is the OS image for the disk (optional, for bootable disks).
+	// Accepts the same forms as EvrocMachineSpec.Image.
 	// If not specified, the disk will be empty.
 	// +optional
 	Image *string `json:"image,omitempty"`

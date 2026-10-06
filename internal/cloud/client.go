@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/diskimage"
 	evroc "github.com/evroc-oss/evroc-go-sdk"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
 	"github.com/evroc-oss/evroc-go-sdk/config"
@@ -109,8 +110,13 @@ func (ds *DiskService) Create(
 	builder := compute.NewDiskBuilder(name).
 		WithSizeGB(int32(sizeGB)).
 		WithZone(zone)
-	if image != "" {
-		builder = builder.WithImage(image)
+	// The controller verifies machine and client scope match for custom images.
+	if name, custom := strings.CutPrefix(image, "custom:"); custom {
+		builder = builder.WithCustomImage(ds.client.Compute().CustomDiskImageRef(name))
+	} else if strings.HasPrefix(image, "/compute/projects/") {
+		builder = builder.WithCustomImage(compute.CustomDiskImageRef(image))
+	} else if image != "" {
+		builder = builder.WithImage(diskimage.StockName(image))
 	}
 	if len(labels) > 0 {
 		builder = builder.WithLabels(labels)

@@ -275,7 +275,23 @@ func clusterLabelInfoFrom(evrocCluster *infrav1.EvrocCluster) clusterLabelInfo {
 	return info
 }
 
+func isCustomDiskImage(image string) bool {
+	return strings.HasPrefix(image, "custom:") || strings.HasPrefix(image, "/compute/projects/")
+}
+
 func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface, evrocCluster *infrav1.EvrocCluster) (ctrl.Result, error) {
+	// The webhook ties a custom image ref to the machine's project and region; the
+	// disk is created with the cluster-scoped client, so those must match the cluster's.
+	hasCustomImage := isCustomDiskImage(machine.Spec.Image)
+	for _, disk := range machine.Spec.AdditionalDisks {
+		if disk.Image != nil && isCustomDiskImage(*disk.Image) {
+			hasCustomImage = true
+		}
+	}
+	if hasCustomImage && (evrocCluster == nil || machine.Spec.Project != evrocCluster.Spec.Project || machine.Spec.Region != evrocCluster.Spec.Region) {
+		return ctrl.Result{}, fmt.Errorf("a custom disk image requires machine project and region to match the owning EvrocCluster")
+	}
+
 	log := log.FromContext(ctx)
 
 	// Mark the Paused condition as False now that reconciliation has resumed.
