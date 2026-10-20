@@ -202,7 +202,7 @@ test-e2e-rancher-turtles: e2e-image ## Run Rancher Turtles E2E certification tes
 	./suites/rancher-turtles 2>&1 | tee "$(E2E_LOG_FILE)"
 
 .PHONY: test-e2e-capi
-test-e2e-capi: ## Run upstream CAPI QuickStart E2E tests (requires live evroc credentials + kind).
+test-e2e-capi: e2e-image ## Build image and run upstream CAPI QuickStart E2E tests (requires live evroc credentials + kind).
 	@echo "Running CAPI QuickStart E2E tests..."
 	cd test/e2e && go mod download && \
 	CAPI_E2E_CONFIG_PATH=$(PWD)/test/e2e/capi-e2e-config.yaml \

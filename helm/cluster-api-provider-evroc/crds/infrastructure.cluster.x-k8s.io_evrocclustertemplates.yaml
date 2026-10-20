@@ -67,7 +67,7 @@ spec:
                       controlPlaneConfig:
                         description: |-
                           ControlPlaneConfig defines configuration for the control plane endpoint.
-                          A load balancer is always created for the control plane.
+                          A load balancer is created when ControlPlaneEndpointPolicy is Managed.
                           Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
                         properties:
                           loadBalancer:
@@ -112,6 +112,19 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      controlPlaneEndpointPolicy:
+                        default: Managed
+                        description: |-
+                          ControlPlaneEndpointPolicy selects who owns the control plane endpoint.
+
+                          When "Managed" (the default), the provider creates a control-plane load
+                          balancer and owns ControlPlaneEndpoint. When "External", another component
+                          owns the endpoint and the provider reconciles only worker-facing
+                          infrastructure.
+                        enum:
+                        - Managed
+                        - External
+                        type: string
                       credentialsRef:
                         description: |-
                           CredentialsRef is a reference to a Secret in the EvrocCluster namespace

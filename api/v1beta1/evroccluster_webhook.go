@@ -172,6 +172,16 @@ func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 		))
 	}
 
+	// Endpoint ownership is immutable. Switching from Managed to External would
+	// orphan CAPE's load balancer, while the reverse could create a second
+	// endpoint alongside the externally managed one.
+	if oldCluster.ShouldManageControlPlaneEndpoint() != r.ShouldManageControlPlaneEndpoint() {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "controlPlaneEndpointPolicy"),
+			"controlPlaneEndpointPolicy is immutable",
+		))
+	}
+
 	// FailureDomains: block removal of existing zones. Adding zones is fine,
 	// but removing one that may already host VMs would orphan those machines.
 	newZones := make(map[string]bool, len(r.Spec.FailureDomains))
@@ -306,6 +316,16 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 			field.NewPath("spec", "controlPlaneEndpoint"),
 			ep,
 			"host and port must both be set or both be empty",
+		))
+	}
+
+	switch c.Spec.ControlPlaneEndpointPolicy {
+	case "", EndpointManaged, EndpointExternal:
+	default:
+		allErrs = append(allErrs, field.NotSupported(
+			field.NewPath("spec", "controlPlaneEndpointPolicy"),
+			c.Spec.ControlPlaneEndpointPolicy,
+			[]string{string(EndpointManaged), string(EndpointExternal)},
 		))
 	}
 

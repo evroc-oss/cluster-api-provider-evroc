@@ -454,6 +454,65 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 	}
 }
 
+func TestEvrocClusterValidateUpdate_ControlPlaneEndpointPolicy(t *testing.T) {
+	clusterWithPolicy := func(policy EndpointManagementPolicy) *EvrocCluster {
+		return &EvrocCluster{Spec: EvrocClusterSpec{
+			Project:                    "test-project",
+			Region:                     "se-sto",
+			FailureDomains:             []string{"a"},
+			CredentialsRef:             &SecretReference{Name: "test-creds"},
+			ControlPlaneEndpointPolicy: policy,
+		}}
+	}
+
+	tests := []struct {
+		name        string
+		oldPolicy   EndpointManagementPolicy
+		newPolicy   EndpointManagementPolicy
+		expectError bool
+	}{
+		{
+			name:      "default and Managed are equivalent",
+			newPolicy: EndpointManaged,
+		},
+		{
+			name:        "Managed to External is rejected",
+			oldPolicy:   EndpointManaged,
+			newPolicy:   EndpointExternal,
+			expectError: true,
+		},
+		{
+			name:        "External to Managed is rejected",
+			oldPolicy:   EndpointExternal,
+			newPolicy:   EndpointManaged,
+			expectError: true,
+		},
+		{
+			name:      "External remains External",
+			oldPolicy: EndpointExternal,
+			newPolicy: EndpointExternal,
+		},
+		{
+			name:        "unsupported policy is rejected",
+			oldPolicy:   EndpointManaged,
+			newPolicy:   "Unsupported",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := clusterValidator.ValidateUpdate(
+				context.Background(), clusterWithPolicy(tt.oldPolicy), clusterWithPolicy(tt.newPolicy))
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
 	g := NewWithT(t)
 

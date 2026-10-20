@@ -5,7 +5,7 @@ package v1beta1
 
 import clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
-// Conditions and condition Reasons for the EvrocCluster object.
+// Conditions and condition Reasons for the EvrocCluster and EvrocMachine objects.
 
 const (
 	// ClusterReadyCondition reports on the overall readiness of the cluster
@@ -42,4 +42,28 @@ const (
 
 	// LoadBalancerReadyReason is used when the LB is active and has an address.
 	LoadBalancerReadyReason = "Ready"
+
+	// QuotaExceededReason is used when a cloud API call is rejected because
+	// an organization quota has been reached.
+	QuotaExceededReason = "QuotaExceeded"
+
+	// InsufficientPermissionsReason is used when a cloud API call is denied.
+	InsufficientPermissionsReason = "InsufficientPermissions"
+
+	// InvalidConfigurationReason is used when the cloud API rejects the
+	// resource spec.
+	InvalidConfigurationReason = "InvalidConfiguration"
+
+	// MachineOperationFailedReason is the default reason for unclassified
+	// machine reconciliation errors.
+	MachineOperationFailedReason = "MachineOperationFailed"
+
+	// MachineReadyCondition reports on the overall readiness of the machine.
+	MachineReadyCondition clusterv1.ConditionType = "Ready"
+
+	// MachineReadyReason is used when the machine's VM is running.
+	MachineReadyReason = "MachineReady"
+
+	// MachineNotReadyReason is used when the machine's VM is not yet ready.
+	MachineNotReadyReason = "MachineNotReady"
 )

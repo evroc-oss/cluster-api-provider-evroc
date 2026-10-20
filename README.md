@@ -44,6 +44,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
   - [Scale Workers](#scale-workers)
   - [Scale Control Plane](#scale-control-plane)
   - [Update Security Groups](#update-security-groups)
+  - [Access Nodes (SSH)](#access-nodes-ssh)
   - [Use a Custom Disk Image](#use-a-custom-disk-image)
   - [Upgrade the evroc Provider](#upgrade-the-evroc-provider)
   - [Upgrade Kubernetes Version](#upgrade-kubernetes-version)
@@ -64,6 +65,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
   - [Automatic Ownership Labels](#automatic-ownership-labels)
   - [Cluster Ownership ID](#cluster-ownership-id)
 - [Build and Test](#build-and-test)
+  - [Run Local Code on k3d](#run-local-code-on-k3d)
   - [Service Account Setup for E2E Tests](#service-account-setup-for-e2e-tests)
 - [Documentation](#documentation)
 - [Security](#security)
@@ -81,7 +83,6 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
 
 - Docker running locally
 - `kubectl` and `kind` installed
-- [cert-manager](https://cert-manager.io/) installed on the management cluster (required for admission webhooks)
 - evroc service account (either existing, or created in step 6)
 
 The release is validated with the following stack:
@@ -388,16 +389,6 @@ clusterctl get kubeconfig "${CLUSTER_NAME}" > "${CLUSTER_NAME}.kubeconfig"
 kubectl --kubeconfig="${CLUSTER_NAME}.kubeconfig" get nodes
 ```
 
-**SSH access** (if `EVROC_SSH_KEY` was set):
-
-```bash
-# Get the public IP of a node
-kubectl get evrocmachine -o wide
-
-# SSH to a node (kubeadm/Ubuntu images use 'evroc-user')
-ssh evroc-user@<PUBLIC_IP>
-```
-
 **CNI note:** The `minimal`, `calico`, and `ha-lb` flavors install Calico automatically via `postKubeadmCommands`. The `default` and `prebuilt` flavors install Cilium the same way. The `rke2` flavor includes Canal CNI. You only need to install a CNI manually if you are using a custom template without CNI.
 
 ```bash
@@ -615,6 +606,16 @@ kubectl edit evroccluster ${CLUSTER_NAME}
 # Edit spec.securityGroups.common.inlineSecurityGroups[*].rules
 # Changes apply automatically to all existing VMs with inheritFromCluster enabled
 ```
+
+### Access Nodes (SSH)
+
+By default, VMs created by the provider do not have a public IPv4 address — only the cluster's load balancer does. Nodes can still be reached over SSH as the `evroc-user` user, using the key from `EVROC_SSH_KEY` (port 22 is open to your `EVROC_ALLOWED_CIDR`):
+
+- **Jump host:** SSH to the node's private IPv4 address from any host with network access to the cluster's VPC.
+- **IPv6:** VMs get an IPv6 address when the cluster network includes IPv6 (`network.stackType` defaults to `dual-stack`); the `dualstack` flavor opens SSH to `EVROC_ALLOWED_CIDR_V6`, other flavors need an IPv6 SSH rule added to the security groups first.
+- **Per-node public IP (opt-in):** set `networkingConfig.publicIP.enabled: true` on an `EvrocMachineTemplate` to have the provider create a public IP named `<machine-name>-public-ip` for each machine; it is deleted with the machine.
+
+Retrieve node addresses from the `EvrocMachine` resources: `kubectl get evrocmachines -o wide`. In `status.addresses`, `InternalIP` is the private IPv4 (and the node's IPv6 when present); `ExternalIP` is the public IPv4, when one is configured.
 
 ### Use a Custom Disk Image
 
@@ -860,7 +861,7 @@ kubectl get evrocmachine -A -o yaml
 
 **API endpoint refuses connections (`connection reset by peer` on 6443):**
 - A *reset* (not timeout) means the LB is up but nothing is listening on the node — bootstrap failed. It is not a firewall problem.
-- SSH to the node (via a jump host in the same VPC if nodes have no public IP) and check:
+- SSH to the node (via a jump host in the same VPC if nodes have no public IP — see [Access Nodes (SSH)](#access-nodes-ssh)) and check:
   - `/run/cluster-api/bootstrap-success.complete` — absent means bootstrap did not finish
   - `/var/log/cloud-init-output.log` — the failing command's output is here
 
@@ -876,7 +877,7 @@ kubectl get evrocmachine -A -o yaml
 
 **Nodes NotReady:**
 - Ensure CNI is installed — the `minimal` and `ha-lb` flavors install Calico automatically; for custom templates you must install a CNI manually
-- Check kubelet logs on workload nodes: `ssh evroc-user@<PUBLIC_IP> sudo journalctl -u kubelet`
+- Check kubelet logs on workload nodes: SSH to the node as described in [Access Nodes (SSH)](#access-nodes-ssh), then run `sudo journalctl -u kubelet`
 
 **Control plane timeout:**
 - Verify security groups allow port 6443 (Kubernetes API) and port 10250 (kubelet)
@@ -1100,23 +1101,69 @@ make test-e2e-capi
 make test-e2e-isolated
 ```
 
+### Run Local Code on k3d
+
+A quick sanity check of your changes on a local k3d management cluster. You
+need Docker, k3d v5, kubectl, Helm, and clusterctl **v1.12.8 or newer**
+([step 3](#3-install-clusterctl)). Run from the repository root:
+
+```bash
+mkdir -p ~/.kube
+export KUBECONFIG=$HOME/.kube/k3d-capi-dev.yaml   # absolute path
+k3d cluster create capi-dev --image rancher/k3s:v1.35.8-k3s1 \
+  --kubeconfig-update-default=false --kubeconfig-switch-context=false --wait
+k3d kubeconfig get capi-dev > $KUBECONFIG
+
+# CAPI core (also installs cert-manager). Do not pass --infrastructure.
+clusterctl init --core cluster-api:v1.12.11 \
+  --bootstrap kubeadm:v1.12.11 --control-plane kubeadm:v1.12.11
+
+make docker-build IMG=cluster-api-provider-evroc:latest
+k3d image import cluster-api-provider-evroc:latest -c capi-dev
+helm upgrade --install capi-evroc ./helm/cluster-api-provider-evroc \
+  -n capi-evroc-system --create-namespace \
+  --set controller.image.repository=cluster-api-provider-evroc \
+  --set controller.image.tag=latest --wait
+```
+
+After a code change, rebuild, import, and restart:
+
+```bash
+make docker-build IMG=cluster-api-provider-evroc:latest
+k3d image import cluster-api-provider-evroc:latest -c capi-dev
+kubectl -n capi-evroc-system rollout restart deploy
+```
+
+To create a workload cluster, follow Quick Start [steps 6-8](#6-create-a-service-account),
+but use `--from templates/cluster-template-minimal.yaml` instead of
+`--infrastructure evroc --flavor minimal` so your local templates are used.
+
 ### Service Account Setup for E2E Tests
 
-Follow [step 6](#6-create-a-service-account) to create a service account, then configure the E2E test credentials in `test/e2e/config.yaml`:
+Follow [step 6](#6-create-a-service-account) to create a service account, then
+create the two (gitignored) E2E config files from their samples:
+
+```bash
+cp test/e2e/config.yaml.sample test/e2e/config.yaml
+cp test/e2e/capi-e2e-config.yaml.sample test/e2e/capi-e2e-config.yaml
+```
+
+Put the credentials in `test/e2e/config.yaml`:
 
 ```yaml
 variables:
-  EVROC_PROJECT: "your-project-id"
-  EVROC_REGION: "se-sto"
   EVROC_ORGANIZATION: "your-organization-id"
   EVROC_SERVICE_ACCOUNT_ID: "my-capi-sa"
   EVROC_SERVICE_ACCOUNT_SECRET: "<base64-encoded-jwk-private-key>"
 ```
 
-Then run:
+Replace the `<your-...>` placeholders in `test/e2e/capi-e2e-config.yaml`
+(`EVROC_PROJECT`, `EVROC_SSH_KEY`, `EVROC_ALLOWED_CIDR`). Values in this file
+take precedence over `config.yaml`.
+
+Then run (this builds the provider image from your checkout first):
 
 ```bash
-make e2e-image
 make test-e2e-capi
 ```
 
