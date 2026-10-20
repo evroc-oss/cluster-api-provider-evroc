@@ -25,6 +25,9 @@ spec:
       jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
     - description: evroc Machine ID
       jsonPath: .status.machineID
       name: MachineID

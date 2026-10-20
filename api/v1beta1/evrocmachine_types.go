@@ -232,6 +232,7 @@ type ManagedDisk struct {
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta1"
 // +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Machine is ready"
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].reason"
 // +kubebuilder:printcolumn:name="MachineID",type="string",JSONPath=".status.machineID",description="evroc Machine ID"
 // +kubebuilder:printcolumn:name="ComputeProfile",type="string",JSONPath=".spec.computeProfile",description="VM compute profile"
 

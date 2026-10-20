@@ -37,6 +37,17 @@ type EvrocClusterSpec struct {
 	// +optional
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
 
+	// ControlPlaneEndpointPolicy selects who owns the control plane endpoint.
+	//
+	// When "Managed" (the default), the provider creates a control-plane load
+	// balancer and owns ControlPlaneEndpoint. When "External", another component
+	// owns the endpoint and the provider reconciles only worker-facing
+	// infrastructure.
+	// +optional
+	// +kubebuilder:validation:Enum=Managed;External
+	// +kubebuilder:default=Managed
+	ControlPlaneEndpointPolicy EndpointManagementPolicy `json:"controlPlaneEndpointPolicy,omitempty"`
+
 	// FailureDomains is a list of failure domains (availability zones) in which machines should be placed.
 	// This provides high availability by spreading machines across zones.
 	// Defaults to ["a", "b", "c"] if not specified.
@@ -57,7 +68,7 @@ type EvrocClusterSpec struct {
 	AdditionalLabels map[string]string `json:"additionalLabels,omitempty"`
 
 	// ControlPlaneConfig defines configuration for the control plane endpoint.
-	// A load balancer is always created for the control plane.
+	// A load balancer is created when ControlPlaneEndpointPolicy is Managed.
 	// Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
 	// +optional
 	ControlPlaneConfig *ControlPlaneConfig `json:"controlPlaneConfig,omitempty"`
@@ -202,6 +213,28 @@ type NetworkSpec struct {
 	// +kubebuilder:validation:Enum="ipv4-only";"dual-stack";"ipv6-only"
 	// +kubebuilder:default="dual-stack"
 	StackType *string `json:"stackType,omitempty"`
+}
+
+// EndpointManagementPolicy selects who owns the control plane endpoint.
+type EndpointManagementPolicy string
+
+const (
+	// EndpointManaged means the provider creates the control-plane load
+	// balancer and owns ControlPlaneEndpoint.
+	EndpointManaged EndpointManagementPolicy = "Managed"
+
+	// EndpointExternal means another component owns the endpoint. The provider
+	// does not create a control-plane load balancer.
+	EndpointExternal EndpointManagementPolicy = "External"
+)
+
+// ShouldManageControlPlaneEndpoint reports whether this provider should
+// auto-create the control-plane load balancer and own ControlPlaneEndpoint.
+func (c *EvrocCluster) ShouldManageControlPlaneEndpoint() bool {
+	if c == nil {
+		return true
+	}
+	return c.Spec.ControlPlaneEndpointPolicy != EndpointExternal
 }
 
 // ControlPlaneConfig defines configuration for the control plane endpoint.
@@ -417,6 +450,7 @@ type ManagedSecurityGroup struct {
 // +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels['cluster\\.x-k8s\\.io/cluster-name']",description="Cluster"
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Cluster infrastructure is ready"
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].reason"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".spec.controlPlaneEndpoint.host",description="Control plane endpoint"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Time duration since creation"
 

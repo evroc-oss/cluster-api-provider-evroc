@@ -321,6 +321,64 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 	}
 }
 
+func TestEvrocClusterReconciler_ExternalEndpointReadyWithoutInfraEndpoint(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = infrav1.AddToScheme(scheme)
+	_ = clusterv1.AddToScheme(scheme)
+
+	const clusterName = "external-control-plane"
+	cluster := &clusterv1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{Name: clusterName, Namespace: "default"},
+	}
+	evrocCluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterName,
+			Namespace: "default",
+			UID:       types.UID("abcd1234-0000-0000-0000-000000000000"),
+			Labels:    map[string]string{clusterv1.ClusterNameLabel: clusterName},
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			Project:                    "test-project",
+			Region:                     "se-sto",
+			FailureDomains:             []string{"a"},
+			ControlPlaneEndpointPolicy: infrav1.EndpointExternal,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cluster, evrocCluster).
+		WithStatusSubresource(evrocCluster).
+		Build()
+	mockClient := new(mocks.MockClient)
+	mockClient.On("SDKClient").Return(testSDKClientForCluster())
+	reconciler := &EvrocClusterReconciler{
+		Client:        fakeClient,
+		Scheme:        scheme,
+		clientFactory: staticClientFactory(mockClient),
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: clusterName, Namespace: "default"}}
+
+	// First reconcile adds the finalizer.
+	result, err := reconciler.Reconcile(context.Background(), req)
+	assert.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+
+	// External mode must become ready without creating an evroc control-plane
+	// load balancer or requiring an endpoint on EvrocCluster.
+	result, err = reconciler.Reconcile(context.Background(), req)
+	assert.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	var updated infrav1.EvrocCluster
+	assert.NoError(t, fakeClient.Get(context.Background(), req.NamespacedName, &updated))
+	assert.True(t, updated.Status.Ready)
+	assert.NotNil(t, updated.Status.Initialization.InfrastructureProvisioned)
+	assert.True(t, *updated.Status.Initialization.InfrastructureProvisioned)
+	assert.True(t, updated.Spec.ControlPlaneEndpoint.IsZero())
+	mockClient.AssertNotCalled(t, "LoadBalancers")
+}
+
 func TestEvrocClusterReconciler_CreateWithoutEndpoint(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = infrav1.AddToScheme(scheme)
@@ -812,6 +870,32 @@ func TestCleanupResources_DeletesLB(t *testing.T) {
 	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
 	assert.NoError(t, err)
 	mockLB.AssertCalled(t, "Delete", mock.Anything, "test-cluster-abcd1234-cp-lb", "test-cluster-abcd1234", true)
+}
+
+func TestCleanupResources_ExternalEndpointSkipsLB(t *testing.T) {
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+			Annotations: map[string]string{
+				clusterOwnershipIDAnnotation: "test-cluster-owner",
+			},
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			ControlPlaneEndpointPolicy: infrav1.EndpointExternal,
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockSG := new(mocks.MockSecurityGroupService)
+	mockClient.On("SecurityGroups").Return(mockSG)
+	mockSG.On("ListByOwner", mock.Anything, "test-cluster-owner").Return([]string{}, nil)
+	expectNoWorkloadResources(mockClient)
+
+	reconciler := &EvrocClusterReconciler{}
+	err := reconciler.cleanupResources(context.Background(), cluster, mockClient)
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "LoadBalancers")
 }
 
 func TestCleanupResources_PreservesExistingLBPublicIP(t *testing.T) {
@@ -1903,6 +1987,66 @@ func TestCleanupResources_WorkloadDrivers(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			workload.AssertExpectations(t)
+		})
+	}
+}
+
+func TestHandleClusterError(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		wantReason   string
+		wantTerminal bool
+	}{
+		{
+			name: "quota exceeded",
+			err: fmt.Errorf("failed to create load balancer: %w", &evroc.APIError{
+				StatusCode: http.StatusForbidden,
+				Reason:     evroc.ReasonInsufficientQuota,
+				Debug:      "not enough quota to perform request. Requested additional load balancer but no load balancers are available (out of 10).",
+			}),
+			wantReason:   infrav1.QuotaExceededReason,
+			wantTerminal: true,
+		},
+		{
+			name:         "transient error",
+			err:          fmt.Errorf("connection refused"),
+			wantReason:   infrav1.ClusterReconciliationFailedReason,
+			wantTerminal: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+				Spec:       infrav1.EvrocClusterSpec{Project: "p", Region: "se-sto"},
+			}
+
+			reconciler := &EvrocClusterReconciler{}
+			result, err := reconciler.handleClusterError(context.Background(), cluster, tt.err)
+
+			if tt.wantTerminal {
+				assert.Error(t, err)
+				assert.Equal(t, time.Duration(0), result.RequeueAfter)
+			} else {
+				assert.NoError(t, err)
+				assert.True(t, result.RequeueAfter > 0)
+			}
+
+			// handleClusterError sets the condition on the in-memory object;
+			// persistence is handled by the deferred patch helper in reconcileNormal.
+			var readyCond *clusterv1.Condition
+			for i := range cluster.Status.Conditions {
+				if cluster.Status.Conditions[i].Type == infrav1.ClusterReadyCondition {
+					readyCond = &cluster.Status.Conditions[i]
+					break
+				}
+			}
+			assert.NotNil(t, readyCond)
+			assert.Equal(t, corev1.ConditionFalse, readyCond.Status)
+			assert.Equal(t, clusterv1.ConditionSeverityError, readyCond.Severity)
+			assert.Equal(t, tt.wantReason, readyCond.Reason)
 		})
 	}
 }

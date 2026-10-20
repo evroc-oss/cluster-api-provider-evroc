@@ -31,6 +31,9 @@ spec:
       jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
     - description: Control plane endpoint
       jsonPath: .spec.controlPlaneEndpoint.host
       name: Endpoint
@@ -76,7 +79,7 @@ spec:
               controlPlaneConfig:
                 description: |-
                   ControlPlaneConfig defines configuration for the control plane endpoint.
-                  A load balancer is always created for the control plane.
+                  A load balancer is created when ControlPlaneEndpointPolicy is Managed.
                   Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
                 properties:
                   loadBalancer:
@@ -118,6 +121,19 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              controlPlaneEndpointPolicy:
+                default: Managed
+                description: |-
+                  ControlPlaneEndpointPolicy selects who owns the control plane endpoint.
+
+                  When "Managed" (the default), the provider creates a control-plane load
+                  balancer and owns ControlPlaneEndpoint. When "External", another component
+                  owns the endpoint and the provider reconciles only worker-facing
+                  infrastructure.
+                enum:
+                - Managed
+                - External
+                type: string
               credentialsRef:
                 description: |-
                   CredentialsRef is a reference to a Secret in the EvrocCluster namespace
@@ -744,7 +760,7 @@ spec:
                       controlPlaneConfig:
                         description: |-
                           ControlPlaneConfig defines configuration for the control plane endpoint.
-                          A load balancer is always created for the control plane.
+                          A load balancer is created when ControlPlaneEndpointPolicy is Managed.
                           Use this section to customize LB behavior (e.g., bring-your-own LB or IP).
                         properties:
                           loadBalancer:
@@ -789,6 +805,19 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      controlPlaneEndpointPolicy:
+                        default: Managed
+                        description: |-
+                          ControlPlaneEndpointPolicy selects who owns the control plane endpoint.
+
+                          When "Managed" (the default), the provider creates a control-plane load
+                          balancer and owns ControlPlaneEndpoint. When "External", another component
+                          owns the endpoint and the provider reconciles only worker-facing
+                          infrastructure.
+                        enum:
+                        - Managed
+                        - External
+                        type: string
                       credentialsRef:
                         description: |-
                           CredentialsRef is a reference to a Secret in the EvrocCluster namespace
@@ -1188,6 +1217,9 @@ spec:
       jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
     - description: evroc Machine ID
       jsonPath: .status.machineID
       name: MachineID
@@ -1936,11 +1968,11 @@ kind: Namespace
 metadata:
   name: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1955,11 +1987,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 ---
@@ -1969,11 +2001,11 @@ kind: ClusterRole
 metadata:
   name: cluster-api-provider-evroc-manager-role
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2083,11 +2115,11 @@ kind: ClusterRoleBinding
 metadata:
   name: cluster-api-provider-evroc-manager-rolebinding
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2106,11 +2138,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-role
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 rules:
@@ -2153,11 +2185,11 @@ metadata:
   name: cluster-api-provider-evroc-leader-election-rolebinding
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 roleRef:
@@ -2180,11 +2212,11 @@ metadata:
   name: cluster-api-provider-evroc-webhook-service
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2209,11 +2241,11 @@ metadata:
   name: cluster-api-provider-evroc-controller-manager
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2240,7 +2272,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: manager
-        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.6.0"
+        image: "ghcr.io/evroc-oss/cluster-api-provider-evroc:v0.7.0"
         imagePullPolicy: IfNotPresent
         args:
         - --leader-elect
@@ -2314,11 +2346,11 @@ metadata:
   name: cluster-api-provider-evroc-serving-cert
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2337,11 +2369,11 @@ metadata:
   name: cluster-api-provider-evroc-selfsigned-issuer
   namespace: capi-evroc-system
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
 spec:
@@ -2357,11 +2389,11 @@ kind: MutatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-mutating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:
@@ -2418,11 +2450,11 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: cluster-api-provider-evroc-validating-webhook-configuration
   labels:
-    helm.sh/chart: cluster-api-provider-evroc-0.6.0
+    helm.sh/chart: cluster-api-provider-evroc-0.7.0
     app.kubernetes.io/name: cluster-api-provider-evroc
     app.kubernetes.io/instance: cluster-api-provider-evroc
     control-plane: controller-manager
-    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/version: "0.7.0"
     app.kubernetes.io/managed-by: Helm
     cluster.x-k8s.io/provider: infrastructure-evroc
   annotations:
