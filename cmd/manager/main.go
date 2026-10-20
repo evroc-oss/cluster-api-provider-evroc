@@ -113,6 +113,7 @@ func main() {
 	if err = (&controller.EvrocClusterReconciler{
 		Client:     mgr.GetClient(),
 		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor("evroccluster-controller"),
 		SDKMetrics: sdkMetrics,
 	}).SetupWithManager(context.Background(), mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvrocCluster")

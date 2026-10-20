@@ -17,9 +17,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	runtimecontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -54,6 +57,7 @@ var errCloudResourcesDeleting = errors.New("cloud resources still deleting")
 type EvrocClusterReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
+	Recorder   record.EventRecorder
 	SDKMetrics *metrics.Manager
 
 	// clientFactory builds the cloud client for a cluster. Defaults to
@@ -82,7 +86,7 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// handling so that clusterctl move does not trigger infrastructure cleanup.
 	if helpers.IsPaused(ctx, r.Client, evrocCluster) {
 		log.FromContext(ctx).Info("Reconciliation is paused for this object")
-		setClusterCondition(evrocCluster, infrav1.PausedCondition, corev1.ConditionTrue, infrav1.PausedReason, "Reconciliation is paused")
+		setClusterCondition(evrocCluster, infrav1.PausedCondition, corev1.ConditionTrue, clusterv1.ConditionSeverityNone, infrav1.PausedReason, "Reconciliation is paused")
 		if err := r.Status().Update(ctx, evrocCluster); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating paused condition: %w", err)
 		}
@@ -95,7 +99,7 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// Surface the cause on the object. Without this the controller retries
 		// silently and the only clue is in its logs, which looks identical to
 		// "still provisioning" from the outside.
-		setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionFalse,
+		setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionFalse, clusterv1.ConditionSeverityError,
 			infrav1.CredentialsNotFoundReason, err.Error())
 		credentialErr := fmt.Errorf("resolving cloud credentials: %w", err)
 		if statusErr := r.Status().Update(ctx, evrocCluster); statusErr != nil {
@@ -161,7 +165,7 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 		"region", evrocCluster.Spec.Region)
 
 	// Mark the Paused condition as False now that reconciliation has resumed.
-	setClusterCondition(evrocCluster, infrav1.PausedCondition, corev1.ConditionFalse, "Reconciling", "Reconciliation is active")
+	setClusterCondition(evrocCluster, infrav1.PausedCondition, corev1.ConditionFalse, clusterv1.ConditionSeverityNone, "Reconciling", "Reconciliation is active")
 
 	// Keep an owned copy of the credential secret so clusterctl move carries the
 	// credentials with the cluster, without taking ownership of the user's secret.
@@ -185,41 +189,45 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 	}
 	evrocCluster.Status.Network.SubnetIDs = subnetIDs
 
-	// Reconcile control plane load balancer (always auto-created).
-	{
+	// Reconcile the control plane load balancer only when CAPE owns the endpoint.
+	if evrocCluster.ShouldManageControlPlaneEndpoint() {
 		lbName, err := resolveLoadBalancerName(evrocCluster)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		result, err := r.reconcileAutoCreatedLoadBalancer(ctx, evrocCluster, lbName, cloudClient)
-		if err != nil || !result.IsZero() {
-			return result, err
+		if err != nil {
+			return r.handleClusterError(ctx, evrocCluster, err)
 		}
+		if !result.IsZero() {
+			return result, nil
+		}
+	} else {
+		log.Info("Control plane endpoint is externally managed; skipping load balancer creation",
+			"policy", evrocCluster.Spec.ControlPlaneEndpointPolicy)
 	}
 
 	// Reconcile SecurityGroups
 	if err := r.reconcileSecurityGroups(ctx, evrocCluster, cloudClient); err != nil {
 		log.Error(err, "Failed to reconcile security groups")
-		return ctrl.Result{}, err
+		return r.handleClusterError(ctx, evrocCluster, err)
 	}
 
 	// Mark infrastructure as provisioned and ready.
-	// CAPRKE2 requires Ready=true before it will create control plane machines.
-	provisioned := true
-	evrocCluster.Status.Initialization.Provisioned = &provisioned
-	evrocCluster.Status.Initialization.InfrastructureProvisioned = &provisioned
-	evrocCluster.Status.Ready = true
-	// Clear any earlier failure (e.g. CredentialsNotFound) now that reconciliation succeeded.
-	setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionTrue,
-		infrav1.ClusterReadyReason, "")
-
-	if evrocCluster.Spec.ControlPlaneEndpoint.IsZero() {
-		log.Info("Waiting for control plane endpoint (LoadBalancer not yet ready)")
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	//
+	// Most control plane providers (such as CAPPKE2)
+	// required Ready=true before they will create control plane machines.
+	if evrocCluster.ShouldManageControlPlaneEndpoint() {
+		log.Info("EvrocCluster is ready",
+			"endpoint", evrocCluster.Spec.ControlPlaneEndpoint.String())
+	} else {
+		log.Info("EvrocCluster worker infrastructure is ready; control plane endpoint is externally managed")
 	}
-
-	log.Info("EvrocCluster is ready",
-		"endpoint", evrocCluster.Spec.ControlPlaneEndpoint.String())
+	evrocCluster.Status.Initialization.Provisioned = ptr.To(true)
+	evrocCluster.Status.Initialization.InfrastructureProvisioned = ptr.To(true)
+	evrocCluster.Status.Ready = true
+	setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionTrue, clusterv1.ConditionSeverityNone,
+		infrav1.ClusterReadyReason, "")
 
 	return ctrl.Result{}, nil
 }
@@ -295,7 +303,7 @@ func (r *EvrocClusterReconciler) reconcileAutoCreatedLoadBalancer(
 	// Wait for LB to be active and have an address.
 	if lb.Address == "" || !lb.IsActive() {
 		log.Info("Waiting for LoadBalancer to become active", "name", resourceName, "status", lb.Status)
-		setClusterCondition(cluster, infrav1.LoadBalancerReadyCondition, corev1.ConditionFalse,
+		setClusterCondition(cluster, infrav1.LoadBalancerReadyCondition, corev1.ConditionFalse, clusterv1.ConditionSeverityInfo,
 			infrav1.LoadBalancerProvisioningReason, "Load balancer is being provisioned")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
@@ -338,7 +346,7 @@ func (r *EvrocClusterReconciler) useLoadBalancer(
 		Backends: backendNames,
 	}
 
-	setClusterCondition(cluster, infrav1.LoadBalancerReadyCondition, corev1.ConditionTrue,
+	setClusterCondition(cluster, infrav1.LoadBalancerReadyCondition, corev1.ConditionTrue, clusterv1.ConditionSeverityNone,
 		infrav1.LoadBalancerReadyReason, "Load balancer is active")
 
 	return ctrl.Result{}, nil
@@ -636,63 +644,28 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 	// Resources the CCM and CSI drivers created inside the workload cluster
 	// carry managed-by=<ownership ID>. The drivers are gone with the nodes, so
 	// the provider removes them (see README "Cluster ownership ID").
-	deleteDisks := cluster.Annotations[deleteCSIDisksAnnotation] == "true" // validated by the webhook
-	if pending, err := cloudClient.WorkloadResources().Cleanup(ctx, clusterID, deleteDisks); err != nil {
+	shouldDeleteDisks := cluster.Annotations[deleteCSIDisksAnnotation] == "true" // validated by the webhook
+	areChileResourcesLeft, err := cloudClient.WorkloadResources().Cleanup(ctx, clusterID, shouldDeleteDisks)
+	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to clean up workload driver resources: %w", err))
-	} else if pending {
+	}
+	if areChileResourcesLeft {
 		stillDeleting = append(stillDeleting, "driver resources labelled managed-by="+clusterID)
 	}
 
-	// Delete the managed LoadBalancer and its sub-resources (BackendPool,
-	// BackendService, L4Route, PublicIP). The LB name is deterministic; its
-	// sub-resources are found by the capi_cluster-id label, so every one is
-	// removed regardless of how many ports the load balancer had.
-	if lbName, err := resolveLoadBalancerName(cluster); err != nil {
-		errs = append(errs, fmt.Errorf("resolving load balancer name for cleanup: %w", err))
-	} else {
-		deletePublicIP := true
-		if lbCfg := cluster.Spec.ControlPlaneConfig.GetLoadBalancer(); lbCfg != nil &&
-			lbCfg.ExistingPublicIPID != nil && *lbCfg.ExistingPublicIPID != "" {
-			deletePublicIP = false
+	if cluster.ShouldManageControlPlaneEndpoint() {
+		pendingLB, err := r.cleanupLB(ctx, cluster, clusterID, cloudClient)
+		if err != nil {
+			errs = append(errs, err)
 		}
-		log.Info("Deleting LoadBalancer", "id", lbName)
-		if err := cloudClient.LoadBalancers().Delete(ctx, lbName, clusterID, deletePublicIP); err != nil {
-			if !cloud.IsNotFoundError(err) {
-				errs = append(errs, fmt.Errorf("failed to delete managed LoadBalancer %s: %w", lbName, err))
-			}
-		}
-		// Hold the finalizer until every sub-resource is gone, not just until
-		// the deletes are issued.
-		if done, err := cloudClient.LoadBalancers().DeletionComplete(ctx, lbName, clusterID, deletePublicIP); err != nil {
-			errs = append(errs, fmt.Errorf("failed to check LoadBalancer deletion for cluster %s: %w", cluster.UID, err))
-		} else if !done {
-			stillDeleting = append(stillDeleting, "LoadBalancer/"+lbName)
-		}
+		stillDeleting = append(stillDeleting, pendingLB...)
 	}
 
-	// Delete managed SecurityGroups by ownership label. Only SGs the provider
-	// created carry capi_cluster-id, so externally-managed SGs are never
-	// selected. This works even when status is empty (post-move / orphan).
-	sgNames, err := cloudClient.SecurityGroups().ListByOwner(ctx, clusterID)
+	pendingSGs, err := r.cleanupSGs(ctx, clusterID, cloudClient)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("failed to list security groups for cleanup: %w", err))
+		errs = append(errs, err)
 	}
-	for _, name := range sgNames {
-		log.Info("Deleting managed SecurityGroup", "id", name)
-		if err := cloudClient.SecurityGroups().Delete(ctx, name); err != nil {
-			if !cloud.IsNotFoundError(err) {
-				errs = append(errs, fmt.Errorf("failed to delete managed SecurityGroup %s: %w", name, err))
-			}
-		}
-	}
-	// Hold the finalizer until no owned SGs remain.
-	if remaining, err := cloudClient.SecurityGroups().ListByOwner(ctx, clusterID); err != nil {
-		errs = append(errs, fmt.Errorf("failed to recheck security groups for cleanup: %w", err))
-	} else {
-		for _, name := range remaining {
-			stillDeleting = append(stillDeleting, "SecurityGroup/"+name)
-		}
-	}
+	stillDeleting = append(stillDeleting, pendingSGs...)
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -703,6 +676,78 @@ func (r *EvrocClusterReconciler) cleanupResources(ctx context.Context, cluster *
 	}
 
 	return nil
+}
+
+// cleanupLB deletes the managed LoadBalancer and its sub-resources when the
+// cluster owns its control-plane endpoint. The LB name is deterministic; its
+// sub-resources (BackendPool, BackendService, L4Route, PublicIP) are found by
+// the capi_cluster-id label, so every one is removed regardless of how many
+// ports the load balancer had.
+//
+// It returns the cloud resource names still being deleted.
+func (r *EvrocClusterReconciler) cleanupLB(ctx context.Context, cluster *infrav1.EvrocCluster, clusterID string, cloudClient cloud.ClientInterface) ([]string, error) {
+	var stillDeleting []string
+	var errs []error
+
+	lbName, err := resolveLoadBalancerName(cluster)
+	if err != nil {
+		return nil, fmt.Errorf("resolving load balancer name for cleanup: %w", err)
+	}
+
+	deletePublicIP := true
+	if lbCfg := cluster.Spec.ControlPlaneConfig.GetLoadBalancer(); lbCfg != nil &&
+		lbCfg.ExistingPublicIPID != nil && *lbCfg.ExistingPublicIPID != "" {
+		deletePublicIP = false
+	}
+	log.FromContext(ctx).Info("Deleting LoadBalancer", "id", lbName)
+	if err := cloudClient.LoadBalancers().Delete(ctx, lbName, clusterID, deletePublicIP); err != nil {
+		if !cloud.IsNotFoundError(err) {
+			errs = append(errs, fmt.Errorf("failed to delete managed LoadBalancer %s: %w", lbName, err))
+		}
+	}
+	// Hold the finalizer until every sub-resource is gone, not just until
+	// the deletes are issued.
+	if done, err := cloudClient.LoadBalancers().DeletionComplete(ctx, lbName, clusterID, deletePublicIP); err != nil {
+		errs = append(errs, fmt.Errorf("failed to check LoadBalancer deletion for cluster %s: %w", cluster.UID, err))
+	} else if !done {
+		stillDeleting = append(stillDeleting, "LoadBalancer/"+lbName)
+	}
+
+	return stillDeleting, errors.Join(errs...)
+}
+
+// cleanupSGs deletes managed SecurityGroups by ownership label. Only SGs the
+// provider created carry capi_cluster-id, so externally-managed SGs are never
+// selected. This works even when status is empty (post-move / orphan).
+//
+// It returns the names of owned security groups that still remain.
+func (r *EvrocClusterReconciler) cleanupSGs(ctx context.Context, clusterID string, cloudClient cloud.ClientInterface) ([]string, error) {
+	var errs []error
+
+	sgNames, err := cloudClient.SecurityGroups().ListByOwner(ctx, clusterID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list security groups for cleanup: %w", err)
+	}
+	for _, name := range sgNames {
+		log.FromContext(ctx).Info("Deleting managed SecurityGroup", "id", name)
+		if err := cloudClient.SecurityGroups().Delete(ctx, name); err != nil {
+			if !cloud.IsNotFoundError(err) {
+				errs = append(errs, fmt.Errorf("failed to delete managed SecurityGroup %s: %w", name, err))
+			}
+		}
+	}
+	// Hold the finalizer until no owned SGs remain.
+	remaining, err := cloudClient.SecurityGroups().ListByOwner(ctx, clusterID)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to recheck security groups for cleanup: %w", err))
+		return nil, errors.Join(errs...)
+	}
+	var stillDeleting []string
+	for _, name := range remaining {
+		stillDeleting = append(stillDeleting, "SecurityGroup/"+name)
+	}
+
+	return stillDeleting, errors.Join(errs...)
 }
 
 // resolveCloudClient returns a cloud client for the given cluster, built from
@@ -868,8 +913,22 @@ func ensureOwnershipID(obj client.Object, annotation string) (bool, error) {
 	return true, nil
 }
 
+// handleClusterError sets the cluster's Ready condition to False with a
+// reason matching the error class. Persistence is handled by the deferred
+// patch helper in reconcileNormal.
+func (r *EvrocClusterReconciler) handleClusterError(ctx context.Context, evrocCluster *infrav1.EvrocCluster, err error) (ctrl.Result, error) {
+	evrocCluster.Status.Ready = false
+
+	return helpers.HandleCloudError(ctx, evrocCluster, r.Recorder, err,
+		infrav1.ClusterReconciliationFailedReason,
+		fmt.Sprintf("Failed to reconcile cluster: %v", err),
+		func(reason, message string) {
+			setClusterCondition(evrocCluster, infrav1.ClusterReadyCondition, corev1.ConditionFalse, clusterv1.ConditionSeverityError, reason, message)
+		})
+}
+
 // setClusterCondition sets or updates a condition on the cluster's status.
-func setClusterCondition(cluster *infrav1.EvrocCluster, condType clusterv1.ConditionType, status corev1.ConditionStatus, reason, message string) {
+func setClusterCondition(cluster *infrav1.EvrocCluster, condType clusterv1.ConditionType, status corev1.ConditionStatus, severity clusterv1.ConditionSeverity, reason, message string) {
 	now := metav1.Now()
 	newCond := clusterv1.Condition{
 		Type:               condType,
@@ -877,6 +936,7 @@ func setClusterCondition(cluster *infrav1.EvrocCluster, condType clusterv1.Condi
 		LastTransitionTime: now,
 		Reason:             reason,
 		Message:            message,
+		Severity:           severity,
 	}
 	for i, c := range cluster.Status.Conditions {
 		if c.Type == condType {
@@ -920,6 +980,7 @@ func resolveStackType(cluster *infrav1.EvrocCluster) string {
 func (r *EvrocClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.EvrocCluster{}).
+		WithOptions(runtimecontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		// Re-reconcile EvrocCluster if its CredentialRef secret changes.
 		Watches(
 			&corev1.Secret{},

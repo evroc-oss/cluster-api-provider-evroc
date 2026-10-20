@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-20
+
+### Added
+
+- The `EvrocCluster` resource contains a new optional field on its spec
+  - When `spec.controlPlaneEndpointPolicy` is `Managed` (the default, also true is not present), CAPE creates the control plane load balancer and its supporting resources, and sets (and owns) the `spec.controlPlaneEndpoint` field on the `Cluster` resource.
+  - When `spec.controlPlaneEndpointPolicy` is `External`, another component owns the endpoint and CAPE does not create or delete load balancer resources. The `spec.controlPlaneEndpoint` field on the `Cluster` resource.
+
+### Changed
+
+- Upgraded `evroc-go-sdk` to v0.9.3.
+
+### Fixed
+
+- Surface terminal cloud API failures (quota, permissions, invalid
+  configuration) as `Ready=False` conditions with a matching reason on
+  `EvrocCluster` and `EvrocMachine`, emit warning events, and add a
+  `Reason` printer column to both CRDs for visibility in `kubectl get`.
+
 ## [0.6.0] - 2026-10-06
 
 ### Added
@@ -284,7 +303,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -317,3 +336,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.5.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.2
 [0.5.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.5.3
 [0.6.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.6.0
+[0.7.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.0

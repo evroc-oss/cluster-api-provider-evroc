@@ -130,7 +130,7 @@ func (ds *DiskService) Create(
 			return nil, fmt.Errorf("disk %q already exists in zone %q: %w", name, zone, err)
 		}
 		if errors.Is(err, evroc.ErrForbidden) {
-			return nil, fmt.Errorf("insufficient permissions to create disk in zone %q: %w", zone, err)
+			return nil, fmt.Errorf("disk create rejected in zone %q: %w", zone, err)
 		}
 		if errors.Is(err, evroc.ErrBadRequest) {
 			return nil, fmt.Errorf("invalid disk configuration (name=%q, size=%dGB, image=%q, zone=%q): %w",

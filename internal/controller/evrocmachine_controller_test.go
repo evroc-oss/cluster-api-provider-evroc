@@ -5,11 +5,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
-
-	"fmt"
 
 	evroc "github.com/evroc-oss/evroc-go-sdk"
 	computetypes "github.com/evroc-oss/evroc-go-sdk/types/compute"
@@ -1351,40 +1351,6 @@ func TestReconcileVMPublicIP(t *testing.T) {
 	}
 }
 
-func TestParseQuotaError(t *testing.T) {
-	tests := []struct {
-		name     string
-		errMsg   string
-		contains []string
-	}{
-		{
-			name:   "full quota error message",
-			errMsg: "not enough quota to perform request. Requested additional 4 vCPUs and 8GB memory. Only 2 vCPUs (out of 16 in quota) and 4GB memory (out of 32GB in quota) available",
-			contains: []string{
-				"Quota exceeded",
-				"4 vCPUs",
-				"8GB",
-				"2/16",
-				"4GB/32GB",
-			},
-		},
-		{
-			name:     "unrecognized quota message fallback",
-			errMsg:   "some quota error without expected format",
-			contains: []string{"Quota exceeded", "some quota error"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := parseQuotaError(tt.errMsg)
-			for _, c := range tt.contains {
-				assert.Contains(t, result, c)
-			}
-		})
-	}
-}
-
 func TestBuildLabels(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -2187,6 +2153,24 @@ func TestReconcileLBBackend(t *testing.T) {
 			expectAddBackend: false,
 		},
 		{
+			name: "skips externally managed control plane endpoint",
+			machine: &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cp-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						"cluster.x-k8s.io/control-plane": "",
+						"cluster.x-k8s.io/cluster-name":  "test-cluster",
+					},
+				},
+			},
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
+					ControlPlaneEndpointPolicy: infrav1.EndpointExternal,
+				},
+			},
+		},
+		{
 			name: "returns error when cluster not available",
 			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2604,6 +2588,65 @@ func TestDeleteMachineFromCloud(t *testing.T) {
 	}
 }
 
+func TestDeleteMachineFromCloud_ExternalEndpointSkipsLBDeregistration(t *testing.T) {
+	scheme := testScheme()
+	capiCluster := &clusterv1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: clusterv1.ClusterSpec{
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				Kind: "EvrocCluster",
+				Name: "test-cluster",
+			},
+		},
+	}
+	cluster := &infrav1.EvrocCluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-cluster",
+			Namespace: "default",
+		},
+		Spec: infrav1.EvrocClusterSpec{
+			ControlPlaneEndpointPolicy: infrav1.EndpointExternal,
+		},
+	}
+	machine := &infrav1.EvrocMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cp-0",
+			Namespace: "default",
+			Annotations: map[string]string{
+				machineOwnershipIDAnnotation: "machine-owner-1",
+			},
+			Labels: map[string]string{
+				clusterv1.ClusterNameLabel:         "test-cluster",
+				clusterv1.MachineControlPlaneLabel: "",
+			},
+		},
+	}
+
+	mockClient := new(mocks.MockClient)
+	mockVM := new(mocks.MockVirtualMachineService)
+	mockSG := new(mocks.MockSecurityGroupService)
+	mockPIP := new(mocks.MockPublicIPService)
+	mockDisk := new(mocks.MockDiskService)
+	mockClient.On("VirtualMachines").Return(mockVM)
+	mockClient.On("SecurityGroups").Return(mockSG)
+	mockClient.On("PublicIPs").Return(mockPIP)
+	mockClient.On("Disks").Return(mockDisk)
+	mockVM.On("Exists", mock.Anything, "cp-0").Return(false, nil)
+	mockSG.On("ListByMachineOwner", mock.Anything, "machine-owner-1").Return([]string{}, nil)
+	mockPIP.On("ListByOwner", mock.Anything, "machine-owner-1").Return([]string{}, nil)
+	mockDisk.On("ListByOwner", mock.Anything, "machine-owner-1").Return([]string{}, nil)
+
+	reconciler := &EvrocMachineReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(capiCluster, cluster).Build(),
+	}
+	err := reconciler.deleteMachineFromCloud(context.Background(), machine, mockClient)
+	assert.NoError(t, err)
+	mockClient.AssertNotCalled(t, "LoadBalancers")
+}
+
 func TestHandleMachineError(t *testing.T) {
 	scheme := testScheme()
 
@@ -2627,8 +2670,14 @@ func TestHandleMachineError(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	// Test quota error
-	quotaErr := fmt.Errorf("not enough quota to perform request. Requested additional 4 vCPUs and 8GB memory. Only 2 vCPUs (out of 16 in quota) and 4GB memory (out of 32GB in quota) available: %w", evroc.ErrForbidden)
+	// Quota rejections surface as a 403 with the InsufficientQuota reason
+	// code; this is the typed shape the SDK returns through the cloud
+	// layer's wrapping.
+	quotaErr := fmt.Errorf("failed to create virtual machine: %w", &evroc.APIError{
+		StatusCode: http.StatusForbidden,
+		Reason:     evroc.ReasonInsufficientQuota,
+		Debug:      "not enough quota to perform request. Requested additional 4 vCPUs and 8GB memory. Only 2 vCPUs (out of 16 in quota) and 4GB memory (out of 32GB in quota) available",
+	})
 	result, err := reconciler.handleMachineError(context.Background(), machine, quotaErr)
 	assert.Error(t, err)                                   // Terminal errors are returned
 	assert.Equal(t, time.Duration(0), result.RequeueAfter) // No explicit requeue for terminal errors
@@ -2638,14 +2687,15 @@ func TestHandleMachineError(t *testing.T) {
 	_ = fakeClient.Get(context.Background(), client.ObjectKeyFromObject(machine), &updated)
 	var readyCond *clusterv1.Condition
 	for i := range updated.Status.Conditions {
-		if updated.Status.Conditions[i].Type == "Ready" {
+		if updated.Status.Conditions[i].Type == infrav1.MachineReadyCondition {
 			readyCond = &updated.Status.Conditions[i]
 			break
 		}
 	}
 	assert.NotNil(t, readyCond)
 	assert.Equal(t, corev1.ConditionFalse, readyCond.Status)
-	assert.Equal(t, "QuotaExceeded", readyCond.Reason)
+	assert.Equal(t, infrav1.QuotaExceededReason, readyCond.Reason)
+	assert.Equal(t, clusterv1.ConditionSeverityError, readyCond.Severity)
 }
 
 func TestPersistResourcesStatus(t *testing.T) {

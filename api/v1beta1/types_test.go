@@ -40,3 +40,26 @@ func TestSecurityGroupRule(t *testing.T) {
 	assert.Equal(t, "0.0.0.0/0", rule.RemoteCIDR)
 	assert.Empty(t, rule.RemoteSecurityGroup)
 }
+
+func TestShouldManageControlPlaneEndpoint(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy EndpointManagementPolicy
+		want   bool
+	}{
+		{name: "default empty policy is managed", policy: "", want: true},
+		{name: "explicit Managed", policy: EndpointManaged, want: true},
+		{name: "External policy is not managed", policy: EndpointExternal, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &EvrocCluster{}
+			c.Spec.ControlPlaneEndpointPolicy = tt.policy
+			assert.Equal(t, tt.want, c.ShouldManageControlPlaneEndpoint())
+		})
+	}
+
+	// nil receiver defaults to managed (defensive).
+	var nilCluster *EvrocCluster
+	assert.True(t, nilCluster.ShouldManageControlPlaneEndpoint())
+}

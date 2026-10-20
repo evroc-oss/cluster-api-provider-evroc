@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/textproto"
-	"regexp"
 	"strings"
 	"time"
 
@@ -30,6 +29,7 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	runtimecontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -53,10 +53,6 @@ const (
 
 var (
 	errMachineDeletionPending = errors.New("machine deletion pending")
-
-	// Compiled regexes for parsing quota error messages
-	requestedQuotaRegex = regexp.MustCompile(`Requested additional ([0-9]+) vCPUs? and ([0-9.]+[A-Z]*) memory`)
-	availableQuotaRegex = regexp.MustCompile(`Only ([0-9]+) vCPUs? \(out of ([0-9]+) in quota\) and ([0-9.]+[A-Z]*) memory \(out of ([0-9.]+[A-Z]*) in quota\)`)
 )
 
 // machineResourceLabels returns ownership labels for cloud resources created by this machine.
@@ -102,7 +98,7 @@ func (r *EvrocMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// handling so that clusterctl move does not trigger infrastructure cleanup.
 	if helpers.IsPaused(ctx, r.Client, machine) {
 		log.Info("Reconciliation is paused for this object")
-		setMachineCondition(machine, string(infrav1.PausedCondition), corev1.ConditionTrue, infrav1.PausedReason, "Reconciliation is paused")
+		setMachineCondition(machine, string(infrav1.PausedCondition), corev1.ConditionTrue, clusterv1.ConditionSeverityNone, infrav1.PausedReason, "Reconciliation is paused")
 		if err := r.Status().Update(ctx, machine); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating paused condition: %w", err)
 		}
@@ -128,7 +124,7 @@ func (r *EvrocMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	cloudClient, err := r.resolveCloudClient(ctx, machine, evrocCluster)
 	if err != nil {
 		// Surface the cause on the object rather than only in controller logs.
-		setMachineCondition(machine, "Ready", corev1.ConditionFalse,
+		setMachineCondition(machine, string(infrav1.MachineReadyCondition), corev1.ConditionFalse, clusterv1.ConditionSeverityError,
 			infrav1.CredentialsNotFoundReason, err.Error())
 		credentialErr := fmt.Errorf("resolving cloud credentials: %w", err)
 		if statusErr := r.Status().Update(ctx, machine); statusErr != nil {
@@ -295,7 +291,7 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 	log := log.FromContext(ctx)
 
 	// Mark the Paused condition as False now that reconciliation has resumed.
-	setMachineCondition(machine, string(infrav1.PausedCondition), corev1.ConditionFalse, "Reconciling", "Reconciliation is active")
+	setMachineCondition(machine, string(infrav1.PausedCondition), corev1.ConditionFalse, clusterv1.ConditionSeverityNone, "Reconciling", "Reconciliation is active")
 
 	// Extract cluster-level label info from the already-resolved EvrocCluster.
 	clusterInfo := clusterLabelInfoFrom(evrocCluster)
@@ -489,36 +485,31 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 	// Reconcile security groups on existing VM if configuration changed
 	// This allows users to update security groups without destroying the cluster
 	if err := r.reconcileVMSecurityGroups(ctx, machine, cloudClient, evrocCluster); err != nil {
-		log.Error(err, "failed to reconcile VM security groups (will retry)")
-		return ctrl.Result{}, err
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile VM security groups: %w", err))
 	}
 
 	// Reconcile public IP on existing VM if configuration changed
 	// This allows users to add/remove/change public IPs without destroying the cluster
 	if err := r.reconcilePublicIPAttachment(ctx, machine, cloudClient, evrocCluster); err != nil {
-		log.Error(err, "failed to reconcile VM public IP (will retry)")
-		return ctrl.Result{}, err
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile VM public IP: %w", err))
 	}
 
 	// Reconcile disks on existing VM if configuration changed.
 	// This allows users to add/remove additional disks without destroying the VM.
 	if err := r.reconcileVMDisks(ctx, machine, cloudClient); err != nil {
-		log.Error(err, "failed to reconcile VM disks (will retry)")
-		return ctrl.Result{}, err
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile VM disks: %w", err))
 	}
 
 	// Reconcile placement on existing VM if the placement group changed.
 	if err := r.reconcileVMPlacement(ctx, machine, evrocVM, cloudClient); err != nil {
-		log.Error(err, "failed to reconcile VM placement (will retry)")
-		return ctrl.Result{}, err
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to reconcile VM placement: %w", err))
 	}
 
 	// Register this CP machine as a LB backend as soon as the VM exists.
 	// Health checks on the backend service protect against routing to unready
 	// backends — the LB only forwards once the apiserver passes the TCP probe.
 	if err := r.reconcileLBBackend(ctx, machine, cloudClient, evrocCluster); err != nil {
-		log.Error(err, "failed to register LB backend (will retry)")
-		return ctrl.Result{}, err
+		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to register LB backend: %w", err))
 	}
 
 	if err := r.ensureMachineProviderID(ctx, machine, evrocVM, evrocCluster); err != nil {
@@ -532,9 +523,9 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 
 	// Set Ready condition.
 	if machine.Status.Ready {
-		setMachineCondition(machine, "Ready", corev1.ConditionTrue, "MachineReady", "")
+		setMachineCondition(machine, string(infrav1.MachineReadyCondition), corev1.ConditionTrue, clusterv1.ConditionSeverityNone, infrav1.MachineReadyReason, "")
 	} else {
-		setMachineCondition(machine, "Ready", corev1.ConditionFalse, "MachineNotReady", "VM is not yet ready")
+		setMachineCondition(machine, string(infrav1.MachineReadyCondition), corev1.ConditionFalse, clusterv1.ConditionSeverityInfo, infrav1.MachineNotReadyReason, "VM is not yet ready")
 	}
 
 	// Set initialization.provisioned as soon as the VM exists.
@@ -592,64 +583,22 @@ func (r *EvrocMachineReconciler) reconcileExistingVM(ctx context.Context, machin
 	return ctrl.Result{}, nil
 }
 
+// handleMachineError sets the machine's Ready condition to False with a
+// reason matching the error class and persists the status.
 func (r *EvrocMachineReconciler) handleMachineError(ctx context.Context, machine *infrav1.EvrocMachine, err error) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
 	machine.Status.Ready = false
 
-	errMsg := err.Error()
-	failureReason := "MachineOperationFailed"
-	failureMessage := fmt.Sprintf("Failed to get/create machine: %v", err)
-	eventReason := "MachineOperationFailed"
-	eventMessage := "Failed to get/create machine: %v"
-	eventArgs := []any{err}
-
-	// Determine if this is a terminal (non-retryable) error.
-	// Terminal errors are returned to controller-runtime which will use its
-	// default backoff. Transient errors get an explicit requeue to avoid
-	// rapid retry storms against the cloud API.
-	terminalError := false
-
-	// Check for quota errors specifically
-	if errors.Is(err, evroc.ErrForbidden) && strings.Contains(strings.ToLower(errMsg), "quota") {
-		quotaDetails := parseQuotaError(errMsg)
-		failureReason = "QuotaExceeded"
-		failureMessage = quotaDetails
-		eventReason = "QuotaExceeded"
-		eventMessage = quotaDetails
-		eventArgs = nil
-		terminalError = true
-		log.Error(err, "Quota exceeded", "details", quotaDetails)
-	} else if errors.Is(err, evroc.ErrForbidden) {
-		failureReason = "InsufficientPermissions"
-		failureMessage = fmt.Sprintf("Access denied creating machine: %v", err)
-		eventReason = "InsufficientPermissions"
-		eventMessage = "Access denied creating machine: %v"
-		eventArgs = []any{err}
-		terminalError = true
-	} else if errors.Is(err, evroc.ErrBadRequest) {
-		failureReason = "InvalidConfiguration"
-		failureMessage = fmt.Sprintf("Invalid machine configuration: %v", err)
-		eventReason = "InvalidConfiguration"
-		eventMessage = "Invalid machine configuration: %v"
-		eventArgs = []any{err}
-		terminalError = true
-	}
-
-	setMachineCondition(machine, "Ready", corev1.ConditionFalse, failureReason, failureMessage)
-	r.emitMachineWarningEvent(machine, eventReason, eventMessage, eventArgs...)
+	result, retErr := helpers.HandleCloudError(ctx, machine, r.Recorder, err,
+		infrav1.MachineOperationFailedReason,
+		fmt.Sprintf("Failed to get/create machine: %v", err),
+		func(reason, message string) {
+			setMachineCondition(machine, string(infrav1.MachineReadyCondition), corev1.ConditionFalse, clusterv1.ConditionSeverityError, reason, message)
+		})
 
 	if statusErr := r.Status().Update(ctx, machine); statusErr != nil {
-		log.Error(statusErr, "failed to update status")
+		log.FromContext(ctx).Error(statusErr, "failed to update status")
 	}
-
-	// Terminal errors (quota, permissions, bad request) won't resolve on retry.
-	// Transient errors (network, server errors) get a 30s backoff before retry.
-	if terminalError {
-		return ctrl.Result{}, err
-	}
-	log.Info("Transient cloud API error, will retry", "error", err, "retryAfter", "30s")
-	return ctrl.Result{RequeueAfter: requeueLong}, nil
+	return result, retErr
 }
 
 func (r *EvrocMachineReconciler) emitMachineWarningEvent(machine *infrav1.EvrocMachine, reason, messageFmt string, args ...any) {
@@ -657,25 +606,6 @@ func (r *EvrocMachineReconciler) emitMachineWarningEvent(machine *infrav1.EvrocM
 		return
 	}
 	r.Recorder.Eventf(machine, corev1.EventTypeWarning, reason, messageFmt, args...)
-}
-
-// parseQuotaError extracts quota details from the error message to provide actionable feedback
-func parseQuotaError(errMsg string) string {
-	// Error format: "not enough quota to perform request. Requested additional X vCPUs and Y memory. Only Z vCPUs (out of W in quota) and A memory (out of B in quota) available"
-
-	requestedMatches := requestedQuotaRegex.FindStringSubmatch(errMsg)
-	availableMatches := availableQuotaRegex.FindStringSubmatch(errMsg)
-
-	if len(requestedMatches) == 3 && len(availableMatches) == 5 {
-		return fmt.Sprintf("Quota exceeded: Requested %s vCPUs and %s memory, but only %s/%s vCPUs and %s/%s memory available. "+
-			"Reduce machine size or increase quota limits to proceed.",
-			requestedMatches[1], requestedMatches[2],
-			availableMatches[1], availableMatches[2],
-			availableMatches[3], availableMatches[4])
-	}
-
-	// Fallback if regex doesn't match
-	return fmt.Sprintf("Quota exceeded: %s. Reduce machine size or increase quota limits to proceed.", errMsg)
 }
 
 func (r *EvrocMachineReconciler) deleteMachineFromCloud(ctx context.Context, machine *infrav1.EvrocMachine, cloudClient cloud.ClientInterface) error {
@@ -698,7 +628,7 @@ func (r *EvrocMachineReconciler) deleteMachineFromCloud(ctx context.Context, mac
 		}
 		// During deletion the EvrocCluster may already be gone — if so,
 		// the LB is gone too, so deregistration is unnecessary.
-		if evrocCluster != nil {
+		if evrocCluster != nil && evrocCluster.ShouldManageControlPlaneEndpoint() {
 			lbName, resolveErr := resolveLoadBalancerName(evrocCluster)
 			if resolveErr == nil && lbName != "" {
 				log.Info("Deregistering CP machine from LB", "machine", machine.Name, "loadBalancer", lbName)
@@ -1074,6 +1004,7 @@ func getOwnerMachineRef(refs []metav1.OwnerReference) (name, apiVersion string) 
 func (r *EvrocMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.EvrocMachine{}).
+		WithOptions(runtimecontroller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Watches(
 			&clusterv1.Machine{},
 			handler.EnqueueRequestsFromMapFunc(r.capiMachineToEvrocMachine),
@@ -1460,6 +1391,9 @@ func (r *EvrocMachineReconciler) reconcileLBBackend(ctx context.Context, machine
 	if evrocCluster == nil {
 		return fmt.Errorf("EvrocCluster not yet available, will retry")
 	}
+	if !evrocCluster.ShouldManageControlPlaneEndpoint() {
+		return nil
+	}
 
 	// Derive the LB name from spec (deterministic naming), not from status.
 	lbID, err := resolveLoadBalancerName(evrocCluster)
@@ -1633,7 +1567,7 @@ func (r *EvrocMachineReconciler) reconcilePublicIPCreation(
 			lg := log.FromContext(ctx)
 			msg := fmt.Sprintf("Public IP %s has not been allocated after %s — possible quota exhaustion or cloud failure", name, publicIPTimeout)
 			lg.Error(nil, msg, "machine", machine.Name)
-			setMachineCondition(machine, "PublicIPReady", corev1.ConditionFalse, "PublicIPAllocationTimeout", msg)
+			setMachineCondition(machine, "PublicIPReady", corev1.ConditionFalse, clusterv1.ConditionSeverityWarning, "PublicIPAllocationTimeout", msg)
 			r.emitMachineWarningEvent(machine, "PublicIPAllocationTimeout", msg)
 		}
 		return true, &infrav1.ManagedPublicIP{
@@ -1893,7 +1827,7 @@ func isTerminalDiskReason(reason string) bool {
 }
 
 // setMachineCondition sets or updates a condition on the machine's status.
-func setMachineCondition(machine *infrav1.EvrocMachine, condType string, status corev1.ConditionStatus, reason, message string) {
+func setMachineCondition(machine *infrav1.EvrocMachine, condType string, status corev1.ConditionStatus, severity clusterv1.ConditionSeverity, reason, message string) {
 	now := metav1.Now()
 	newCondition := clusterv1.Condition{
 		Type:               clusterv1.ConditionType(condType),
@@ -1901,9 +1835,7 @@ func setMachineCondition(machine *infrav1.EvrocMachine, condType string, status 
 		LastTransitionTime: now,
 		Reason:             reason,
 		Message:            message,
-	}
-	if status == corev1.ConditionFalse {
-		newCondition.Severity = clusterv1.ConditionSeverityError
+		Severity:           severity,
 	}
 
 	for i, c := range machine.Status.Conditions {
