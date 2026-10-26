@@ -4,7 +4,10 @@
 # Multi-stage build for minimal image size
 
 # Stage 1: Build the controller manager binary
-FROM golang:1.25-alpine AS builder
+# Go 1.27.3 fixes CVE-2026-111943 (crypto/x509 blocks the compromised eMudhra
+# intermediate CAs). The fix is compiled into the binary, so the toolchain
+# must be kept at a patched version (1.26.10+ / 1.27.3+).
+FROM golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c AS builder
 
 # Build arguments for version information
 ARG VERSION=dev
@@ -45,7 +48,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     ./cmd/manager
 
 # Stage 2: Create minimal runtime image
-FROM gcr.io/distroless/static:nonroot
+# Pinned to a build whose Debian ca-certificates bundle no longer contains
+# the compromised eMudhra roots (verified: 148 certs, zero emSign entries).
+FROM gcr.io/distroless/static:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99
 
 # Copy the binary from builder
 COPY --from=builder /manager /manager

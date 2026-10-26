@@ -2263,7 +2263,7 @@ func verifyOwnedResourcesCleanedUp(ctx context.Context, sdk *evroc.Client, lbID,
 // Returns the public IP address of the bastion. The caller must call deleteBastionVM
 // to clean up.
 func createBastionVM(ctx context.Context, client *evroc.Client, bastionName string) string {
-	sshKey := os.Getenv("EVROC_SSH_KEY")
+	sshKey := e2eConfig.GetVariable("EVROC_SSH_KEY")
 	zone := e2eConfig.GetVariable("EVROC_AVAILABILITY_ZONE")
 	if zone == "" {
 		zone = "a"
