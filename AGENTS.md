@@ -1,6 +1,6 @@
 # AGENTS.md — fast path for AI agents (and impatient humans)
 
-Cluster API infrastructure provider for evroc Cloud. Go 1.25, controller-runtime,
+Cluster API infrastructure provider for evroc Cloud. Go 1.27.3 (crypto/x509 CVE-2026-111943 fix), controller-runtime,
 CAPI v1beta2 (needs CAPI/clusterctl v1.12.8+; tested with v1.12.11).
 Reconciles `EvrocCluster` / `EvrocMachine` into VMs, disks, LBs, security groups
 via the evroc SDK.
