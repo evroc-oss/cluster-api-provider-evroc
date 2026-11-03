@@ -208,15 +208,6 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 		))
 	}
 
-	// Validate compute profile using SDK
-	if m.Spec.ComputeProfile != "" && !compute.IsValidVMSize(m.Spec.ComputeProfile) {
-		allErrs = append(allErrs, field.Invalid(
-			field.NewPath("spec", "computeProfile"),
-			m.Spec.ComputeProfile,
-			fmt.Sprintf("must be a valid compute profile. Valid options: %s", compute.GetValidVMSizesString()),
-		))
-	}
-
 	if m.Spec.Image != "" {
 		allErrs = append(allErrs, m.validateImage(m.Spec.Image, field.NewPath("spec", "image"))...)
 	}
@@ -258,7 +249,6 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 		))
 	}
 
-	// Warn about GPU compute profiles
 	if gpuComputeProfilePattern.MatchString(m.Spec.ComputeProfile) {
 		warnings = append(warnings, "GPU-enabled compute profiles may have limited availability and higher costs")
 	}
@@ -360,9 +350,10 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	return warnings, allErrs
 }
 
-// validateImage accepts stock names or refs from the SDK allowlist, custom
-// shorthand, and custom disk image refs. The evroc API only allows custom images from the
-// disk's own project and region, so the ref must match spec.project and spec.region.
+// validateImage checks required stock names and custom image syntax and scope.
+// Stock images are validated against the API catalog during reconciliation.
+// Custom images must belong to the disk's project and region, so their refs
+// must match spec.project and spec.region.
 func (m *EvrocMachine) validateImage(image string, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 	if name, custom := strings.CutPrefix(image, "custom:"); custom {
@@ -375,12 +366,8 @@ func (m *EvrocMachine) validateImage(image string, fldPath *field.Path) field.Er
 
 	stockName := diskimage.StockName(image)
 	if !strings.HasPrefix(stockName, "/") {
-		if !compute.IsValidDiskImage(stockName) {
-			allErrs = append(allErrs, field.Invalid(fldPath, image,
-				fmt.Sprintf("must be a valid disk image name or stock ref (/compute/global/diskImages/evroc/<name>), custom:<name>, or a custom disk image ref "+
-					"(/compute/projects/<project>/regions/<region>/customDiskImages/<name>). Valid options: %s",
-					compute.GetValidDiskImagesString()),
-			))
+		if stockName == "" {
+			allErrs = append(allErrs, field.Required(fldPath, "stock image name must not be empty"))
 		}
 		return allErrs
 	}

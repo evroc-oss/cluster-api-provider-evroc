@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-02
+
+### Fixed
+- Validate compute profiles and stock disk images against the current API catalogs during reconciliation instead of static SDK allowlists in admission. Custom image scope checks remain unchanged.
+- Reuse catalog snapshots across reconciliations for the same credentials and endpoint, with no automatic expiry or refresh.
+- Upgrade the evroc Go SDK to v0.10.2 for API-backed catalog validation.
+
 ## [0.7.1] - 2026-10-26
 
 ### Security
@@ -310,7 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.2...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -345,3 +352,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.6.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.6.0
 [0.7.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.0
 [0.7.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.1
+
+[0.7.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.2

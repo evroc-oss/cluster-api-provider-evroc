@@ -176,22 +176,24 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 				Spec: EvrocMachineSpec{
 					Project:      "test-project",
 					Region:       "se-sto",
+					Image:        string(compute.DiskImageUbuntu2404),
 					RootDiskSize: 100,
 				},
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid compute profile format",
+			name: "compute profile absent from SDK catalog",
 			machine: &EvrocMachine{
 				Spec: EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
-					ComputeProfile: "invalid-flavor",
+					ComputeProfile: "test-future-profile",
+					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
 				},
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "invalid region format",
@@ -257,17 +259,17 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "invalid disk image",
+			name: "stock image validation is deferred to the API catalog",
 			machine: &EvrocMachine{
 				Spec: EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
-					Image:          "not-a-real-image",
+					Image:          "invalid image/name",
 					RootDiskSize:   100,
 				},
 			},
-			expectError: true,
+			expectError: false,
 		},
 		{
 			name: "small disk warning",
@@ -469,14 +471,14 @@ func TestEvrocMachineBYOIValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "invalid custom image name",
-			machine:     validBase("my-custom-image-v1"),
-			expectError: true,
+			name:        "stock image absent from SDK catalog",
+			machine:     validBase("test-future-image"),
+			expectError: false,
 		},
 		{
-			name:        "invalid image with correct-looking format",
-			machine:     validBase("ubuntu.99-99.1"),
-			expectError: true,
+			name:        "stock image availability is checked during reconciliation",
+			machine:     validBase("test-image.99-99.1"),
+			expectError: false,
 		},
 		{
 			name:        "empty image",
@@ -551,6 +553,8 @@ func TestAdditionalDiskImageValidation(t *testing.T) {
 	}{
 		{"blank", "", false},
 		{"stock", "ubuntu.24-04.1", false},
+		{"new stock", "test-future-image", false},
+		{"stock name checked by API catalog", "bad image", false},
 		{"custom", "/compute/projects/test-project/regions/se-sto/customDiskImages/node-v1", false},
 		{"wrong project", "/compute/projects/other/regions/se-sto/customDiskImages/node-v1", true},
 		{"wrong region", "/compute/projects/test-project/regions/fr-par/customDiskImages/node-v1", true},
@@ -642,10 +646,10 @@ func TestStockImageReferenceValidation(t *testing.T) {
 	}{
 		{"/compute/global/diskImages/evroc/ubuntu.24-04.1", true},
 		{"/compute/global/diskImages/evroc/", false},
-		{"/compute/global/diskImages/evroc/unknown-image", false},
-		{"/compute/global/diskImages/evroc/ubuntu.24-04.1/extra", false},
+		{"/compute/global/diskImages/evroc/test-future-image", true},
+		{"/compute/global/diskImages/evroc/ubuntu.24-04.1/extra", true},
 		{"/compute/global/diskImages/other/ubuntu.24-04.1", false},
-		{"/compute/global/diskImages/evroc/ubuntu.24-04.1?x=1", false},
+		{"/compute/global/diskImages/evroc/ubuntu.24-04.1?x=1", true},
 	} {
 		for _, additional := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/additional=%t", tc.image, additional), func(t *testing.T) {

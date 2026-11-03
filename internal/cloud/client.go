@@ -116,6 +116,9 @@ func (ds *DiskService) Create(
 	} else if strings.HasPrefix(image, "/compute/projects/") {
 		builder = builder.WithCustomImage(compute.CustomDiskImageRef(image))
 	} else if image != "" {
+		if err := ds.client.Compute().DiskImages().Validate(ctx, image); err != nil {
+			return nil, fmt.Errorf("validate stock disk image: %w", err)
+		}
 		builder = builder.WithImage(diskimage.StockName(image))
 	}
 	if len(labels) > 0 {
