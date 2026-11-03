@@ -601,33 +601,27 @@ spec:
 				"Rejection message should mention rootDiskSize, got: %s", string(out))
 		})
 
-		It("Should reject an EvrocMachine with invalid compute profile", func() {
-			By("Applying an EvrocMachine with a bad compute profile format")
-			invalidMachine := []byte(`apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+		It("Should admit a compute profile for dynamic catalog validation", func() {
+			By("Dry-running an EvrocMachine with a synthetic compute profile")
+			machine := []byte(`apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachine
 metadata:
-  name: invalid-machine-test
+  name: catalog-machine-test
   namespace: default
 spec:
   project: test-project
   region: se-sto
-  computeProfile: invalid-flavor
+  computeProfile: test-future-profile
   image: ubuntu.24-04.1
   rootDiskSize: 100
 `)
 			cmd := exec.CommandContext(ctx, kubectlPath(),
 				"--kubeconfig", kubeconfigPath,
-				"apply", "-f", "-",
+				"apply", "--dry-run=server", "-f", "-",
 			)
-			cmd.Stdin = bytes.NewReader(invalidMachine)
+			cmd.Stdin = bytes.NewReader(machine)
 			out, err := cmd.CombinedOutput()
-			Expect(err).To(HaveOccurred(),
-				"Webhook should reject EvrocMachine with invalid compute profile, but kubectl apply succeeded: %s", string(out))
-			Expect(string(out)).To(ContainSubstring("computeProfile"),
-				"Rejection message should mention computeProfile, got: %s", string(out))
-
-			GinkgoWriter.Printf("Webhook correctly rejected invalid compute profile: %s\n",
-				strings.TrimSpace(string(out)))
+			Expect(err).NotTo(HaveOccurred(), "Admission should defer catalog validation to reconciliation: %s", string(out))
 		})
 	})
 

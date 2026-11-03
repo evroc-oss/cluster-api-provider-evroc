@@ -3,7 +3,7 @@ module github.com/evroc-oss/cluster-api-provider-evroc
 go 1.25.0
 
 require (
-	github.com/evroc-oss/evroc-go-sdk v0.9.3
+	github.com/evroc-oss/evroc-go-sdk v0.10.2
 	github.com/google/uuid v1.6.0
 	github.com/onsi/gomega v1.39.1
 	github.com/stretchr/testify v1.11.1
@@ -29,7 +29,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect

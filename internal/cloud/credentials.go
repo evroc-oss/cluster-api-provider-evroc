@@ -6,7 +6,9 @@ package cloud
 import (
 	"context"
 	"fmt"
+	"sync"
 
+	"github.com/evroc-oss/evroc-go-sdk/compute"
 	"github.com/evroc-oss/evroc-go-sdk/config"
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
 	corev1 "k8s.io/api/core/v1"
@@ -38,6 +40,17 @@ type ClusterContext struct {
 	APIBaseURL   string
 	AuthTokenURL string
 	ClientID     string
+}
+
+// Catalog snapshots survive the short-lived clients created during reconciliation.
+// Keep credentials and endpoint scopes separate; successful snapshots never expire.
+var clusterCatalogs sync.Map
+
+type catalogScope struct {
+	secret  types.NamespacedName
+	uid     types.UID
+	version string
+	cluster ClusterContext
 }
 
 // ClientForCluster returns a cloud client for a specific cluster.
@@ -72,7 +85,18 @@ func ClientForCluster(
 		}
 		return nil, fmt.Errorf("credentials secret %s/%s: %w", secretNamespace, secretName, err)
 	}
-	return NewClientFromConfig(ctx, cfg, m)
+	cloudClient, err := NewClientFromConfig(ctx, cfg, m)
+	if err != nil {
+		return nil, err
+	}
+	scope := catalogScope{secret: key, uid: secret.UID, version: secret.ResourceVersion, cluster: clusterCtx}
+	catalogs, _ := clusterCatalogs.LoadOrStore(scope, &compute.CatalogCache{})
+	catalogCache, ok := catalogs.(*compute.CatalogCache)
+	if !ok {
+		return nil, fmt.Errorf("invalid catalog cache for credentials secret %s/%s", secretNamespace, secretName)
+	}
+	cloudClient.SDKClient().Compute().WithCatalogCache(catalogCache)
+	return cloudClient, nil
 }
 
 // configFromServiceAccountKeys builds an SDK Config from individual secret keys.

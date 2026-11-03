@@ -18,6 +18,10 @@ func (vms *VirtualMachineService) Create(
 	ctx context.Context,
 	request *computetypes.VirtualMachineRequest,
 ) (*computetypes.VirtualMachine, error) {
+	if err := vms.client.client.Compute().ComputeProfiles().Validate(ctx, request.Spec.ComputeProfileRef); err != nil {
+		return nil, fmt.Errorf("validate compute profile: %w", err)
+	}
+
 	created, err := vms.client.client.Compute().VirtualMachines().Create(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create virtual machine: %w", err)

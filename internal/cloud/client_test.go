@@ -40,6 +40,13 @@ func TestDiskCreateImageSource(t *testing.T) {
 				Context: sdkconfig.ContextConfig{Organization: "test-org", Project: "test-project", Region: "se-sto"},
 			}, evroc.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(req *http.Request) *http.Response {
 				calls++
+				if req.Method == http.MethodGet {
+					assert.True(t, strings.HasSuffix(req.URL.Path, "/global/diskImages/evroc"), req.URL.Path)
+					w := httptest.NewRecorder()
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"items":[{"metadata":{"id":"ubuntu.24-04.1"}}]}`))
+					return w.Result()
+				}
 				assert.Equal(t, http.MethodPost, req.Method)
 				assert.True(t, strings.HasSuffix(req.URL.Path, "/projects/test-project/regions/se-sto/disks"), req.URL.Path)
 				var body struct {
@@ -69,7 +76,11 @@ func TestDiskCreateImageSource(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, disk)
 			assert.Equal(t, "test-disk", disk.Metadata.Id)
-			assert.Equal(t, 1, calls)
+			wantCalls := 1
+			if tc.name == "stock" || tc.name == "stock ref" {
+				wantCalls = 2
+			}
+			assert.Equal(t, wantCalls, calls)
 		})
 	}
 }

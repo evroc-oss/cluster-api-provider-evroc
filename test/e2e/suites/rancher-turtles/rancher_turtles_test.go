@@ -452,9 +452,9 @@ spec:
 				"Error message should mention the invalid region")
 		})
 
-		It("Should reject an EvrocMachine with an invalid compute profile", func() {
-			By("Applying an EvrocMachine with compute profile 'nonexistent-flavor'")
-			invalidMachineYAML := []byte(fmt.Sprintf(`
+		It("Should admit a compute profile for dynamic catalog validation", func() {
+			By("Dry-running an EvrocMachine with compute profile 'test-future-profile'")
+			machineYAML := []byte(fmt.Sprintf(`
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachine
 metadata:
@@ -463,20 +463,18 @@ metadata:
 spec:
   project: %s
   region: se-sto
-  computeProfile: nonexistent-flavor
+  computeProfile: test-future-profile
   image: ubuntu.24-04.1
   rootDiskSize: 50
 `, randomSuffix(), os.Getenv("EVROC_PROJECT")))
 
-			err := applyYAML(setupResult.BootstrapClusterProxy, invalidMachineYAML)
-			Expect(err).To(HaveOccurred(), "Webhook must reject EvrocMachine with invalid compute profile")
-			Expect(err.Error()).To(ContainSubstring("computeProfile"),
-				"Error message should mention the invalid compute profile")
+			err := applyYAML(setupResult.BootstrapClusterProxy, machineYAML, true)
+			Expect(err).NotTo(HaveOccurred(), "Admission should defer catalog validation to reconciliation")
 		})
 
-		It("Should reject an EvrocMachine with an invalid image", func() {
-			By("Applying an EvrocMachine with image 'nonexistent.image'")
-			invalidMachineYAML := []byte(fmt.Sprintf(`
+		It("Should admit a image for dynamic catalog validation", func() {
+			By("Dry-running an EvrocMachine with image 'test-future-image'")
+			machineYAML := []byte(fmt.Sprintf(`
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: EvrocMachine
 metadata:
@@ -486,14 +484,12 @@ spec:
   project: %s
   region: se-sto
   computeProfile: a1a.s
-  image: nonexistent.image
+  image: test-future-image
   rootDiskSize: 50
 `, randomSuffix(), os.Getenv("EVROC_PROJECT")))
 
-			err := applyYAML(setupResult.BootstrapClusterProxy, invalidMachineYAML)
-			Expect(err).To(HaveOccurred(), "Webhook must reject EvrocMachine with invalid image")
-			Expect(err.Error()).To(ContainSubstring("image"),
-				"Error message should mention the invalid image")
+			err := applyYAML(setupResult.BootstrapClusterProxy, machineYAML, true)
+			Expect(err).NotTo(HaveOccurred(), "Admission should defer catalog validation to reconciliation")
 		})
 	})
 })
@@ -928,9 +924,13 @@ func deleteCluster(delCtx context.Context, clusterName, namespace string) {
 
 // applyYAML applies raw YAML bytes to the management cluster using kubectl directly,
 // capturing full stdout/stderr for debugging when turtlesframework.Apply swallows errors.
-func applyYAML(clusterProxy capiframework.ClusterProxy, yamlBytes []byte) error {
+func applyYAML(clusterProxy capiframework.ClusterProxy, yamlBytes []byte, dryRun ...bool) error {
 	kubeconfigPath := clusterProxy.GetKubeconfigPath()
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "--kubeconfig", kubeconfigPath, "-f", "-", "--validate=false")
+	args := []string{"apply", "--kubeconfig", kubeconfigPath, "-f", "-", "--validate=false"}
+	if len(dryRun) > 0 && dryRun[0] {
+		args = append(args, "--dry-run=server")
+	}
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	cmd.Stdin = bytes.NewReader(yamlBytes)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
