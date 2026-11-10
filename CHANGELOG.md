@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-10
+
+### Fixed
+
+- Close the evroc SDK client at the end of every reconcile. Each reconcile builds a new client, and its idle connections previously stayed open for 90 seconds, so open connections grew with the number of machines and could exhaust the cloud's ingress connection limit. Requires evroc-go-sdk v0.10.3.
+
 ## [0.7.3] - 2026-11-09
 
 ### Added
@@ -323,7 +329,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.4...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -361,3 +367,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.7.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.2
 [0.7.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.3
+[0.7.4]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.4

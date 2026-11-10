@@ -107,6 +107,7 @@ func (r *EvrocClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, credentialErr
 	}
+	defer cloudClient.Close()
 
 	ownershipInitialized := false
 	if evrocCluster.DeletionTimestamp.IsZero() {
