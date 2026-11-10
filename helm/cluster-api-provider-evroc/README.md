@@ -52,6 +52,8 @@ kubectl apply --server-side -f helm/cluster-api-provider-evroc/crds/
 | `controller.tolerations` | Tolerations for controller pod | `[]` |
 | `controller.affinity` | Affinity rules for controller pod | `{}` |
 | `controller.extraEnv` | Additional environment variables | `[]` |
+| `controller.extraVolumes` | Additional controller pod volumes | `[]` |
+| `controller.extraVolumeMounts` | Additional manager container mounts | `[]` |
 | `webhook.enabled` | Enable admission webhooks | `true` |
 | `webhook.port` | Webhook server port | `9443` |
 | `webhook.certManager.enabled` | Use cert-manager for webhook TLS | `true` |
@@ -68,6 +70,30 @@ kubectl apply --server-side -f helm/cluster-api-provider-evroc/crds/
 | `logging.level` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 | `logging.format` | Log format (`json` or `text`) | `json` |
 | `debug` | Enable debug mode | `false` |
+
+### Custom CA certificates for the evroc API
+
+To trust a private CA, create a ConfigMap containing PEM certificates in the
+release namespace and supply these Helm values:
+
+```yaml
+controller:
+  extraVolumes:
+    - name: evroc-api-ca
+      configMap:
+        name: evroc-api-ca
+  extraVolumeMounts:
+    - name: evroc-api-ca
+      mountPath: /etc/evroc-ca
+      readOnly: true
+  extraEnv:
+    - name: SSL_CERT_DIR
+      value: /etc/ssl/certs:/etc/evroc-ca
+```
+
+For a Secret, replace `configMap: {name: evroc-api-ca}` with
+`secret: {secretName: evroc-api-ca}`. Mounts apply only to the manager container.
+The example preserves system CA trust. Restart controller pods after CA updates.
 
 ## Uninstallation
 
