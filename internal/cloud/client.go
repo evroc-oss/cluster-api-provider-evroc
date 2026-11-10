@@ -53,6 +53,12 @@ func (c *Client) SDKClient() *evroc.Client {
 	return c.client
 }
 
+// Close releases the SDK client's idle connections, which would otherwise stay
+// open for 90s after every reconcile.
+func (c *Client) Close() {
+	c.client.Close()
+}
+
 // sdkOpts returns evroc.Option slice with metrics if a manager is provided.
 func sdkOpts(m *metrics.Manager) []evroc.Option {
 	if m != nil {

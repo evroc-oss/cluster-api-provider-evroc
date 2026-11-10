@@ -132,6 +132,7 @@ func (r *EvrocMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, credentialErr
 	}
+	defer cloudClient.Close()
 
 	ownershipInitialized := false
 	if machine.DeletionTimestamp.IsZero() {

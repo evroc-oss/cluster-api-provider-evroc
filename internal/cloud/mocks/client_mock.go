@@ -56,3 +56,5 @@ func (m *MockClient) SDKClient() *evroc.Client {
 	}
 	return args.Get(0).(*evroc.Client)
 }
+
+func (m *MockClient) Close() {}

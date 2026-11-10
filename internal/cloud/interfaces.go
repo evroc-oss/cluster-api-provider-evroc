@@ -25,6 +25,8 @@ type ClientInterface interface {
 	LoadBalancers() LoadBalancerServiceInterface
 	WorkloadResources() WorkloadResourceServiceInterface
 	SDKClient() *evroc.Client
+	// Close releases the client's idle connections; call it when the reconcile ends.
+	Close()
 }
 
 // DiskServiceInterface defines the interface for disk operations.
