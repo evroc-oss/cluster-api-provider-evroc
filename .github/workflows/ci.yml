@@ -55,7 +55,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: '3.16.3'
+          version: '3.22.1'
 
       - name: Lint Helm chart
         run: |
@@ -85,7 +85,7 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: '3.16.3'
+          version: '3.22.1'
 
       - name: Download Go modules
         run: |
@@ -230,6 +230,11 @@ jobs:
           grep evroc-go-sdk go.sum
           echo "Checking go.mod..."
           grep evroc-go-sdk go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: '3.22.1'
 
       - name: Generate manifests, sync Helm CRDs, and regenerate templates
         run: |

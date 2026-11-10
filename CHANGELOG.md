@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-09
+
+### Added
+
+- Support additional controller volumes and volume mounts in the Helm chart, allowing site CA certificates to be mounted for private-CA deployments. Configure the controller environment to use the mounted trust bundle.
+
 ## [0.7.2] - 2026-11-02
 
 ### Fixed
@@ -317,7 +323,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.3...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -354,3 +360,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.7.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.1
 
 [0.7.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.2
+[0.7.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.3
