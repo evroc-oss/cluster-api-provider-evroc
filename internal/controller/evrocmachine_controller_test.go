@@ -812,6 +812,21 @@ func TestBuildOSSettings_SSHKeyInjection(t *testing.T) {
 	}
 }
 
+// TestBuildOSSettings_MultipleSSHKeys tests that SSHKey and SSHKeys are all injected, SSHKey first.
+func TestBuildOSSettings_MultipleSSHKeys(t *testing.T) {
+	reconciler := &EvrocMachineReconciler{}
+	machine := &infrav1.EvrocMachine{
+		Spec: infrav1.EvrocMachineSpec{
+			SSHKey:  "ssh-ed25519 AAAAC3first",
+			SSHKeys: []string{"ssh-ed25519 AAAAC3second", "ssh-rsa AAAAB3third"},
+		},
+	}
+
+	osSettings, err := reconciler.buildOSSettings(machine, "")
+	assert.NoError(t, err)
+	assert.Equal(t, "#cloud-config\nssh_authorized_keys:\n- \"ssh-ed25519 AAAAC3first\"\n- \"ssh-ed25519 AAAAC3second\"\n- \"ssh-rsa AAAAB3third\"\nusers:\n  - name: evroc-user\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    shell: /bin/bash\n    ssh_authorized_keys:\n      - \"ssh-ed25519 AAAAC3first\"\n      - \"ssh-ed25519 AAAAC3second\"\n      - \"ssh-rsa AAAAB3third\"\n", *osSettings.CloudInitUserData)
+}
+
 // TestInjectSSHKeyIntoCloudInit tests the SSH key injection logic
 func TestInjectSSHKeyIntoCloudInit(t *testing.T) {
 	tests := []struct {
@@ -872,7 +887,11 @@ func TestInjectSSHKeyIntoCloudInit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := injectSSHKeyIntoCloudInit(tt.userData, tt.sshKey)
+			var sshKeys []string
+			if tt.sshKey != "" {
+				sshKeys = []string{tt.sshKey}
+			}
+			result, err := injectSSHKeysIntoCloudInit(tt.userData, sshKeys)
 
 			// Shell script format should return an error
 			if tt.name == "Shell script userData with SSH key" {
@@ -1620,7 +1639,9 @@ func TestCloudInitContentType(t *testing.T) {
 		expected string
 	}{
 		{"#cloud-config\npackages:\n  - curl", "text/cloud-config"},
+		{"## template: jinja\n#cloud-config\nhostname: '{{ v1.local_hostname }}'", "text/jinja2"},
 		{"#!/bin/bash\necho hello", "text/x-shellscript"},
+		{"#cloud-boothook\n#!/bin/sh\necho hello", "text/cloud-boothook"},
 		{"some plain text", "text/plain"},
 	}
 
@@ -3152,5 +3173,104 @@ func TestCustomImageRejectsDifferentClusterScope(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestReconcile_ControlPlaneEndpointEtcHosts(t *testing.T) {
+	const host = "api.test-cluster.internal"
+	cpWithIP := []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.1.5"}}
+
+	for _, tt := range []struct {
+		name        string
+		cpAddresses []corev1.NodeAddress
+		wantCreate  bool
+		jinja       bool
+	}{
+		{name: "worker maps endpoint to control plane private IP", cpAddresses: cpWithIP, wantCreate: true},
+		{name: "worker preserves Jinja bootstrap in multipart data", cpAddresses: cpWithIP, wantCreate: true, jinja: true},
+		{name: "worker waits for control plane private IP", wantCreate: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := testScheme()
+			capiCluster, evrocCluster := testClusterObjects("default")
+			evrocCluster.Annotations = map[string]string{controlPlaneEndpointEtcHostsAnnotation: "true"}
+			evrocCluster.Spec.ControlPlaneEndpointPolicy = infrav1.EndpointExternal
+			evrocCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: host, Port: 6443}
+
+			capiMachine := &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{Name: "worker-capi", Namespace: "default", UID: "worker-capi-uid"},
+				Spec: clusterv1.MachineSpec{
+					Bootstrap: clusterv1.Bootstrap{DataSecretName: func() *string { s := "worker-bootstrap"; return &s }()},
+				},
+			}
+			bootstrapSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "worker-bootstrap", Namespace: "default"},
+				Data:       map[string][]byte{"value": []byte("#cloud-config\nruncmd:\n  - kubeadm join")},
+			}
+			if tt.jinja {
+				bootstrapSecret.Data["value"] = append([]byte("## template: jinja\n"), bootstrapSecret.Data["value"]...)
+			}
+			cpMachine := &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cp-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						clusterv1.ClusterNameLabel:         "test-cluster",
+						clusterv1.MachineControlPlaneLabel: "",
+					},
+				},
+				Status: infrav1.EvrocMachineStatus{Addresses: tt.cpAddresses},
+			}
+			worker := &infrav1.EvrocMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "worker-0",
+					Namespace: "default",
+					Labels:    map[string]string{clusterv1.ClusterNameLabel: "test-cluster"},
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: clusterv1.GroupVersion.String(), Kind: "Machine", Name: capiMachine.Name, UID: capiMachine.UID,
+					}},
+				},
+				Spec: infrav1.EvrocMachineSpec{Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.s", Image: "ubuntu.24-04.1"},
+			}
+
+			mockClient := new(mocks.MockClient)
+			mockVMService := new(mocks.MockVirtualMachineService)
+			mockClient.On("VirtualMachines").Return(mockVMService)
+			mockClient.On("SDKClient").Return(testSDKClientForCluster()).Maybe()
+			mockVMService.On("Get", mock.Anything, worker.Name).Return(nil, evroc.ErrNotFound)
+			var userData string
+			mockVMService.On("Create", mock.Anything, mock.AnythingOfType("*compute.VirtualMachineRequest")).
+				Run(func(args mock.Arguments) {
+					userData = *args.Get(1).(*computetypes.VirtualMachineRequest).Spec.OsSettings.CloudInitUserData
+				}).
+				Return(&computetypes.VirtualMachine{}, nil).Maybe()
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+				WithObjects(capiCluster, evrocCluster, capiMachine, bootstrapSecret, cpMachine, worker).
+				WithStatusSubresource(worker, cpMachine).
+				Build()
+			reconciler := &EvrocMachineReconciler{Client: fakeClient, Scheme: scheme, clientFactory: staticClientFactory(mockClient)}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: worker.Name, Namespace: "default"}}
+
+			var result ctrl.Result
+			for i := 0; i < 5 && userData == ""; i++ {
+				var err error
+				result, err = reconciler.Reconcile(context.Background(), req)
+				assert.NoError(t, err)
+			}
+
+			if !tt.wantCreate {
+				mockVMService.AssertNotCalled(t, "Create", mock.Anything, mock.Anything)
+				assert.Equal(t, requeueShort, result.RequeueAfter)
+				return
+			}
+			assert.Contains(t, userData, "Content-Type: text/cloud-boothook")
+			if tt.jinja {
+				assert.Contains(t, userData, "Content-Type: text/jinja2")
+				assert.Contains(t, userData, "## template: jinja\n#cloud-config")
+			}
+			assert.Contains(t, userData, "echo '10.0.1.5 "+host+"' >> /etc/hosts")
+			assert.Contains(t, userData, "kubeadm join")
+		})
 	}
 }

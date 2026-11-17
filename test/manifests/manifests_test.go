@@ -33,16 +33,17 @@ var manifestGlobs = []string{
 // templateVars are the values a user supplies. Anything absent falls back to its
 // ${VAR:=default}, so the defaults get exercised too.
 var templateVars = map[string]string{
-	"CLUSTER_NAME":                "test-cluster",
-	"NAMESPACE":                   "default",
-	"EVROC_PROJECT":               "test-project",
-	"EVROC_SSH_KEY":               "ssh-rsa AAAAB3Nza",
-	"EVROC_CREDENTIALS_SECRET":    "evroc-credentials",
-	"EVROC_ALLOWED_CIDR":          "192.0.2.10/32",
-	"EVROC_ALLOWED_CIDR_V6":       "2001:db8::10/128",
-	"KUBERNETES_VERSION":          requiredStackValue("DEFAULT_WORKLOAD_K8S_VERSION"),
-	"CONTROL_PLANE_MACHINE_COUNT": "3",
-	"WORKER_MACHINE_COUNT":        "3",
+	"CLUSTER_NAME":                      "test-cluster",
+	"NAMESPACE":                         "default",
+	"EVROC_PROJECT":                     "test-project",
+	"EVROC_SSH_KEY":                     "ssh-rsa AAAAB3Nza",
+	"EVROC_CREDENTIALS_SECRET":          "evroc-credentials",
+	"EVROC_ALLOWED_CIDR":                "192.0.2.10/32",
+	"EVROC_ALLOWED_CIDR_V6":             "2001:db8::10/128",
+	"KUBERNETES_VERSION":                requiredStackValue("DEFAULT_WORKLOAD_K8S_VERSION"),
+	"CONTROL_PLANE_MACHINE_COUNT":       "3",
+	"WORKER_MACHINE_COUNT":              "3",
+	"EVROC_CONTROL_PLANE_ENDPOINT_HOST": "api.test-cluster.internal",
 }
 
 func requiredStackValue(name string) string {

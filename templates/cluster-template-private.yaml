@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 evroc
+
+# Private Cluster Template (--flavor private) — EXPERIMENTAL
+#
+# A kubeadm cluster whose control plane is reachable only on a private IP.
+# No load balancer and no public IP are created.
+#
+# The control plane endpoint is a hostname (EVROC_CONTROL_PLANE_ENDPOINT_HOST)
+# resolved through /etc/hosts:
+# - The control plane node maps the name to its own private IP.
+# - CAPE maps the name to the control plane's private IP on every joining node
+#   (annotation infrastructure.cluster.x-k8s.io/control-plane-endpoint-etc-hosts).
+#
+# Prerequisites:
+# - The management cluster runs in (or routes into) the same VPC and resolves
+#   EVROC_CONTROL_PLANE_ENDPOINT_HOST to the control plane's private IP, e.g.
+#   via a CoreDNS `hosts` entry, once the control plane machine has an address.
+# - Users reach the API through a jump host or VPN inside the VPC.
+#
+# Limitations:
+# - 1 control plane node (non-HA).
+# - Replacing the control plane node (Kubernetes upgrade, remediation) gives it
+#   a new private IP; existing /etc/hosts entries are not updated.
+#
+# Technical configuration:
+# - 1 control plane node, 1 worker node
+# - Single availability zone (a)
+# - Calico installed via postKubeadmCommands on the control plane node
+# - Ingress allowed only from EVROC_VPC_CIDR
+#
+# Required environment variables:
+#   CLUSTER_NAME: Name of the cluster
+#   EVROC_PROJECT: evroc project ID
+#   EVROC_CREDENTIALS_SECRET: Name of the credentials Secret
+#   EVROC_CONTROL_PLANE_ENDPOINT_HOST: DNS name of the API endpoint, e.g.
+#     api.<cluster>.internal. This name is baked into certificates and kubeconfigs.
+#   KUBERNETES_VERSION: Kubernetes version
+#
+# Optional environment variables:
+#   EVROC_SSH_KEY: SSH public key used for node access via a jump host (default: none)
+#   EVROC_VPC_CIDR: Source CIDR allowed to reach the nodes (default: 10.0.0.0/8)
+#   EVROC_REGION: evroc region (default: se-sto)
+#   EVROC_API_BASE_URL: API base URL override
+#   EVROC_ISSUER_URL: OIDC issuer URL override
+#   CALICO_VERSION: Calico release installed on new clusters (default: v3.32.2)
+#   EVROC_CONTROL_PLANE_COMPUTE_PROFILE: Control plane VM compute profile (default: a1a.s)
+#   EVROC_WORKER_COMPUTE_PROFILE: Worker VM compute profile (default: a1a.s)
+#   EVROC_IMAGE: OS image (default: ubuntu.24-04.1)
+
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.244.0.0/16"]
+    services:
+      cidrBlocks: ["10.96.0.0/12"]
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: EvrocCluster
+    name: ${CLUSTER_NAME}
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+    name: ${CLUSTER_NAME}-control-plane
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE:=default}
+  annotations:
+    infrastructure.cluster.x-k8s.io/control-plane-endpoint-etc-hosts: "true"
+spec:
+  project: ${EVROC_PROJECT}
+  # No load balancer: the endpoint is a private hostname, copied to the Cluster.
+  controlPlaneEndpointPolicy: External
+  controlPlaneEndpoint:
+    host: ${EVROC_CONTROL_PLANE_ENDPOINT_HOST}
+    port: 6443
+  region: ${EVROC_REGION:=se-sto}
+  # Endpoint overrides for private/non-production evroc deployments.
+  # Leave unset to use the public evroc cloud.
+  endpoints:
+    apiBaseURL: "${EVROC_API_BASE_URL:=https://api.evroc.com}"
+    issuerURL: "${EVROC_ISSUER_URL:=https://authn.iam.evroc.com/realms/evroc-customer}"
+  # The credential Secret must be in the same namespace as this EvrocCluster.
+  credentialsRef:
+    name: "${EVROC_CREDENTIALS_SECRET}"
+  failureDomains:
+  - a
+  securityGroups:
+    common:
+      inlineSecurityGroups:
+      - name: private-sg
+        rules:
+        # Only VPC-internal ingress: covers intra-cluster traffic, the
+        # management cluster, and SSH/API access from a jump host.
+        - name: cluster-internal
+          direction: Ingress
+          protocol: All
+          remoteCIDR: "${EVROC_VPC_CIDR:=10.0.0.0/8}"
+        - name: allow-all-egress
+          direction: Egress
+          protocol: All
+          remoteCIDR: "0.0.0.0/0"
+---
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+kind: KubeadmControlPlane
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  replicas: 1
+  version: ${KUBERNETES_VERSION}
+  machineTemplate:
+    spec:
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-control-plane
+  kubeadmConfigSpec:
+    preKubeadmCommands:
+      # Map the endpoint to this node's private IP unless CAPE already mapped
+      # it to an existing control plane (joining control plane nodes).
+      - 'grep -qwF "${EVROC_CONTROL_PLANE_ENDPOINT_HOST}" /etc/hosts || echo "$(hostname -I | tr " " "\n" | grep -m1 -E "^[0-9]+\.") ${EVROC_CONTROL_PLANE_ENDPOINT_HOST}" >> /etc/hosts'
+      - modprobe overlay
+      - modprobe br_netfilter
+      - |
+        cat <<EOF > /etc/sysctl.d/k8s.conf
+        net.bridge.bridge-nf-call-iptables = 1
+        net.bridge.bridge-nf-call-ip6tables = 1
+        net.ipv4.ip_forward = 1
+        EOF
+      - sysctl --system
+      - apt-get update -y
+      - apt-get install -y apt-transport-https ca-certificates curl gpg containerd conntrack
+      - mkdir -p /etc/containerd
+      - containerd config default > /etc/containerd/config.toml
+      - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+      - systemctl restart containerd
+      - systemctl enable containerd
+      - mkdir -p -m 755 /etc/apt/keyrings
+      - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
+      - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
+      - apt-get update -y
+      - |
+        KUBE_VERSION=$(echo "${KUBERNETES_VERSION}" | sed 's/^v//')
+        HOST_ARCH=$(dpkg --print-architecture)
+        KUBE_PKG_VER=$(apt list -a kubelet 2>/dev/null | awk -v arch="$HOST_ARCH" -v v="^$KUBE_VERSION-" '$3==arch && $2 ~ v {print $2; exit}')
+        test -n "$KUBE_PKG_VER" || { echo "Kubernetes ${KUBERNETES_VERSION} not found in pkgs.k8s.io channel" >&2; exit 1; }
+        apt-get install -y kubelet=$KUBE_PKG_VER kubeadm=$KUBE_PKG_VER kubectl=$KUBE_PKG_VER
+      - systemctl enable kubelet
+    initConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: node-labels
+          value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto},topology.kubernetes.io/zone=${EVROC_AVAILABILITY_ZONE:=a}"
+    joinConfiguration:
+      nodeRegistration:
+        kubeletExtraArgs:
+        - name: node-labels
+          value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto},topology.kubernetes.io/zone=${EVROC_AVAILABILITY_ZONE:=a}"
+    postKubeadmCommands:
+      - |
+        if [ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]; then exit 0; fi
+        if kubectl --kubeconfig /etc/kubernetes/admin.conf get daemonset -n kube-system calico-node 2>/dev/null; then exit 0; fi
+        kubectl --kubeconfig /etc/kubernetes/admin.conf apply -f https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION:=v3.32.2}/manifests/calico.yaml
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-control-plane
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_CONTROL_PLANE_COMPUTE_PROFILE:=a1a.s}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
+      rootDiskSize: 50
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: ${NAMESPACE:=default}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: 1
+  selector:
+    matchLabels: {}
+  template:
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      deletion:
+        nodeDeletionTimeoutSeconds: 0
+      version: ${KUBERNETES_VERSION}
+      bootstrap:
+        configRef:
+          apiGroup: bootstrap.cluster.x-k8s.io
+          kind: KubeadmConfigTemplate
+          name: ${CLUSTER_NAME}-workers
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: EvrocMachineTemplate
+        name: ${CLUSTER_NAME}-workers
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: EvrocMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      project: ${EVROC_PROJECT}
+      region: ${EVROC_REGION:=se-sto}
+      computeProfile: ${EVROC_WORKER_COMPUTE_PROFILE:=a1a.s}
+      image: ${EVROC_IMAGE:=ubuntu.24-04.1}
+      rootDiskSize: 50
+      sshKey: "${EVROC_SSH_KEY:=}"
+      networkingConfig:
+        securityGroups:
+          inheritFromCluster: true
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+kind: KubeadmConfigTemplate
+metadata:
+  name: ${CLUSTER_NAME}-workers
+  namespace: ${NAMESPACE:=default}
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - modprobe overlay
+        - modprobe br_netfilter
+        - |
+          cat <<EOF > /etc/sysctl.d/k8s.conf
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+          EOF
+        - sysctl --system
+        - apt-get update -y
+        - apt-get install -y apt-transport-https ca-certificates curl gpg containerd conntrack
+        - mkdir -p /etc/containerd
+        - containerd config default > /etc/containerd/config.toml
+        - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+        - systemctl restart containerd
+        - systemctl enable containerd
+        - mkdir -p -m 755 /etc/apt/keyrings
+        - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && curl -fsSL "https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/Release.key" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg'
+        - 'KUBE_MINOR=$(echo "${KUBERNETES_VERSION}" | cut -d. -f1,2) && echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/$KUBE_MINOR/deb/ /" > /etc/apt/sources.list.d/kubernetes.list'
+        - apt-get update -y
+        - |
+          KUBE_VERSION=$(echo "${KUBERNETES_VERSION}" | sed 's/^v//')
+          HOST_ARCH=$(dpkg --print-architecture)
+          KUBE_PKG_VER=$(apt list -a kubelet 2>/dev/null | awk -v arch="$HOST_ARCH" -v v="^$KUBE_VERSION-" '$3==arch && $2 ~ v {print $2; exit}')
+          test -n "$KUBE_PKG_VER" || { echo "Kubernetes ${KUBERNETES_VERSION} not found in pkgs.k8s.io channel" >&2; exit 1; }
+          apt-get install -y kubelet=$KUBE_PKG_VER kubeadm=$KUBE_PKG_VER kubectl=$KUBE_PKG_VER
+        - systemctl enable kubelet
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+          - name: node-labels
+            value: "topology.kubernetes.io/region=${EVROC_REGION:=se-sto},topology.kubernetes.io/zone=${EVROC_AVAILABILITY_ZONE:=a}"

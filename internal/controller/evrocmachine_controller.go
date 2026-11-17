@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/textproto"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -43,6 +46,10 @@ const (
 	machineFinalizer                = "infrastructure.cluster.x-k8s.io/evrocmachine"
 	machineOwnershipIDAnnotation    = "evrocmachine.infrastructure.cluster.x-k8s.io/ownership-id"
 	externalCloudProviderAnnotation = "infrastructure.cluster.x-k8s.io/external-cloud-provider"
+	// controlPlaneEndpointEtcHostsAnnotation opts an EvrocCluster into resolving
+	// its hostname endpoint via /etc/hosts on joining nodes, until evroc internal
+	// DNS is available.
+	controlPlaneEndpointEtcHostsAnnotation = "infrastructure.cluster.x-k8s.io/control-plane-endpoint-etc-hosts"
 
 	// Requeue intervals for various waiting scenarios
 	requeueImmediately = 1 * time.Second
@@ -364,6 +371,11 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 	bootstrapUserData := string(bootstrapSecret.Data["value"])
 	userData := mergeUserData(bootstrapUserData, machine.Spec.UserData)
 
+	etcHostsBoothook, result, err := r.reconcileControlPlaneEndpointEtcHosts(ctx, machine, evrocCluster, userData)
+	if err != nil || !result.IsZero() {
+		return result, err
+	}
+
 	// Ensure the boot disk exists and is ready before creating the VM.
 	// Evroc requires a disk to be pre-created (with image) and referenced by name in VMs.
 	if machine.Spec.RootDiskSize > 0 {
@@ -462,6 +474,14 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 	if buildErr != nil {
 		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to build VM request: %w", buildErr))
 	}
+	// Workers and additional control-plane nodes get this boothook when an
+	// existing control-plane private IP is available. The first control-plane
+	// node maps the hostname to itself through the private template instead.
+	// Wrap after buildVMRequest so SSH key injection still sees plain cloud-config.
+	if etcHostsBoothook != "" {
+		wrapped := buildMultipartUserData(*vmRequest.Spec.OsSettings.CloudInitUserData, etcHostsBoothook)
+		vmRequest.Spec.OsSettings.CloudInitUserData = &wrapped
+	}
 
 	if _, err := cloudClient.VirtualMachines().Create(ctx, vmRequest); err != nil {
 		return r.handleMachineError(ctx, machine, err)
@@ -469,6 +489,59 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 
 	log.Info("Machine creation submitted, requeueing to check readiness", "name", machine.Name)
 	return ctrl.Result{RequeueAfter: requeueLong}, nil
+}
+
+// reconcileControlPlaneEndpointEtcHosts builds a boothook mapping the endpoint
+// hostname to an existing control plane machine's private IP. Workers wait until
+// an IP is available; the first control plane maps the name to itself in the
+// private flavor's bootstrap data.
+func (r *EvrocMachineReconciler) reconcileControlPlaneEndpointEtcHosts(ctx context.Context, machine *infrav1.EvrocMachine, evrocCluster *infrav1.EvrocCluster, userData string) (string, ctrl.Result, error) {
+	if evrocCluster == nil || !strings.EqualFold(strings.TrimSpace(evrocCluster.Annotations[controlPlaneEndpointEtcHostsAnnotation]), "true") {
+		return "", ctrl.Result{}, nil
+	}
+
+	host := evrocCluster.Spec.ControlPlaneEndpoint.Host
+	if net.ParseIP(host) != nil || len(validation.IsDNS1123Subdomain(host)) > 0 {
+		result, err := r.handleMachineError(ctx, machine, fmt.Errorf("annotation %s requires EvrocCluster spec.controlPlaneEndpoint.host to be a DNS name, got %q",
+			controlPlaneEndpointEtcHostsAnnotation, host))
+		return "", result, err
+	}
+	// CAPI may prefix cloud-config with a Jinja directive. Preserve it in
+	// the payload so cloud-init can render instance-data variables.
+	configBody := strings.TrimSpace(strings.TrimPrefix(userData, "## template: jinja\n"))
+	if !strings.HasPrefix(configBody, "#cloud-config") {
+		result, err := r.handleMachineError(ctx, machine, fmt.Errorf("annotation %s requires cloud-config bootstrap data", controlPlaneEndpointEtcHostsAnnotation))
+		return "", result, err
+	}
+
+	cpMachines := &infrav1.EvrocMachineList{}
+	if err := r.List(ctx, cpMachines, client.InNamespace(machine.Namespace),
+		client.MatchingLabels{clusterv1.ClusterNameLabel: machine.Labels[clusterv1.ClusterNameLabel]},
+		client.HasLabels{clusterv1.MachineControlPlaneLabel}); err != nil {
+		return "", ctrl.Result{}, fmt.Errorf("failed to list control plane machines: %w", err)
+	}
+	var cpIPs []string
+	for _, m := range cpMachines.Items {
+		if m.Name == machine.Name || !m.DeletionTimestamp.IsZero() {
+			continue
+		}
+		for _, addr := range m.Status.Addresses {
+			if ip := net.ParseIP(addr.Address); addr.Type == corev1.NodeInternalIP && ip != nil && ip.To4() != nil {
+				cpIPs = append(cpIPs, addr.Address)
+			}
+		}
+	}
+
+	_, isControlPlane := machine.Labels[clusterv1.MachineControlPlaneLabel]
+	switch {
+	case len(cpIPs) > 0:
+		slices.Sort(cpIPs)
+		return fmt.Sprintf("#cloud-boothook\n#!/bin/sh\ngrep -qwF %s /etc/hosts || echo '%s %s' >> /etc/hosts\n", host, cpIPs[0], host), ctrl.Result{}, nil
+	case !isControlPlane:
+		log.FromContext(ctx).Info("Waiting for a control plane private IP to map the endpoint in /etc/hosts", "machine", machine.Name, "endpoint", host)
+		return "", ctrl.Result{RequeueAfter: requeueShort}, nil
+	}
+	return "", ctrl.Result{}, nil
 }
 
 // reconcileExistingVM handles an EvrocMachine whose VM already exists in the
@@ -1137,15 +1210,21 @@ func (r *EvrocMachineReconciler) buildPlacement(machine *infrav1.EvrocMachine) c
 // because the Evroc API ssh.authorizedKeys field is overridden when cloud-init
 // runs, making it unreliable. Using cloud-init exclusively avoids confusion.
 func (r *EvrocMachineReconciler) buildOSSettings(machine *infrav1.EvrocMachine, userData string) (*computetypes.VirtualMachineSpecOsSettings, error) {
-	if userData == "" && machine.Spec.SSHKey == "" {
+	var sshKeys []string
+	if machine.Spec.SSHKey != "" {
+		sshKeys = append(sshKeys, machine.Spec.SSHKey)
+	}
+	sshKeys = append(sshKeys, machine.Spec.SSHKeys...)
+
+	if userData == "" && len(sshKeys) == 0 {
 		return nil, nil
 	}
 
 	osSettings := &computetypes.VirtualMachineSpecOsSettings{}
 
-	// Inject SSH key into userData (generates cloud-config when userData is empty)
+	// Inject SSH keys into userData (generates cloud-config when userData is empty)
 	var err error
-	userData, err = injectSSHKeyIntoCloudInit(userData, machine.Spec.SSHKey)
+	userData, err = injectSSHKeysIntoCloudInit(userData, sshKeys)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inject SSH key into cloud-init: %w", err)
 	}
@@ -1154,32 +1233,37 @@ func (r *EvrocMachineReconciler) buildOSSettings(machine *infrav1.EvrocMachine, 
 	return osSettings, nil
 }
 
-// injectSSHKeyIntoCloudInit appends an ssh_authorized_keys entry and creates an evroc-user
+// injectSSHKeysIntoCloudInit appends ssh_authorized_keys entries and creates an evroc-user
 // account to cloud-init user-data. This is necessary because the Evroc API's ssh.authorizedKeys
 // field is overridden when cloud-init runs.
 //
 // If the userData already contains a "users:" section (e.g. from CAPI bootstrap), the users
 // block is not injected to avoid duplicate YAML keys (last key wins in YAML, which would
 // override the bootstrap-provided users). Similarly, ssh_authorized_keys is skipped if present.
-func injectSSHKeyIntoCloudInit(userData, sshKey string) (string, error) {
-	// Skip injection if SSH key is empty
-	if sshKey == "" {
+func injectSSHKeysIntoCloudInit(userData string, sshKeys []string) (string, error) {
+	// Skip injection if there are no SSH keys
+	if len(sshKeys) == 0 {
 		return userData, nil
 	}
 
 	// Build the SSH config, skipping sections that already exist in userData
 	var sshConfig string
 	if !strings.Contains(userData, "ssh_authorized_keys:") {
-		sshConfig += fmt.Sprintf("ssh_authorized_keys:\n- %q\n", sshKey)
+		sshConfig += "ssh_authorized_keys:\n"
+		for _, key := range sshKeys {
+			sshConfig += fmt.Sprintf("- %q\n", key)
+		}
 	}
 	if !strings.Contains(userData, "users:") {
-		sshConfig += fmt.Sprintf(`users:
+		sshConfig += `users:
   - name: evroc-user
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
     ssh_authorized_keys:
-      - %q
-`, sshKey)
+`
+		for _, key := range sshKeys {
+			sshConfig += fmt.Sprintf("      - %q\n", key)
+		}
 	}
 
 	if userData == "" {
@@ -1777,8 +1861,12 @@ func buildMultipartUserData(parts ...string) string {
 
 func cloudInitContentType(content string) string {
 	switch {
+	case strings.HasPrefix(content, "## template: jinja\n"):
+		return "text/jinja2"
 	case strings.HasPrefix(content, "#cloud-config"):
 		return "text/cloud-config"
+	case strings.HasPrefix(content, "#cloud-boothook"):
+		return "text/cloud-boothook"
 	case strings.HasPrefix(content, "#!"):
 		return "text/x-shellscript"
 	default:

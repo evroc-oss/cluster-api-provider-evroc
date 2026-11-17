@@ -249,6 +249,12 @@ spec:
               sshKey:
                 description: SSHKey is the SSH public key for access
                 type: string
+              sshKeys:
+                description: SSHKeys sets multiple SSH keys for public access. If
+                  both this and SSHKey are set, these are added after.
+                items:
+                  type: string
+                type: array
               userData:
                 description: UserData is cloud-init user data for bootstrap
                 type: string
