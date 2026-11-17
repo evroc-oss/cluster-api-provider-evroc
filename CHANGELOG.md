@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-17
+
+### Added
+
+- `sshKeys` on EvrocMachine and EvrocMachineTemplate for multiple SSH public keys. Existing `sshKey` keeps working and is added first.
+- Experimental `private` kubeadm flavor: a single control plane reachable only on its private IP, with no load balancer or public IP. It uses `controlPlaneEndpointPolicy: External` and a hostname endpoint.
+- EvrocCluster annotation `infrastructure.cluster.x-k8s.io/control-plane-endpoint-etc-hosts: "true"`. When set, CAPE maps `spec.controlPlaneEndpoint.host` to an existing control plane machine's private IPv4 in `/etc/hosts` on joining nodes, via a cloud-init boothook. Workers wait until a control plane private IP is known. It requires cloud-config bootstrap data (kubeadm).
+
 ## [0.7.4] - 2026-11-10
 
 ### Fixed
@@ -329,7 +337,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.8.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -368,3 +376,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.7.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.2
 [0.7.3]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.3
 [0.7.4]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.7.4
+[0.8.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.8.0

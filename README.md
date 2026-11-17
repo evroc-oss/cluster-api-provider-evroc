@@ -342,6 +342,7 @@ sed -E 's/\$\{([A-Z_]+):=[^}]*\}/${\1}/g' templates/cluster-template-minimal.yam
 - `dualstack` - single-zone IPv4/IPv6 cluster with Calico CNI
 - `ha-lb` - multi-zone control plane behind an L4 load balancer, Calico CNI (high availability)
 - `rke2` - RKE2 (SUSE enterprise-hardened Kubernetes) with Canal CNI
+- `private` (**experimental**) - 1 control plane reachable only on a private IP (no load balancer), Calico CNI. The endpoint is a hostname (`EVROC_CONTROL_PLANE_ENDPOINT_HOST`) resolved via `/etc/hosts`; the management cluster must run in the VPC and resolve that name. See the template header for prerequisites and limitations.
 
 > **Replica counts:** the `default`, `prebuilt`, `ha-lb`, and `rke2` templates leave
 > `spec.replicas` bound to `${CONTROL_PLANE_MACHINE_COUNT}` /

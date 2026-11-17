@@ -32,6 +32,10 @@ type EvrocMachineSpec struct {
 	// +optional
 	SSHKey string `json:"sshKey,omitempty"`
 
+	// SSHKeys sets multiple SSH keys for public access. If both this and SSHKey are set, these are added after.
+	// +optional
+	SSHKeys []string `json:"sshKeys,omitempty"`
+
 	// UserData is cloud-init user data for bootstrap
 	// +optional
 	UserData string `json:"userData,omitempty"`
