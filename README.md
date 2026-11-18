@@ -44,6 +44,7 @@ It manages evroc cloud primitives such as virtual machines, disks, public IPs, s
   - [Scale Workers](#scale-workers)
   - [Scale Control Plane](#scale-control-plane)
   - [Update Security Groups](#update-security-groups)
+  - [Customize node bootstrap](#customize-node-bootstrap)
   - [Access Nodes (SSH)](#access-nodes-ssh)
   - [Use a Custom Disk Image](#use-a-custom-disk-image)
   - [Upgrade the evroc Provider](#upgrade-the-evroc-provider)
@@ -607,6 +608,73 @@ kubectl edit evroccluster ${CLUSTER_NAME}
 # Edit spec.securityGroups.common.inlineSecurityGroups[*].rules
 # Changes apply automatically to all existing VMs with inheritFromCluster enabled
 ```
+
+### Customize node bootstrap
+
+For kubeadm flavors (including `private`), choose where to configure each change
+based on when it needs to take effect:
+
+| Customization | Where to put it |
+| --- | --- |
+| SSH access | `EvrocMachineTemplate.spec.template.spec.sshKey` or `sshKeys`, for each node role |
+| Additional cloud-config files and commands | `EvrocMachineTemplate.spec.template.spec.userData`, starting with `#cloud-config` |
+| Files needed by bootstrap | `KubeadmControlPlane.spec.kubeadmConfigSpec.files` for the control plane; `KubeadmConfigTemplate.spec.template.spec.files` for workers |
+| Commands that must finish before kubeadm | `preKubeadmCommands` alongside the `files` fields above |
+| Commands that should run after kubeadm | `postKubeadmCommands` in those same bootstrap configurations |
+
+For example, add this to each relevant **EvrocMachineTemplate**, alongside its
+existing `image`, `computeProfile`, and other machine settings:
+
+```yaml
+spec:
+  template:
+    spec:
+      userData: |
+        #cloud-config
+        write_files:
+          - path: /etc/node-customization.conf
+            permissions: '0644'
+            content: |
+              example-setting=true
+        runcmd:
+          - [logger, "Node customization applied"]
+```
+
+From v0.8.1, the provider preserves CAPI's bootstrap configuration and appends
+custom cloud-config lists, including `write_files` and `runcmd`. Jinja bootstrap
+templates are rendered by cloud-init on the VM. Custom `runcmd` entries run after
+the bootstrap configuration's existing commands; use `preKubeadmCommands` for
+networking or other prerequisites needed **before** kubeadm can initialize or
+join the cluster. Existing bootstrap scalar settings take precedence unless
+explicit cloud-init merge settings override them.
+
+For a command needed before kubeadm, edit the generated manifest at these paths:
+
+```yaml
+# KubeadmControlPlane: control-plane nodes
+spec:
+  kubeadmConfigSpec:
+    preKubeadmCommands:
+      - logger "Preparing control-plane node"
+      # Keep all existing template commands after this entry.
+```
+
+```yaml
+# KubeadmConfigTemplate: worker nodes
+spec:
+  template:
+    spec:
+      preKubeadmCommands:
+        - logger "Preparing worker node"
+        # Keep all existing template commands after this entry.
+```
+
+These are excerpts to merge into the generated resources, not standalone
+manifests. Preserve existing `files` and command lists, including the private
+flavor's endpoint mapping and Kubernetes installation commands. Do not configure
+the same file or command in both `userData` and the bootstrap configuration.
+Template edits apply to newly created machines; they do not rewrite bootstrap
+Secrets already generated for existing machines.
 
 ### Access Nodes (SSH)
 

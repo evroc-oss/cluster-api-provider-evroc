@@ -5,8 +5,13 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/mail"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -532,10 +538,12 @@ func TestMergeUserData_CloudConfig(t *testing.T) {
 
 	merged := mergeUserData(bootstrap, machine)
 
-	assert.True(t, strings.HasPrefix(merged, "#cloud-config"))
+	parts := readCloudInitParts(t, merged)
+	require.Len(t, parts, 2)
+	assert.Equal(t, bootstrap+"\n", parts[0])
+	assert.Equal(t, machine+"\n", parts[1])
 	assert.Contains(t, merged, "packages:")
 	assert.Contains(t, merged, "write_files:")
-	assert.Contains(t, merged, "merged machine userData")
 }
 
 func TestMergeUserData_MultipartFallback(t *testing.T) {
@@ -3181,14 +3189,19 @@ func TestReconcile_ControlPlaneEndpointEtcHosts(t *testing.T) {
 	cpWithIP := []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.1.5"}}
 
 	for _, tt := range []struct {
-		name        string
-		cpAddresses []corev1.NodeAddress
-		wantCreate  bool
-		jinja       bool
+		name         string
+		cpAddresses  []corev1.NodeAddress
+		wantCreate   bool
+		jinja        bool
+		custom       bool
+		controlPlane bool
 	}{
 		{name: "worker maps endpoint to control plane private IP", cpAddresses: cpWithIP, wantCreate: true},
 		{name: "worker preserves Jinja bootstrap in multipart data", cpAddresses: cpWithIP, wantCreate: true, jinja: true},
 		{name: "worker waits for control plane private IP", wantCreate: false},
+		{name: "worker preserves Jinja and custom config", cpAddresses: cpWithIP, wantCreate: true, jinja: true, custom: true},
+		{name: "worker preserves plain and custom config", cpAddresses: cpWithIP, wantCreate: true, custom: true},
+		{name: "first control plane preserves Jinja and custom config", wantCreate: true, jinja: true, custom: true, controlPlane: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			scheme := testScheme()
@@ -3233,6 +3246,14 @@ func TestReconcile_ControlPlaneEndpointEtcHosts(t *testing.T) {
 				Spec: infrav1.EvrocMachineSpec{Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.s", Image: "ubuntu.24-04.1"},
 			}
 
+			if tt.controlPlane {
+				worker.Labels[clusterv1.MachineControlPlaneLabel] = ""
+			}
+			if tt.custom {
+				worker.Spec.UserData = "#cloud-config\nwrite_files:\n  - path: /etc/node-customization.conf\n    content: example-setting=true\nruncmd:\n  - systemctl enable --now node-customization.service\n"
+				worker.Spec.SSHKey = "ssh-ed25519 test-key"
+			}
+
 			mockClient := new(mocks.MockClient)
 			mockVMService := new(mocks.MockVirtualMachineService)
 			mockClient.On("VirtualMachines").Return(mockVMService)
@@ -3264,13 +3285,58 @@ func TestReconcile_ControlPlaneEndpointEtcHosts(t *testing.T) {
 				assert.Equal(t, requeueShort, result.RequeueAfter)
 				return
 			}
-			assert.Contains(t, userData, "Content-Type: text/cloud-boothook")
+			require.NotEmpty(t, userData)
+			if !tt.controlPlane {
+				assert.Contains(t, userData, "Content-Type: text/cloud-boothook")
+				assert.Contains(t, userData, "echo '10.0.1.5 "+host+"' >> /etc/hosts")
+			} else {
+				assert.NotContains(t, userData, "text/cloud-boothook")
+			}
+			if tt.custom {
+				parts := readCloudInitParts(t, userData)
+				wantParts := 3
+				if tt.controlPlane {
+					wantParts = 2
+				}
+				require.Len(t, parts, wantParts)
+				assert.Contains(t, parts[0], "kubeadm join")
+				assert.Contains(t, parts[0], "ssh-ed25519 test-key")
+				assert.Contains(t, parts[1], "/etc/node-customization.conf")
+				assert.Contains(t, parts[1], "systemctl enable --now node-customization.service")
+			}
 			if tt.jinja {
 				assert.Contains(t, userData, "Content-Type: text/jinja2")
 				assert.Contains(t, userData, "## template: jinja\n#cloud-config")
 			}
-			assert.Contains(t, userData, "echo '10.0.1.5 "+host+"' >> /etc/hosts")
 			assert.Contains(t, userData, "kubeadm join")
 		})
 	}
+}
+
+// Parse the actual VM payload so assertions cannot pass for data stranded in a
+// MIME epilogue or hidden inside a text/plain nested multipart document.
+func readCloudInitParts(t *testing.T, payload string) []string {
+	t.Helper()
+	msg, err := mail.ReadMessage(strings.NewReader(payload))
+	require.NoError(t, err)
+	contentType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	require.NoError(t, err)
+	require.Equal(t, "multipart/mixed", contentType)
+	reader := multipart.NewReader(msg.Body, params["boundary"])
+	var parts []string
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		require.Contains(t, []string{"text/cloud-config", "text/jinja2", "text/cloud-boothook", "text/x-shellscript"}, part.Header.Get("Content-Type"))
+		if part.Header.Get("Content-Type") == "text/cloud-config" || part.Header.Get("Content-Type") == "text/jinja2" {
+			assert.Equal(t, "list(append)+dict(no_replace,recurse_list)+str()", part.Header.Get("Merge-Type"))
+		}
+		body, err := io.ReadAll(part)
+		require.NoError(t, err)
+		parts = append(parts, string(body))
+	}
+	return parts
 }
