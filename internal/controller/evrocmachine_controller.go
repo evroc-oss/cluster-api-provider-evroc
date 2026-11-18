@@ -368,10 +368,9 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get bootstrap secret %q: %w", dataSecretName, err)
 	}
-	bootstrapUserData := string(bootstrapSecret.Data["value"])
-	userData := mergeUserData(bootstrapUserData, machine.Spec.UserData)
+	bootstrapUserData := strings.TrimSpace(string(bootstrapSecret.Data["value"]))
 
-	etcHostsBoothook, result, err := r.reconcileControlPlaneEndpointEtcHosts(ctx, machine, evrocCluster, userData)
+	etcHostsBoothook, result, err := r.reconcileControlPlaneEndpointEtcHosts(ctx, machine, evrocCluster, bootstrapUserData)
 	if err != nil || !result.IsZero() {
 		return result, err
 	}
@@ -470,17 +469,25 @@ func (r *EvrocMachineReconciler) reconcileNormal(ctx context.Context, machine *i
 
 	// VM does not exist — create it.
 	log.Info("Creating machine in evroc", "name", machine.Name)
-	vmRequest, buildErr := r.buildVMRequest(machine, userData, evrocCluster, cloudClient)
+	vmRequest, buildErr := r.buildVMRequest(machine, bootstrapUserData, evrocCluster, cloudClient)
 	if buildErr != nil {
 		return r.handleMachineError(ctx, machine, fmt.Errorf("failed to build VM request: %w", buildErr))
 	}
 	// Workers and additional control-plane nodes get this boothook when an
 	// existing control-plane private IP is available. The first control-plane
 	// node maps the hostname to itself through the private template instead.
-	// Wrap after buildVMRequest so SSH key injection still sees plain cloud-config.
-	if etcHostsBoothook != "" {
-		wrapped := buildMultipartUserData(*vmRequest.Spec.OsSettings.CloudInitUserData, etcHostsBoothook)
-		vmRequest.Spec.OsSettings.CloudInitUserData = &wrapped
+	// Package custom data and the boothook only after SSH key injection into
+	// the original bootstrap cloud-config. Keep all parts at the same MIME level.
+	if strings.TrimSpace(machine.Spec.UserData) != "" || etcHostsBoothook != "" {
+		if vmRequest.Spec.OsSettings == nil {
+			vmRequest.Spec.OsSettings = &computetypes.VirtualMachineSpecOsSettings{}
+		}
+		var bootstrap string
+		if vmRequest.Spec.OsSettings.CloudInitUserData != nil {
+			bootstrap = *vmRequest.Spec.OsSettings.CloudInitUserData
+		}
+		combined := mergeUserData(bootstrap, machine.Spec.UserData, etcHostsBoothook)
+		vmRequest.Spec.OsSettings.CloudInitUserData = &combined
 	}
 
 	if _, err := cloudClient.VirtualMachines().Create(ctx, vmRequest); err != nil {
@@ -1805,27 +1812,24 @@ func additionalDiskName(machineName, diskName string) string {
 	return fmt.Sprintf("%s-%s", machineName, diskName)
 }
 
-func mergeUserData(bootstrapUserData, machineUserData string) string {
-	bootstrapUserData = strings.TrimSpace(bootstrapUserData)
-	machineUserData = strings.TrimSpace(machineUserData)
-
-	if bootstrapUserData == "" {
-		return machineUserData
-	}
-	if machineUserData == "" {
-		return bootstrapUserData
-	}
-
-	if strings.HasPrefix(bootstrapUserData, "#cloud-config") && strings.HasPrefix(machineUserData, "#cloud-config") {
-		machineBody := strings.TrimPrefix(machineUserData, "#cloud-config")
-		machineBody = strings.TrimLeft(machineBody, "\n")
-		if machineBody == "" {
-			return bootstrapUserData
+// mergeUserData keeps cloud-config documents separate so repeated list keys
+// (such as write_files and runcmd) are merged by cloud-init, not overwritten by
+// duplicate YAML keys. Jinja templates remain intact for rendering on the VM.
+func mergeUserData(parts ...string) string {
+	var nonEmpty []string
+	for _, part := range parts {
+		if content := strings.TrimSpace(part); content != "" {
+			nonEmpty = append(nonEmpty, content)
 		}
-		return bootstrapUserData + "\n\n# merged machine userData\n" + machineBody
 	}
-
-	return buildMultipartUserData(bootstrapUserData, machineUserData)
+	switch len(nonEmpty) {
+	case 0:
+		return ""
+	case 1:
+		return nonEmpty[0]
+	default:
+		return buildMultipartUserData(nonEmpty...)
+	}
 }
 
 func buildMultipartUserData(parts ...string) string {
@@ -1839,7 +1843,13 @@ func buildMultipartUserData(parts ...string) string {
 		}
 
 		header := make(textproto.MIMEHeader)
-		header.Set("Content-Type", cloudInitContentType(content))
+		contentType := cloudInitContentType(content)
+		header.Set("Content-Type", contentType)
+		if contentType == "text/cloud-config" || contentType == "text/jinja2" {
+			// Preserve bootstrap settings and append custom list entries, rather
+			// than replacing kubeadm's files or commands with machine userData.
+			header.Set("Merge-Type", "list(append)+dict(no_replace,recurse_list)+str()")
+		}
 		header.Set("MIME-Version", "1.0")
 		header.Set("Content-Transfer-Encoding", "7bit")
 

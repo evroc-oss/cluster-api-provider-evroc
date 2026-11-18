@@ -23,6 +23,12 @@
 # - Replacing the control plane node (Kubernetes upgrade, remediation) gives it
 #   a new private IP; existing /etc/hosts entries are not updated.
 #
+# Customization (see README.md "Customize node bootstrap"):
+# - SSH keys and additional cloud-config: EvrocMachineTemplate spec.template.spec.
+# - Before-kubeadm setup: KubeadmControlPlane spec.kubeadmConfigSpec for the
+#   control plane; KubeadmConfigTemplate spec.template.spec for workers.
+# - Append to existing files/commands; preserve the endpoint mapping below.
+#
 # Technical configuration:
 # - 1 control plane node, 1 worker node
 # - Single availability zone (a)
@@ -126,6 +132,8 @@ spec:
         kind: EvrocMachineTemplate
         name: ${CLUSTER_NAME}-control-plane
   kubeadmConfigSpec:
+    # Add bootstrap prerequisites here; keep the endpoint mapping and installs.
+    # Bootstrap files belong in kubeadmConfigSpec.files alongside this list.
     preKubeadmCommands:
       # Map the endpoint to this node's private IP unless CAPE already mapped
       # it to an existing control plane (joining control plane nodes).
@@ -187,6 +195,8 @@ spec:
       image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: 50
       sshKey: "${EVROC_SSH_KEY:=}"
+      # Optional userData: | with #cloud-config for additional files/commands.
+      # Its runcmd entries run after kubeadm; use preKubeadmCommands for prerequisites.
       networkingConfig:
         securityGroups:
           inheritFromCluster: true
@@ -231,6 +241,8 @@ spec:
       image: ${EVROC_IMAGE:=ubuntu.24-04.1}
       rootDiskSize: 50
       sshKey: "${EVROC_SSH_KEY:=}"
+      # Optional userData: | with #cloud-config for additional files/commands.
+      # Its runcmd entries run after kubeadm; use preKubeadmCommands for prerequisites.
       networkingConfig:
         securityGroups:
           inheritFromCluster: true
@@ -243,6 +255,8 @@ metadata:
 spec:
   template:
     spec:
+      # Add worker bootstrap prerequisites here, preserving existing commands.
+      # Bootstrap files belong in spec.template.spec.files alongside this list.
       preKubeadmCommands:
         - modprobe overlay
         - modprobe br_netfilter
