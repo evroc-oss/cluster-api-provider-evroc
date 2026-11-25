@@ -373,9 +373,24 @@ type NetworkStatus struct {
 	// +optional
 	SubnetIDs map[string]string `json:"subnetIds,omitempty"`
 
+	// SubnetCIDRs maps zone letters to the address ranges of the subnet in use.
+	// +optional
+	SubnetCIDRs map[string]SubnetCIDRs `json:"subnetCidrs,omitempty"`
+
 	// StackType is the resolved IP stack type for VMs in this cluster.
 	// +optional
 	StackType string `json:"stackType,omitempty"`
+}
+
+// SubnetCIDRs holds the address ranges of a subnet.
+type SubnetCIDRs struct {
+	// IPv4CIDRBlock is empty for IPv6-only subnets.
+	// +optional
+	IPv4CIDRBlock string `json:"ipv4CidrBlock,omitempty"`
+
+	// IPv6CIDRBlock is the subnet's assigned IPv6 GUA block.
+	// +optional
+	IPv6CIDRBlock string `json:"ipv6CidrBlock,omitempty"`
 }
 
 // ClusterResources tracks cloud resources created or referenced by the cluster controller.

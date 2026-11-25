@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -105,6 +106,13 @@ func (m *mockHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		StatusCode: 200,
 		Body:       http.NoBody,
 	}, nil
+}
+
+// stubSubnets answers subnet lookups for tests that don't care about them.
+func stubSubnets(m *mocks.MockClient) {
+	svc := new(mocks.MockSubnetService)
+	svc.On("Get", mock.Anything, mock.Anything).Return(&networkingtypes.Subnet{}, nil).Maybe()
+	m.On("Subnets").Return(svc).Maybe()
 }
 
 // testSDKClientForCluster creates a test SDK client for cluster tests.
@@ -250,6 +258,7 @@ func TestEvrocClusterReconciler_CreateWithEndpoint(t *testing.T) {
 
 	// Create mock cloud client
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 
 	mockLBService := new(mocks.MockLoadBalancerService)
@@ -351,6 +360,7 @@ func TestEvrocClusterReconciler_ExternalEndpointReadyWithoutInfraEndpoint(t *tes
 		WithStatusSubresource(evrocCluster).
 		Build()
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	reconciler := &EvrocClusterReconciler{
 		Client:        fakeClient,
@@ -429,6 +439,7 @@ func TestEvrocClusterReconciler_CreateWithoutEndpoint(t *testing.T) {
 
 	// Create mock cloud client — LB Get returns not-found, Create returns a pending LB
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
@@ -548,6 +559,7 @@ func TestEvrocClusterReconciler_Delete(t *testing.T) {
 
 	// Create mock cloud client with LB cleanup expectations
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 	// Teardown derives the LB name (not from status) and the stable clusterID.
 	mockLB := new(mocks.MockLoadBalancerService)
@@ -644,6 +656,7 @@ func TestEvrocClusterReconciler_AnyRegion(t *testing.T) {
 
 	// Create mock cloud client
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
 
 	mockLBService := new(mocks.MockLoadBalancerService)
@@ -791,6 +804,7 @@ func TestReconcileAutoCreatedLoadBalancer(t *testing.T) {
 			}
 
 			mockClient := new(mocks.MockClient)
+			stubSubnets(mockClient)
 			mockLB := new(mocks.MockLoadBalancerService)
 			mockClient.On("LoadBalancers").Return(mockLB)
 			tt.mockSetup(mockLB)
@@ -850,6 +864,7 @@ func TestCleanupResources_DeletesLB(t *testing.T) {
 	}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
@@ -887,6 +902,7 @@ func TestCleanupResources_ExternalEndpointSkipsLB(t *testing.T) {
 	}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockSG := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSG)
 	mockSG.On("ListByOwner", mock.Anything, "test-cluster-owner").Return([]string{}, nil)
@@ -931,6 +947,7 @@ func TestCleanupResources_PreservesExistingLBPublicIP(t *testing.T) {
 	}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
@@ -980,6 +997,7 @@ func TestCleanupResources_LBDeleteError(t *testing.T) {
 	}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
@@ -1027,6 +1045,7 @@ func TestCleanupResources_WaitsForLBDeletion(t *testing.T) {
 	}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockClient.On("SDKClient").Return(testSDKClientForCluster())
@@ -1113,6 +1132,7 @@ func TestCleanupResources(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := new(mocks.MockClient)
+			stubSubnets(mockClient)
 			mockPIP := new(mocks.MockPublicIPService)
 			mockSG := new(mocks.MockSecurityGroupService)
 			tt.setupMocks(mockClient, mockPIP, mockSG)
@@ -1157,6 +1177,7 @@ func TestCleanupResources_DeletesSecurityGroupsWithoutStatus(t *testing.T) {
 	}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockLB := new(mocks.MockLoadBalancerService)
 	mockClient.On("LoadBalancers").Return(mockLB)
 	mockLB.On("Delete", mock.Anything, "moved-olduid00-cp-lb", "moved-olduid00", true).Return(nil)
@@ -1288,6 +1309,7 @@ func TestReconcileSecurityGroups_NoConfig(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 
 	cluster := &infrav1.EvrocCluster{
 		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
@@ -1340,6 +1362,7 @@ func TestReconcileSecurityGroups_CreateInline(t *testing.T) {
 	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockSG := new(mocks.MockSecurityGroupService)
 	mockVM := new(mocks.MockVirtualMachineService)
 
@@ -1402,6 +1425,7 @@ func TestReconcileSecurityGroups_UpdateExisting(t *testing.T) {
 	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockSG := new(mocks.MockSecurityGroupService)
 	mockVM := new(mocks.MockVirtualMachineService)
 
@@ -1503,6 +1527,7 @@ func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 
 		mockClient := new(mocks.MockClient)
+		stubSubnets(mockClient)
 		// No UpdateSecurityGroups call expected — function now annotates machines instead.
 
 		err := reconciler.reconcileClusterSecurityGroupsOnVMs(context.Background(), cluster, mockClient)
@@ -1566,6 +1591,7 @@ func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 
 		mockClient := new(mocks.MockClient)
+		stubSubnets(mockClient)
 		// No expectations - should not call UpdateSecurityGroups
 
 		err := reconciler.reconcileClusterSecurityGroupsOnVMs(context.Background(), cluster, mockClient)
@@ -1597,6 +1623,7 @@ func TestReconcileClusterSecurityGroupsOnVMs(t *testing.T) {
 
 		reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 		mockClient := new(mocks.MockClient)
+		stubSubnets(mockClient)
 
 		err := reconciler.reconcileClusterSecurityGroupsOnVMs(context.Background(), cluster, mockClient)
 		assert.NoError(t, err)
@@ -1630,6 +1657,7 @@ func TestReconcileSecurityGroups_ExternalNotFound(t *testing.T) {
 	reconciler := &EvrocClusterReconciler{Client: fakeClient, Scheme: scheme}
 
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 	mockSG := new(mocks.MockSecurityGroupService)
 	mockClient.On("SecurityGroups").Return(mockSG)
 
@@ -1688,6 +1716,7 @@ func TestEvrocClusterReconciler_PausedSkipsDeletion(t *testing.T) {
 
 	// No mock cloud client expectations — cleanup must NOT be called.
 	mockClient := new(mocks.MockClient)
+	stubSubnets(mockClient)
 
 	reconciler := &EvrocClusterReconciler{
 		Client:        fakeClient,
@@ -1968,6 +1997,7 @@ func TestCleanupResources_WorkloadDrivers(t *testing.T) {
 				},
 			}
 			mockClient := new(mocks.MockClient)
+			stubSubnets(mockClient)
 			mockLB := new(mocks.MockLoadBalancerService)
 			mockClient.On("LoadBalancers").Return(mockLB)
 			mockLB.On("Delete", mock.Anything, "test-test-uid-cp-lb", "test-test-uid", true).Return(nil)
@@ -2047,6 +2077,107 @@ func TestHandleClusterError(t *testing.T) {
 			assert.Equal(t, corev1.ConditionFalse, readyCond.Status)
 			assert.Equal(t, clusterv1.ConditionSeverityError, readyCond.Severity)
 			assert.Equal(t, tt.wantReason, readyCond.Reason)
+		})
+	}
+}
+
+func TestResolveSubnetCIDRs(t *testing.T) {
+	dualStack := &networkingtypes.Subnet{
+		Spec:   networkingtypes.SubnetSpec{Ipv4CidrBlock: ptr.To("10.0.1.0/24")},
+		Status: networkingtypes.SubnetStatus{AssignedIPv6GUABlock: ptr.To("2a0f:1::/64")},
+	}
+	full := infrav1.SubnetCIDRs{IPv4CIDRBlock: "10.0.1.0/24", IPv6CIDRBlock: "2a0f:1::/64"}
+	v4Only := infrav1.SubnetCIDRs{IPv4CIDRBlock: "10.0.1.0/24"}
+
+	tests := []struct {
+		name      string
+		prevIDs   map[string]string
+		prevCIDRs map[string]infrav1.SubnetCIDRs
+		subnetRef string
+		subnet    *networkingtypes.Subnet
+		getErr    error
+		wantGet   bool
+		want      map[string]infrav1.SubnetCIDRs
+	}{
+		{
+			name:    "new zone is looked up",
+			subnet:  dualStack,
+			wantGet: true,
+			want:    map[string]infrav1.SubnetCIDRs{"a": full},
+		},
+		{
+			name:      "fully-qualified ref is looked up by name",
+			subnetRef: "/networking/projects/p/regions/se-sto/subnets/sub-a",
+			subnet:    dualStack,
+			wantGet:   true,
+			want:      map[string]infrav1.SubnetCIDRs{"a": full},
+		},
+		{
+			name: "ipv6-only subnet has no ipv4 block",
+			subnet: &networkingtypes.Subnet{
+				Status: networkingtypes.SubnetStatus{AssignedIPv6GUABlock: ptr.To("2a0f:1::/64")},
+			},
+			wantGet: true,
+			want:    map[string]infrav1.SubnetCIDRs{"a": {IPv6CIDRBlock: "2a0f:1::/64"}},
+		},
+		{
+			name:      "fully known subnet is not looked up again",
+			prevIDs:   map[string]string{"a": "sub-a"},
+			prevCIDRs: map[string]infrav1.SubnetCIDRs{"a": full},
+			want:      map[string]infrav1.SubnetCIDRs{"a": full},
+		},
+		{
+			name:      "subnet waiting on ipv6 is looked up again",
+			prevIDs:   map[string]string{"a": "sub-a"},
+			prevCIDRs: map[string]infrav1.SubnetCIDRs{"a": v4Only},
+			subnet:    dualStack,
+			wantGet:   true,
+			want:      map[string]infrav1.SubnetCIDRs{"a": full},
+		},
+		{
+			name:      "renamed subnet is looked up again",
+			prevIDs:   map[string]string{"a": "old-a"},
+			prevCIDRs: map[string]infrav1.SubnetCIDRs{"a": {IPv4CIDRBlock: "10.9.9.0/24", IPv6CIDRBlock: "2a0f:9::/64"}},
+			subnet:    dualStack,
+			wantGet:   true,
+			want:      map[string]infrav1.SubnetCIDRs{"a": full},
+		},
+		{
+			name:      "failed lookup keeps what was known",
+			prevIDs:   map[string]string{"a": "sub-a"},
+			prevCIDRs: map[string]infrav1.SubnetCIDRs{"a": v4Only},
+			getErr:    fmt.Errorf("boom"),
+			wantGet:   true,
+			want:      map[string]infrav1.SubnetCIDRs{"a": v4Only},
+		},
+		{
+			name:    "failed lookup of a new zone leaves it out",
+			getErr:  fmt.Errorf("boom"),
+			wantGet: true,
+			want:    map[string]infrav1.SubnetCIDRs{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := new(mocks.MockSubnetService)
+			if tt.wantGet {
+				svc.On("Get", mock.Anything, "sub-a").Return(tt.subnet, tt.getErr).Once()
+			}
+			mockClient := new(mocks.MockClient)
+			mockClient.On("Subnets").Return(svc)
+
+			cluster := &infrav1.EvrocCluster{Status: infrav1.EvrocClusterStatus{
+				Network: infrav1.NetworkStatus{SubnetIDs: tt.prevIDs, SubnetCIDRs: tt.prevCIDRs},
+			}}
+			ref := "sub-a"
+			if tt.subnetRef != "" {
+				ref = tt.subnetRef
+			}
+			got := resolveSubnetCIDRs(context.Background(), cluster, map[string]string{"a": ref}, mockClient)
+
+			assert.Equal(t, tt.want, got)
+			svc.AssertExpectations(t)
 		})
 	}
 }

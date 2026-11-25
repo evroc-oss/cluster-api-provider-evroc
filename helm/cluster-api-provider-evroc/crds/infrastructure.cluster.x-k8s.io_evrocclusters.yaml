@@ -599,6 +599,21 @@ spec:
                     description: StackType is the resolved IP stack type for VMs in
                       this cluster.
                     type: string
+                  subnetCidrs:
+                    additionalProperties:
+                      description: SubnetCIDRs holds the address ranges of a subnet.
+                      properties:
+                        ipv4CidrBlock:
+                          description: IPv4CIDRBlock is empty for IPv6-only subnets.
+                          type: string
+                        ipv6CidrBlock:
+                          description: IPv6CIDRBlock is the subnet's assigned IPv6
+                            GUA block.
+                          type: string
+                      type: object
+                    description: SubnetCIDRs maps zone letters to the address ranges
+                      of the subnet in use.
+                    type: object
                   subnetIds:
                     additionalProperties:
                       type: string
