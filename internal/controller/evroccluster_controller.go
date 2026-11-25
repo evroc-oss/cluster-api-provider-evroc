@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	evroc "github.com/evroc-oss/evroc-go-sdk"
 	"github.com/evroc-oss/evroc-go-sdk/metrics"
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
@@ -188,6 +189,7 @@ func (r *EvrocClusterReconciler) reconcileNormal(ctx context.Context, evrocClust
 	for _, zone := range evrocCluster.Spec.FailureDomains {
 		subnetIDs[zone] = resolveSubnetName(evrocCluster, zone)
 	}
+	evrocCluster.Status.Network.SubnetCIDRs = resolveSubnetCIDRs(ctx, evrocCluster, subnetIDs, cloudClient)
 	evrocCluster.Status.Network.SubnetIDs = subnetIDs
 
 	// Reconcile the control plane load balancer only when CAPE owns the endpoint.
@@ -966,6 +968,48 @@ func resolveSubnetName(cluster *infrav1.EvrocCluster, zone string) string {
 		return name
 	}
 	return fmt.Sprintf("default-%s-%s", cluster.Spec.Region, zone)
+}
+
+// resolveSubnetCIDRs looks up each zone's subnet CIDRs. A failed lookup is
+// logged and keeps what was known before, so it never blocks the reconcile.
+func resolveSubnetCIDRs(
+	ctx context.Context,
+	cluster *infrav1.EvrocCluster,
+	subnetIDs map[string]string,
+	cloudClient cloud.ClientInterface,
+) map[string]infrav1.SubnetCIDRs {
+	log := log.FromContext(ctx)
+	prevIDs := cluster.Status.Network.SubnetIDs
+	prevCIDRs := cluster.Status.Network.SubnetCIDRs
+
+	cidrs := make(map[string]infrav1.SubnetCIDRs, len(subnetIDs))
+	for zone, name := range subnetIDs {
+		prev, known := prevCIDRs[zone]
+		known = known && prevIDs[zone] == name
+		// Neither block changes once set, so skip subnets already fully known.
+		if known && prev.IPv6CIDRBlock != "" {
+			cidrs[zone] = prev
+			continue
+		}
+		// subnetRefs may hold a fully-qualified ref, but Get takes a bare name.
+		subnet, err := cloudClient.Subnets().Get(ctx, evroc.NameFromRef(name))
+		if err != nil {
+			log.Error(err, "Failed to look up subnet CIDRs", "zone", zone, "subnet", name)
+			if known {
+				cidrs[zone] = prev
+			}
+			continue
+		}
+		var c infrav1.SubnetCIDRs
+		if subnet.Spec.Ipv4CidrBlock != nil {
+			c.IPv4CIDRBlock = *subnet.Spec.Ipv4CidrBlock
+		}
+		if subnet.Status.AssignedIPv6GUABlock != nil {
+			c.IPv6CIDRBlock = *subnet.Status.AssignedIPv6GUABlock
+		}
+		cidrs[zone] = c
+	}
+	return cidrs
 }
 
 // resolveStackType returns the cluster's stack type, defaulting to dual-stack

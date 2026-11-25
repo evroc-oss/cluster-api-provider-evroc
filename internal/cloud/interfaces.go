@@ -23,6 +23,7 @@ type ClientInterface interface {
 	PlacementGroups() PlacementGroupServiceInterface
 	VirtualMachines() VirtualMachineServiceInterface
 	LoadBalancers() LoadBalancerServiceInterface
+	Subnets() SubnetServiceInterface
 	WorkloadResources() WorkloadResourceServiceInterface
 	SDKClient() *evroc.Client
 	// Close releases the client's idle connections; call it when the reconcile ends.
@@ -101,6 +102,11 @@ type SecurityGroupServiceInterface interface {
 		opts ...networking.WaiterOption,
 	) (*networkingtypes.SecurityGroup, error)
 	WaitForDeleted(ctx context.Context, name string, timeout time.Duration) error
+}
+
+// SubnetServiceInterface defines the interface for subnet operations.
+type SubnetServiceInterface interface {
+	Get(ctx context.Context, name string) (*networkingtypes.Subnet, error)
 }
 
 // PlacementGroupServiceInterface defines the interface for placement group operations.

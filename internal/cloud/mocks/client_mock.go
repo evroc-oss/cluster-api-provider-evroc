@@ -44,6 +44,11 @@ func (m *MockClient) LoadBalancers() cloud.LoadBalancerServiceInterface {
 	return args.Get(0).(cloud.LoadBalancerServiceInterface)
 }
 
+func (m *MockClient) Subnets() cloud.SubnetServiceInterface {
+	args := m.Called()
+	return args.Get(0).(cloud.SubnetServiceInterface)
+}
+
 func (m *MockClient) WorkloadResources() cloud.WorkloadResourceServiceInterface {
 	args := m.Called()
 	return args.Get(0).(cloud.WorkloadResourceServiceInterface)
