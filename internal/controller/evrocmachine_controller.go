@@ -44,7 +44,7 @@ import (
 
 const (
 	machineFinalizer                = "infrastructure.cluster.x-k8s.io/evrocmachine"
-	machineOwnershipIDAnnotation    = "evrocmachine.infrastructure.cluster.x-k8s.io/ownership-id"
+	machineOwnershipIDAnnotation    = infrav1.EvrocMachineOwnershipIDAnnotation
 	externalCloudProviderAnnotation = "infrastructure.cluster.x-k8s.io/external-cloud-provider"
 	// controlPlaneEndpointEtcHostsAnnotation opts an EvrocCluster into resolving
 	// its hostname endpoint via /etc/hosts on joining nodes, until evroc internal

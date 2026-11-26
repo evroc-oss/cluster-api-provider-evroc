@@ -14,6 +14,10 @@ import (
 // disks the evroc CSI driver created. Disks are retained by default.
 const DeleteCSIDisksAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/delete-csi-disks"
 
+// EvrocClusterOwnershipIDAnnotation holds the immutable ownership ID CAPE
+// assigns at creation; unlike the live UID it survives clusterctl move.
+const EvrocClusterOwnershipIDAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/ownership-id"
+
 // EvrocClusterSpec defines the desired state of EvrocCluster
 type EvrocClusterSpec struct {
 	// Project is the evroc project name
@@ -485,10 +489,6 @@ type EvrocClusterList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []EvrocCluster `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&EvrocCluster{}, &EvrocClusterList{})
 }
 
 // GetConditions returns the set of conditions for this object.

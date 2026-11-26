@@ -3,6 +3,10 @@
 
 package cloud
 
+import (
+	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
+)
+
 // Ownership label keys applied to every managed cloud resource. evroc does not
 // allow "/" in label keys, so "_" is the separator.
 //
@@ -11,7 +15,7 @@ package cloud
 // survive clusterctl move. Names are included only for human-readable tracking.
 const (
 	LabelClusterName = "capi_cluster-name"
-	LabelClusterID   = "capi_cluster-id"
+	LabelClusterID   = infrav1.ClusterIDLabel
 	LabelManagedBy   = "capi_managed-by"
 
 	// Machine-level resources carry both the immutable ID and readable name.

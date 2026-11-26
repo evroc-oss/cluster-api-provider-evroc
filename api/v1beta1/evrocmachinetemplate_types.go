@@ -41,7 +41,3 @@ type EvrocMachineTemplateList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []EvrocMachineTemplate `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&EvrocMachineTemplate{}, &EvrocMachineTemplateList{})
-}

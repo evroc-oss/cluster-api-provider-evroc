@@ -9,6 +9,10 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
+// EvrocMachineOwnershipIDAnnotation holds the immutable ownership ID CAPE
+// assigns at creation; unlike the live UID it survives clusterctl move.
+const EvrocMachineOwnershipIDAnnotation = "evrocmachine.infrastructure.cluster.x-k8s.io/ownership-id"
+
 // EvrocMachineSpec defines the desired state of EvrocMachine
 type EvrocMachineSpec struct {
 	// Project is the evroc project ID
@@ -256,10 +260,6 @@ type EvrocMachineList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []EvrocMachine `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&EvrocMachine{}, &EvrocMachineList{})
 }
 
 // GetConditions returns the set of conditions for this object.

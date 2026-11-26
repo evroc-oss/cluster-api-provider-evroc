@@ -10,6 +10,7 @@ via the evroc SDK.
 | Path | What |
 |---|---|
 | `internal/controller/` | EvrocCluster / EvrocMachine reconcilers |
+| `internal/webhooks/` | admission webhooks for the API types |
 | `internal/cloud/` | SDK client wrapper, credential resolution (`credentials.go`) |
 | `templates/` | clusterctl flavors: default, minimal, ha-lb, rke2 |
 | `helm/cluster-api-provider-evroc/` | Helm chart (CRDs in `crds/`, installed on first install only) |
