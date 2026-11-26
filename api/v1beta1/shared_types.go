@@ -3,6 +3,10 @@
 
 package v1beta1
 
+// ClusterIDLabel tags a machine's cloud resources with the ownership ID of
+// its EvrocCluster (the EvrocClusterOwnershipIDAnnotation value).
+const ClusterIDLabel = "capi_cluster-id"
+
 // SecurityGroupRule defines a single firewall rule.
 // This type is used by inline security group configuration on EvrocCluster and EvrocMachine.
 type SecurityGroupRule struct {

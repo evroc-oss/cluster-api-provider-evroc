@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2026 evroc
 
-package v1beta1
+package webhooks
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/diskimage"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,7 +39,7 @@ type EvrocMachineValidator struct{}
 // SetupEvrocMachineWebhookWithManager sets up the webhook with the Manager.
 func SetupEvrocMachineWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
-		For(&EvrocMachine{}).
+		For(&infrav1.EvrocMachine{}).
 		WithDefaulter(&EvrocMachineDefaulter{}).
 		WithValidator(&EvrocMachineValidator{}).
 		Complete()
@@ -48,7 +49,7 @@ func SetupEvrocMachineWebhookWithManager(mgr ctrl.Manager) error {
 
 // Default implements admission.CustomDefaulter.
 func (d *EvrocMachineDefaulter) Default(_ context.Context, obj runtime.Object) error {
-	r, ok := obj.(*EvrocMachine)
+	r, ok := obj.(*infrav1.EvrocMachine)
 	if !ok {
 		return fmt.Errorf("expected an EvrocMachine but got a %T", obj)
 	}
@@ -68,10 +69,10 @@ func (d *EvrocMachineDefaulter) Default(_ context.Context, obj runtime.Object) e
 	// Default to inheriting cluster security groups so machines are never
 	// created without any SGs (which would block all network traffic).
 	if r.Spec.NetworkingConfig == nil {
-		r.Spec.NetworkingConfig = &MachineNetworkingConfig{}
+		r.Spec.NetworkingConfig = &infrav1.MachineNetworkingConfig{}
 	}
 	if r.Spec.NetworkingConfig.SecurityGroups == nil {
-		r.Spec.NetworkingConfig.SecurityGroups = &MachineSecurityGroupsConfig{}
+		r.Spec.NetworkingConfig.SecurityGroups = &infrav1.MachineSecurityGroupsConfig{}
 	}
 	if !r.Spec.NetworkingConfig.SecurityGroups.InheritFromCluster &&
 		len(r.Spec.NetworkingConfig.SecurityGroups.InlineSecurityGroups) == 0 &&
@@ -86,14 +87,14 @@ func (d *EvrocMachineDefaulter) Default(_ context.Context, obj runtime.Object) e
 
 // ValidateCreate implements admission.CustomValidator.
 func (v *EvrocMachineValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	r, ok := obj.(*EvrocMachine)
+	r, ok := obj.(*infrav1.EvrocMachine)
 	if !ok {
 		return nil, fmt.Errorf("expected an EvrocMachine but got a %T", obj)
 	}
 
 	evrocmachinelog.Info("validate create", "name", r.Name)
 
-	warnings, errs := r.validateEvrocMachine()
+	warnings, errs := validateEvrocMachine(r)
 	if len(errs) > 0 {
 		return warnings, errs.ToAggregate()
 	}
@@ -102,7 +103,7 @@ func (v *EvrocMachineValidator) ValidateCreate(_ context.Context, obj runtime.Ob
 
 // ValidateUpdate implements admission.CustomValidator.
 func (v *EvrocMachineValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	r, ok := newObj.(*EvrocMachine)
+	r, ok := newObj.(*infrav1.EvrocMachine)
 	if !ok {
 		return nil, fmt.Errorf("expected an EvrocMachine but got a %T", newObj)
 	}
@@ -112,7 +113,7 @@ func (v *EvrocMachineValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 	var allErrs field.ErrorList
 
 	// Validate immutable fields
-	oldMachine, ok := oldObj.(*EvrocMachine)
+	oldMachine, ok := oldObj.(*infrav1.EvrocMachine)
 	if !ok {
 		return nil, fmt.Errorf("expected an EvrocMachine but got a %T", oldObj)
 	}
@@ -158,7 +159,7 @@ func (v *EvrocMachineValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 	}
 
 	// Run general validation
-	warnings, validationErrs := r.validateEvrocMachine()
+	warnings, validationErrs := validateEvrocMachine(r)
 	allErrs = append(allErrs, validationErrs...)
 
 	if len(allErrs) > 0 {
@@ -175,7 +176,7 @@ func (v *EvrocMachineValidator) ValidateDelete(_ context.Context, _ runtime.Obje
 
 // validateEvrocMachine performs common validation for EvrocMachine.
 // Returns field.ErrorList so callers can append individual errors without losing field paths.
-func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorList) {
+func validateEvrocMachine(m *infrav1.EvrocMachine) (admission.Warnings, field.ErrorList) {
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 
@@ -209,7 +210,7 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 	}
 
 	if m.Spec.Image != "" {
-		allErrs = append(allErrs, m.validateImage(m.Spec.Image, field.NewPath("spec", "image"))...)
+		allErrs = append(allErrs, validateImage(m, m.Spec.Image, field.NewPath("spec", "image"))...)
 	}
 
 	// Validate region format
@@ -279,7 +280,7 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 		for i, disk := range m.Spec.AdditionalDisks {
 			diskPath := field.NewPath("spec", "additionalDisks").Index(i)
 			if disk.Image != nil && *disk.Image != "" {
-				allErrs = append(allErrs, m.validateImage(*disk.Image, diskPath.Child("image"))...)
+				allErrs = append(allErrs, validateImage(m, *disk.Image, diskPath.Child("image"))...)
 			}
 			if seenDiskNames[disk.Name] {
 				allErrs = append(allErrs, field.Duplicate(diskPath.Child("name"), disk.Name))
@@ -354,7 +355,7 @@ func (m *EvrocMachine) validateEvrocMachine() (admission.Warnings, field.ErrorLi
 // Stock images are validated against the API catalog during reconciliation.
 // Custom images must belong to the disk's project and region, so their refs
 // must match spec.project and spec.region.
-func (m *EvrocMachine) validateImage(image string, fldPath *field.Path) field.ErrorList {
+func validateImage(m *infrav1.EvrocMachine, image string, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 	if name, custom := strings.CutPrefix(image, "custom:"); custom {
 		if !customDiskImageNamePattern.MatchString(name) {

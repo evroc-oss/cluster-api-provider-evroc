@@ -41,7 +41,7 @@ const (
 
 	// The ownership ID is immutable and independent of cloud resource names.
 	// clusterctl move preserves annotations while assigning a new live UID.
-	clusterOwnershipIDAnnotation = "evroccluster.infrastructure.cluster.x-k8s.io/ownership-id"
+	clusterOwnershipIDAnnotation = infrav1.EvrocClusterOwnershipIDAnnotation
 
 	// The resource prefix preserves deterministic cloud resource names across
 	// clusterctl move. It is deliberately not used as an ownership identity.

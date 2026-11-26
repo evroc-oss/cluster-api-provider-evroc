@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2026 evroc
 
-package v1beta1
+package webhooks
 
 import (
 	"context"
@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+
+	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 )
 
 func int32Ptr(i int32) *int32 { return &i }
@@ -26,18 +27,18 @@ func TestEvrocClusterDefault(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		cluster  *EvrocCluster
-		expected *EvrocCluster
+		cluster  *infrav1.EvrocCluster
+		expected *infrav1.EvrocCluster
 	}{
 		{
 			name: "sets default region and failure domains",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 				},
 			},
-			expected: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			expected: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -50,14 +51,14 @@ func TestEvrocClusterDefault(t *testing.T) {
 		},
 		{
 			name: "preserves existing region",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 				},
 			},
-			expected: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			expected: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -70,8 +71,8 @@ func TestEvrocClusterDefault(t *testing.T) {
 		},
 		{
 			name: "preserves existing failure domains",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -79,8 +80,8 @@ func TestEvrocClusterDefault(t *testing.T) {
 					},
 				},
 			},
-			expected: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			expected: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -91,25 +92,25 @@ func TestEvrocClusterDefault(t *testing.T) {
 		},
 		{
 			name: "preserves credentialsRef name",
-			cluster: &EvrocCluster{
+			cluster: &infrav1.EvrocCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "tenant-ns",
 				},
-				Spec: EvrocClusterSpec{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
-					CredentialsRef: &SecretReference{
+					CredentialsRef: &infrav1.SecretReference{
 						Name: "my-creds",
 					},
 				},
 			},
-			expected: &EvrocCluster{
+			expected: &infrav1.EvrocCluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: "tenant-ns",
 				},
-				Spec: EvrocClusterSpec{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
-					CredentialsRef: &SecretReference{
+					CredentialsRef: &infrav1.SecretReference{
 						Name: "my-creds",
 					},
 					FailureDomains: []string{"a", "b", "c"},
@@ -132,15 +133,15 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		cluster         *EvrocCluster
+		cluster         *infrav1.EvrocCluster
 		expectError     bool
 		expectWarning   bool
 		warningContains string
 	}{
 		{
 			name: "valid cluster",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -148,28 +149,28 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 						"b",
 						"c",
 					},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "invalid delete-csi-disks annotation",
-			cluster: &EvrocCluster{
-				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{DeleteCSIDisksAnnotation: "yes"}},
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{infrav1.DeleteCSIDisksAnnotation: "yes"}},
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{"a"},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: true,
 		},
 		{
 			name: "missing credentialsRef",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{"a"},
@@ -179,20 +180,20 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "empty credentialsRef name",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{"a"},
-					CredentialsRef: &SecretReference{Name: ""},
+					CredentialsRef: &infrav1.SecretReference{Name: ""},
 				},
 			},
 			expectError: true,
 		},
 		{
 			name: "missing project",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Region: "se-sto",
 					FailureDomains: []string{
 						"a",
@@ -203,8 +204,8 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "missing region",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					FailureDomains: []string{
 						"a",
@@ -215,8 +216,8 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "missing failure domains",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{},
@@ -226,8 +227,8 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "invalid region format",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "invalid",
 					FailureDomains: []string{
@@ -239,8 +240,8 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "invalid failure domain format",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -252,8 +253,8 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "failure domain not in region",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -265,8 +266,8 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "duplicate failure domains",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -279,14 +280,14 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 		},
 		{
 			name: "single failure domain (valid but warning)",
-			cluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			cluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
 						"a",
 					},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
@@ -312,48 +313,48 @@ func TestEvrocClusterValidateCreate(t *testing.T) {
 func TestEvrocClusterValidateUpdate(t *testing.T) {
 	g := NewWithT(t)
 
-	oldCluster := &EvrocCluster{
-		Spec: EvrocClusterSpec{
+	oldCluster := &infrav1.EvrocCluster{
+		Spec: infrav1.EvrocClusterSpec{
 			Project: "test-project",
 			Region:  "se-sto",
 			FailureDomains: []string{
 				"a",
 				"b",
 			},
-			Network: NetworkSpec{
+			Network: infrav1.NetworkSpec{
 				SubnetRefs: map[string]string{"a": "subnet-a"},
 			},
-			CredentialsRef: &SecretReference{Name: "test-creds"},
+			CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 		},
 	}
 
 	tests := []struct {
 		name        string
-		newCluster  *EvrocCluster
+		newCluster  *infrav1.EvrocCluster
 		expectError bool
 	}{
 		{
 			name: "no changes",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
 						"a",
 						"b",
 					},
-					Network: NetworkSpec{
+					Network: infrav1.NetworkSpec{
 						SubnetRefs: map[string]string{"a": "subnet-a"},
 					},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "change project (immutable)",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "different-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -366,8 +367,8 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 		},
 		{
 			name: "change region (immutable)",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "eu-sto",
 					FailureDomains: []string{
@@ -380,8 +381,8 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 		},
 		{
 			name: "add failure domain (mutable)",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project: "test-project",
 					Region:  "se-sto",
 					FailureDomains: []string{
@@ -389,53 +390,53 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 						"b",
 						"c",
 					},
-					Network: NetworkSpec{
+					Network: infrav1.NetworkSpec{
 						SubnetRefs: map[string]string{"a": "subnet-a"},
 					},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "change subnet for existing zone (immutable)",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{"a", "b"},
-					Network: NetworkSpec{
+					Network: infrav1.NetworkSpec{
 						SubnetRefs: map[string]string{"a": "subnet-a-changed"},
 					},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: true,
 		},
 		{
 			name: "remove subnet for existing zone (immutable)",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{"a", "b"},
-					Network:        NetworkSpec{SubnetRefs: map[string]string{}},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					Network:        infrav1.NetworkSpec{SubnetRefs: map[string]string{}},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: true,
 		},
 		{
 			name: "add subnet for new zone (mutable)",
-			newCluster: &EvrocCluster{
-				Spec: EvrocClusterSpec{
+			newCluster: &infrav1.EvrocCluster{
+				Spec: infrav1.EvrocClusterSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					FailureDomains: []string{"a", "b"},
-					Network: NetworkSpec{
+					Network: infrav1.NetworkSpec{
 						SubnetRefs: map[string]string{"a": "subnet-a", "b": "subnet-b"},
 					},
-					CredentialsRef: &SecretReference{Name: "test-creds"},
+					CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				},
 			},
 			expectError: false,
@@ -455,46 +456,46 @@ func TestEvrocClusterValidateUpdate(t *testing.T) {
 }
 
 func TestEvrocClusterValidateUpdate_ControlPlaneEndpointPolicy(t *testing.T) {
-	clusterWithPolicy := func(policy EndpointManagementPolicy) *EvrocCluster {
-		return &EvrocCluster{Spec: EvrocClusterSpec{
+	clusterWithPolicy := func(policy infrav1.EndpointManagementPolicy) *infrav1.EvrocCluster {
+		return &infrav1.EvrocCluster{Spec: infrav1.EvrocClusterSpec{
 			Project:                    "test-project",
 			Region:                     "se-sto",
 			FailureDomains:             []string{"a"},
-			CredentialsRef:             &SecretReference{Name: "test-creds"},
+			CredentialsRef:             &infrav1.SecretReference{Name: "test-creds"},
 			ControlPlaneEndpointPolicy: policy,
 		}}
 	}
 
 	tests := []struct {
 		name        string
-		oldPolicy   EndpointManagementPolicy
-		newPolicy   EndpointManagementPolicy
+		oldPolicy   infrav1.EndpointManagementPolicy
+		newPolicy   infrav1.EndpointManagementPolicy
 		expectError bool
 	}{
 		{
 			name:      "default and Managed are equivalent",
-			newPolicy: EndpointManaged,
+			newPolicy: infrav1.EndpointManaged,
 		},
 		{
 			name:        "Managed to External is rejected",
-			oldPolicy:   EndpointManaged,
-			newPolicy:   EndpointExternal,
+			oldPolicy:   infrav1.EndpointManaged,
+			newPolicy:   infrav1.EndpointExternal,
 			expectError: true,
 		},
 		{
 			name:        "External to Managed is rejected",
-			oldPolicy:   EndpointExternal,
-			newPolicy:   EndpointManaged,
+			oldPolicy:   infrav1.EndpointExternal,
+			newPolicy:   infrav1.EndpointManaged,
 			expectError: true,
 		},
 		{
 			name:      "External remains External",
-			oldPolicy: EndpointExternal,
-			newPolicy: EndpointExternal,
+			oldPolicy: infrav1.EndpointExternal,
+			newPolicy: infrav1.EndpointExternal,
 		},
 		{
 			name:        "unsupported policy is rejected",
-			oldPolicy:   EndpointManaged,
+			oldPolicy:   infrav1.EndpointManaged,
 			newPolicy:   "Unsupported",
 			expectError: true,
 		},
@@ -516,13 +517,13 @@ func TestEvrocClusterValidateUpdate_ControlPlaneEndpointPolicy(t *testing.T) {
 func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
 	g := NewWithT(t)
 
-	clusterWith := func(e *EndpointsConfig) *EvrocCluster {
-		return &EvrocCluster{
-			Spec: EvrocClusterSpec{
+	clusterWith := func(e *infrav1.EndpointsConfig) *infrav1.EvrocCluster {
+		return &infrav1.EvrocCluster{
+			Spec: infrav1.EvrocClusterSpec{
 				Project:        "test-project",
 				Region:         "se-sto",
 				FailureDomains: []string{"a"},
-				CredentialsRef: &SecretReference{Name: "test-creds"},
+				CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				Endpoints:      e,
 			},
 		}
@@ -530,7 +531,7 @@ func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		endpoints   *EndpointsConfig
+		endpoints   *infrav1.EndpointsConfig
 		expectError bool
 	}{
 		{
@@ -540,12 +541,12 @@ func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
 		},
 		{
 			name:        "empty endpoints block is valid",
-			endpoints:   &EndpointsConfig{},
+			endpoints:   &infrav1.EndpointsConfig{},
 			expectError: false,
 		},
 		{
 			name: "valid https endpoints",
-			endpoints: &EndpointsConfig{
+			endpoints: &infrav1.EndpointsConfig{
 				APIBaseURL: "https://api.private.example.com",
 				IssuerURL:  "https://authn.private.example.com/realms/evroc-customer",
 			},
@@ -553,44 +554,44 @@ func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
 		},
 		{
 			name:        "apiBaseURL only is valid",
-			endpoints:   &EndpointsConfig{APIBaseURL: "https://api.private.example.com"},
+			endpoints:   &infrav1.EndpointsConfig{APIBaseURL: "https://api.private.example.com"},
 			expectError: false,
 		},
 		{
 			name:        "http scheme rejected",
-			endpoints:   &EndpointsConfig{APIBaseURL: "http://api.private.example.com"},
+			endpoints:   &infrav1.EndpointsConfig{APIBaseURL: "http://api.private.example.com"},
 			expectError: true,
 		},
 		{
 			name:        "missing scheme rejected",
-			endpoints:   &EndpointsConfig{APIBaseURL: "api.private.example.com"},
+			endpoints:   &infrav1.EndpointsConfig{APIBaseURL: "api.private.example.com"},
 			expectError: true,
 		},
 		{
 			name:        "missing host rejected",
-			endpoints:   &EndpointsConfig{APIBaseURL: "https://"},
+			endpoints:   &infrav1.EndpointsConfig{APIBaseURL: "https://"},
 			expectError: true,
 		},
 		{
 			name:        "malformed issuerURL rejected",
-			endpoints:   &EndpointsConfig{IssuerURL: "https://authn.example.com/%zz"},
+			endpoints:   &infrav1.EndpointsConfig{IssuerURL: "https://authn.example.com/%zz"},
 			expectError: true,
 		},
 		{
 			// The token endpoint is derived; pasting the full token URL would
 			// double-suffix it.
 			name:        "full token URL as issuerURL rejected",
-			endpoints:   &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/r/protocol/openid-connect/token"},
+			endpoints:   &infrav1.EndpointsConfig{IssuerURL: "https://authn.example.com/realms/r/protocol/openid-connect/token"},
 			expectError: true,
 		},
 		{
 			name:        "trailing slash on issuerURL is accepted",
-			endpoints:   &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/r/"},
+			endpoints:   &infrav1.EndpointsConfig{IssuerURL: "https://authn.example.com/realms/r/"},
 			expectError: false,
 		},
 		{
 			name:        "clientID is not URL-validated",
-			endpoints:   &EndpointsConfig{ClientID: "some-client"},
+			endpoints:   &infrav1.EndpointsConfig{ClientID: "some-client"},
 			expectError: false,
 		},
 	}
@@ -607,67 +608,29 @@ func TestEvrocClusterValidateCreate_Endpoints(t *testing.T) {
 	}
 }
 
-func TestEndpointsConfig_GetAuthTokenURL(t *testing.T) {
-	g := NewWithT(t)
-
-	tests := []struct {
-		name      string
-		endpoints *EndpointsConfig
-		expected  string
-	}{
-		{
-			name:      "nil endpoints yield no override",
-			endpoints: nil,
-			expected:  "",
-		},
-		{
-			name:      "unset issuer yields no override",
-			endpoints: &EndpointsConfig{APIBaseURL: "https://api.example.com"},
-			expected:  "",
-		},
-		{
-			// Shaped like an issuerURL from the evroc CLI config.
-			name:      "issuer is suffixed with the token path",
-			endpoints: &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/evroc-customer"},
-			expected:  "https://authn.example.com/realms/evroc-customer/protocol/openid-connect/token",
-		},
-		{
-			name:      "trailing slash does not double up",
-			endpoints: &EndpointsConfig{IssuerURL: "https://authn.example.com/realms/evroc-customer/"},
-			expected:  "https://authn.example.com/realms/evroc-customer/protocol/openid-connect/token",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			g.Expect(tt.endpoints.GetAuthTokenURL()).To(Equal(tt.expected))
-		})
-	}
-}
-
 func TestEvrocClusterValidateUpdate_EndpointsImmutable(t *testing.T) {
 	g := NewWithT(t)
 
-	clusterWith := func(e *EndpointsConfig) *EvrocCluster {
-		return &EvrocCluster{
-			Spec: EvrocClusterSpec{
+	clusterWith := func(e *infrav1.EndpointsConfig) *infrav1.EvrocCluster {
+		return &infrav1.EvrocCluster{
+			Spec: infrav1.EvrocClusterSpec{
 				Project:        "test-project",
 				Region:         "se-sto",
 				FailureDomains: []string{"a"},
-				CredentialsRef: &SecretReference{Name: "test-creds"},
+				CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
 				Endpoints:      e,
 			},
 		}
 	}
 
-	set := &EndpointsConfig{
+	set := &infrav1.EndpointsConfig{
 		APIBaseURL: "https://api.private.example.com",
 		IssuerURL:  "https://authn.private.example.com/realms/evroc-customer",
 	}
 
 	tests := []struct {
 		name        string
-		old, new    *EndpointsConfig
+		old, new    *infrav1.EndpointsConfig
 		expectError bool
 	}{
 		{
@@ -693,7 +656,7 @@ func TestEvrocClusterValidateUpdate_EndpointsImmutable(t *testing.T) {
 		{
 			name: "changing apiBaseURL rejected",
 			old:  set,
-			new: &EndpointsConfig{
+			new: &infrav1.EndpointsConfig{
 				APIBaseURL: "https://api.other.example.com",
 				IssuerURL:  set.IssuerURL,
 			},
@@ -702,7 +665,7 @@ func TestEvrocClusterValidateUpdate_EndpointsImmutable(t *testing.T) {
 		{
 			name: "changing issuerURL rejected",
 			old:  set,
-			new: &EndpointsConfig{
+			new: &infrav1.EndpointsConfig{
 				APIBaseURL: set.APIBaseURL,
 				IssuerURL:  "https://authn.other.example.com/realms/evroc-customer",
 			},
@@ -716,8 +679,8 @@ func TestEvrocClusterValidateUpdate_EndpointsImmutable(t *testing.T) {
 		},
 		{
 			name:        "changing clientID rejected",
-			old:         &EndpointsConfig{ClientID: "client-a"},
-			new:         &EndpointsConfig{ClientID: "client-b"},
+			old:         &infrav1.EndpointsConfig{ClientID: "client-a"},
+			new:         &infrav1.EndpointsConfig{ClientID: "client-b"},
 			expectError: true,
 		},
 	}
@@ -735,36 +698,13 @@ func TestEvrocClusterValidateUpdate_EndpointsImmutable(t *testing.T) {
 	}
 }
 
-func TestEvrocClusterConditions(t *testing.T) {
-	cluster := &EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cluster",
-			Namespace: "default",
-		},
-	}
-
-	conditions := clusterv1.Conditions{
-		{
-			Type:   clusterv1.ConditionType("Ready"),
-			Status: "True",
-		},
-	}
-
-	cluster.SetConditions(conditions)
-	result := cluster.GetConditions()
-
-	assert.NotNil(t, result)
-	assert.Len(t, result, 1)
-	assert.Equal(t, clusterv1.ConditionType("Ready"), result[0].Type)
-}
-
 func TestEvrocClusterValidateDelete(t *testing.T) {
-	cluster := &EvrocCluster{
+	cluster := &infrav1.EvrocCluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-cluster",
 			Namespace: "default",
 		},
-		Spec: EvrocClusterSpec{
+		Spec: infrav1.EvrocClusterSpec{
 			Project:        "test-project",
 			Region:         "se-sto",
 			FailureDomains: []string{"a"},
@@ -779,12 +719,12 @@ func TestEvrocClusterValidateDelete(t *testing.T) {
 func TestValidateSecurityGroupRule(t *testing.T) {
 	tests := []struct {
 		name        string
-		rule        SecurityGroupRule
+		rule        infrav1.SecurityGroupRule
 		expectError bool
 	}{
 		{
 			name: "valid rule with CIDR",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:       "ssh",
 				Direction:  "Ingress",
 				Protocol:   "TCP",
@@ -795,7 +735,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "valid rule with port range",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:       "nodeports",
 				Direction:  "Ingress",
 				Protocol:   "TCP",
@@ -807,7 +747,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "mutually exclusive CIDR and security group",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:                "bad-rule",
 				Direction:           "Ingress",
 				RemoteCIDR:          "10.0.0.0/8",
@@ -817,7 +757,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "port out of range (negative)",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:      "bad-port",
 				Direction: "Ingress",
 				Port:      int32Ptr(-1),
@@ -826,7 +766,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "port out of range (too high)",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:      "bad-port",
 				Direction: "Ingress",
 				Port:      int32Ptr(70000),
@@ -835,7 +775,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "endPort out of range",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:      "bad-endport",
 				Direction: "Ingress",
 				EndPort:   int32Ptr(70000),
@@ -844,7 +784,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "endPort less than port",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:      "bad-range",
 				Direction: "Ingress",
 				Port:      int32Ptr(8080),
@@ -854,7 +794,7 @@ func TestValidateSecurityGroupRule(t *testing.T) {
 		},
 		{
 			name: "valid rule no port",
-			rule: SecurityGroupRule{
+			rule: infrav1.SecurityGroupRule{
 				Name:       "allow-all",
 				Direction:  "Egress",
 				Protocol:   "All",
@@ -881,18 +821,18 @@ func TestEvrocClusterValidateCreate_SecurityGroupRules(t *testing.T) {
 	g := NewWithT(t)
 
 	t.Run("valid inline security group rules", func(t *testing.T) {
-		cluster := &EvrocCluster{
-			Spec: EvrocClusterSpec{
+		cluster := &infrav1.EvrocCluster{
+			Spec: infrav1.EvrocClusterSpec{
 				Project:        "test-project",
 				Region:         "se-sto",
 				FailureDomains: []string{"a", "b", "c"},
-				CredentialsRef: &SecretReference{Name: "test-creds"},
-				SecurityGroups: &ClusterSecurityGroupsConfig{
-					ControlPlane: &SecurityGroupsConfig{
-						InlineSecurityGroups: []InlineSecurityGroup{
+				CredentialsRef: &infrav1.SecretReference{Name: "test-creds"},
+				SecurityGroups: &infrav1.ClusterSecurityGroupsConfig{
+					ControlPlane: &infrav1.SecurityGroupsConfig{
+						InlineSecurityGroups: []infrav1.InlineSecurityGroup{
 							{
 								Name: "cp-sg",
-								Rules: []SecurityGroupRule{
+								Rules: []infrav1.SecurityGroupRule{
 									{
 										Name:       "ssh",
 										Direction:  "Ingress",
@@ -912,20 +852,20 @@ func TestEvrocClusterValidateCreate_SecurityGroupRules(t *testing.T) {
 	})
 
 	t.Run("duplicate security group names across sections", func(t *testing.T) {
-		cluster := &EvrocCluster{
-			Spec: EvrocClusterSpec{
+		cluster := &infrav1.EvrocCluster{
+			Spec: infrav1.EvrocClusterSpec{
 				Project:        "test-project",
 				Region:         "se-sto",
 				FailureDomains: []string{"a", "b", "c"},
-				SecurityGroups: &ClusterSecurityGroupsConfig{
-					Common: &SecurityGroupsConfig{
-						InlineSecurityGroups: []InlineSecurityGroup{
-							{Name: "dup-sg", Rules: []SecurityGroupRule{}},
+				SecurityGroups: &infrav1.ClusterSecurityGroupsConfig{
+					Common: &infrav1.SecurityGroupsConfig{
+						InlineSecurityGroups: []infrav1.InlineSecurityGroup{
+							{Name: "dup-sg", Rules: []infrav1.SecurityGroupRule{}},
 						},
 					},
-					ControlPlane: &SecurityGroupsConfig{
-						InlineSecurityGroups: []InlineSecurityGroup{
-							{Name: "dup-sg", Rules: []SecurityGroupRule{}},
+					ControlPlane: &infrav1.SecurityGroupsConfig{
+						InlineSecurityGroups: []infrav1.InlineSecurityGroup{
+							{Name: "dup-sg", Rules: []infrav1.SecurityGroupRule{}},
 						},
 					},
 				},
@@ -934,25 +874,4 @@ func TestEvrocClusterValidateCreate_SecurityGroupRules(t *testing.T) {
 		_, err := clusterValidator.ValidateCreate(context.Background(), cluster)
 		g.Expect(err).To(HaveOccurred())
 	})
-}
-
-func TestEvrocClusterDeepCopy(t *testing.T) {
-	original := &EvrocCluster{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cluster",
-			Namespace: "default",
-		},
-		Spec: EvrocClusterSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	copy := original.DeepCopy()
-	assert.NotNil(t, copy)
-	assert.Equal(t, original.Name, copy.Name)
-	assert.Equal(t, original.Spec.Project, copy.Spec.Project)
-
-	copy.Spec.Project = "modified"
-	assert.NotEqual(t, original.Spec.Project, copy.Spec.Project)
 }

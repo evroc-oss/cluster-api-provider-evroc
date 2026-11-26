@@ -42,7 +42,3 @@ type EvrocClusterTemplateList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []EvrocClusterTemplate `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&EvrocClusterTemplate{}, &EvrocClusterTemplateList{})
-}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2026 evroc
 
-package v1beta1
+package webhooks
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -29,7 +30,7 @@ type EvrocClusterValidator struct{}
 // SetupEvrocClusterWebhookWithManager sets up the webhook with the Manager.
 func SetupEvrocClusterWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
-		For(&EvrocCluster{}).
+		For(&infrav1.EvrocCluster{}).
 		WithDefaulter(&EvrocClusterDefaulter{}).
 		WithValidator(&EvrocClusterValidator{}).
 		Complete()
@@ -39,7 +40,7 @@ func SetupEvrocClusterWebhookWithManager(mgr ctrl.Manager) error {
 
 // Default implements admission.CustomDefaulter.
 func (d *EvrocClusterDefaulter) Default(_ context.Context, obj runtime.Object) error {
-	r, ok := obj.(*EvrocCluster)
+	r, ok := obj.(*infrav1.EvrocCluster)
 	if !ok {
 		return fmt.Errorf("expected an EvrocCluster but got a %T", obj)
 	}
@@ -67,19 +68,19 @@ func (d *EvrocClusterDefaulter) Default(_ context.Context, obj runtime.Object) e
 
 // ValidateCreate implements admission.CustomValidator.
 func (v *EvrocClusterValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	r, ok := obj.(*EvrocCluster)
+	r, ok := obj.(*infrav1.EvrocCluster)
 	if !ok {
 		return nil, fmt.Errorf("expected an EvrocCluster but got a %T", obj)
 	}
 
 	evrocclusterlog.Info("validate create", "name", r.Name)
 
-	return r.validateEvrocCluster()
+	return validateEvrocCluster(r)
 }
 
 // ValidateUpdate implements admission.CustomValidator.
 func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	r, ok := newObj.(*EvrocCluster)
+	r, ok := newObj.(*infrav1.EvrocCluster)
 	if !ok {
 		return nil, fmt.Errorf("expected an EvrocCluster but got a %T", newObj)
 	}
@@ -89,7 +90,7 @@ func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 	var allErrs field.ErrorList
 
 	// Validate immutable fields
-	oldCluster, ok := oldObj.(*EvrocCluster)
+	oldCluster, ok := oldObj.(*infrav1.EvrocCluster)
 	if !ok {
 		return nil, fmt.Errorf("expected an EvrocCluster but got a %T", oldObj)
 	}
@@ -198,7 +199,7 @@ func (v *EvrocClusterValidator) ValidateUpdate(_ context.Context, oldObj, newObj
 	}
 
 	// Run general validation
-	warnings, err := r.validateEvrocCluster()
+	warnings, err := validateEvrocCluster(r)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec"),
@@ -220,7 +221,7 @@ func (v *EvrocClusterValidator) ValidateDelete(_ context.Context, _ runtime.Obje
 }
 
 // validateEvrocCluster performs common validation for EvrocCluster
-func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
+func validateEvrocCluster(c *infrav1.EvrocCluster) (admission.Warnings, error) {
 	var allErrs field.ErrorList
 	var warnings admission.Warnings
 
@@ -301,11 +302,11 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 	// The token endpoint is derived from issuerURL, so a full token URL here
 	// would be double-suffixed. Catch the paste rather than failing at the first
 	// token request.
-	if issuer := c.Spec.Endpoints.GetIssuerURL(); strings.HasSuffix(strings.TrimSuffix(issuer, "/"), TokenPathSuffix) {
+	if issuer := c.Spec.Endpoints.GetIssuerURL(); strings.HasSuffix(strings.TrimSuffix(issuer, "/"), infrav1.TokenPathSuffix) {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "endpoints", "issuerURL"),
 			issuer,
-			fmt.Sprintf("must be the issuer (realm) URL, not the token endpoint; drop the trailing %q", TokenPathSuffix),
+			fmt.Sprintf("must be the issuer (realm) URL, not the token endpoint; drop the trailing %q", infrav1.TokenPathSuffix),
 		))
 	}
 
@@ -320,12 +321,12 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 	}
 
 	switch c.Spec.ControlPlaneEndpointPolicy {
-	case "", EndpointManaged, EndpointExternal:
+	case "", infrav1.EndpointManaged, infrav1.EndpointExternal:
 	default:
 		allErrs = append(allErrs, field.NotSupported(
 			field.NewPath("spec", "controlPlaneEndpointPolicy"),
 			c.Spec.ControlPlaneEndpointPolicy,
-			[]string{string(EndpointManaged), string(EndpointExternal)},
+			[]string{string(infrav1.EndpointManaged), string(infrav1.EndpointExternal)},
 		))
 	}
 
@@ -419,7 +420,7 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 
 		sgSections := []struct {
 			name   string
-			config *SecurityGroupsConfig
+			config *infrav1.SecurityGroupsConfig
 		}{
 			{"common", c.Spec.SecurityGroups.Common},
 			{"controlPlane", c.Spec.SecurityGroups.ControlPlane},
@@ -463,11 +464,11 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 		}
 	}
 
-	switch v := c.Annotations[DeleteCSIDisksAnnotation]; v {
+	switch v := c.Annotations[infrav1.DeleteCSIDisksAnnotation]; v {
 	case "", "true", "false":
 	default:
 		allErrs = append(allErrs, field.NotSupported(
-			field.NewPath("metadata", "annotations").Key(DeleteCSIDisksAnnotation), v, []string{"true", "false"}))
+			field.NewPath("metadata", "annotations").Key(infrav1.DeleteCSIDisksAnnotation), v, []string{"true", "false"}))
 	}
 
 	if len(allErrs) > 0 {
@@ -478,7 +479,7 @@ func (c *EvrocCluster) validateEvrocCluster() (admission.Warnings, error) {
 }
 
 // validateSecurityGroupRule validates a single security group rule.
-func validateSecurityGroupRule(rule SecurityGroupRule, path *field.Path) field.ErrorList {
+func validateSecurityGroupRule(rule infrav1.SecurityGroupRule, path *field.Path) field.ErrorList {
 	var errs field.ErrorList
 
 	if rule.RemoteCIDR != "" && rule.RemoteSecurityGroup != "" {

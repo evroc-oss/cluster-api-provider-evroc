@@ -24,6 +24,7 @@ import (
 
 	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 	"github.com/evroc-oss/cluster-api-provider-evroc/internal/controller"
+	"github.com/evroc-oss/cluster-api-provider-evroc/internal/webhooks"
 	"github.com/evroc-oss/cluster-api-provider-evroc/pkg/version"
 )
 
@@ -131,12 +132,12 @@ func main() {
 	}
 
 	// Setup webhooks
-	if err = infrav1.SetupEvrocMachineWebhookWithManager(mgr); err != nil {
+	if err = webhooks.SetupEvrocMachineWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "EvrocMachine")
 		os.Exit(1)
 	}
 
-	if err = infrav1.SetupEvrocClusterWebhookWithManager(mgr); err != nil {
+	if err = webhooks.SetupEvrocClusterWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "EvrocCluster")
 		os.Exit(1)
 	}

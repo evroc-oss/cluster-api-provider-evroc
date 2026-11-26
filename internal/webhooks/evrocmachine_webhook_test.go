@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: 2026 evroc
 
-package v1beta1
+package webhooks
 
 import (
 	"context"
 	"fmt"
 	"testing"
 
+	infrav1 "github.com/evroc-oss/cluster-api-provider-evroc/api/v1beta1"
 	"github.com/evroc-oss/evroc-go-sdk/compute"
 	. "github.com/onsi/gomega"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 var (
@@ -25,46 +25,46 @@ func TestEvrocMachineDefault(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		machine  *EvrocMachine
-		expected *EvrocMachine
+		machine  *infrav1.EvrocMachine
+		expected *infrav1.EvrocMachine
 	}{
 		{
 			name: "sets default region",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					ComputeProfile: "a1a.m",
 				},
 			},
-			expected: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			expected: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
 					Image:          string(compute.DiskImageUbuntu2404),
-					NetworkingConfig: &MachineNetworkingConfig{
-						SecurityGroups: &MachineSecurityGroupsConfig{InheritFromCluster: true},
+					NetworkingConfig: &infrav1.MachineNetworkingConfig{
+						SecurityGroups: &infrav1.MachineSecurityGroupsConfig{InheritFromCluster: true},
 					},
 				},
 			},
 		},
 		{
 			name: "preserves existing region",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
 				},
 			},
-			expected: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			expected: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
 					Image:          string(compute.DiskImageUbuntu2404),
-					NetworkingConfig: &MachineNetworkingConfig{
-						SecurityGroups: &MachineSecurityGroupsConfig{InheritFromCluster: true},
+					NetworkingConfig: &infrav1.MachineNetworkingConfig{
+						SecurityGroups: &infrav1.MachineSecurityGroupsConfig{InheritFromCluster: true},
 					},
 				},
 			},
@@ -85,15 +85,15 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		machine         *EvrocMachine
+		machine         *infrav1.EvrocMachine
 		expectError     bool
 		expectWarning   bool
 		warningContains string
 	}{
 		{
 			name: "valid machine",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -106,13 +106,13 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "control plane machine without inheritFromCluster",
-			machine: &EvrocMachine{
+			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"cluster.x-k8s.io/control-plane": "",
 					},
 				},
-				Spec: EvrocMachineSpec{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -126,20 +126,20 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "control plane machine with inheritFromCluster",
-			machine: &EvrocMachine{
+			machine: &infrav1.EvrocMachine{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"cluster.x-k8s.io/control-plane": "",
 					},
 				},
-				Spec: EvrocMachineSpec{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
 					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
-					NetworkingConfig: &MachineNetworkingConfig{
-						SecurityGroups: &MachineSecurityGroupsConfig{
+					NetworkingConfig: &infrav1.MachineNetworkingConfig{
+						SecurityGroups: &infrav1.MachineSecurityGroupsConfig{
 							InheritFromCluster: true,
 						},
 					},
@@ -150,8 +150,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "missing project",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
 					RootDiskSize:   100,
@@ -161,8 +161,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "missing region",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					ComputeProfile: "a1a.m",
 					RootDiskSize:   100,
@@ -172,8 +172,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "missing compute profile",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:      "test-project",
 					Region:       "se-sto",
 					Image:        string(compute.DiskImageUbuntu2404),
@@ -184,8 +184,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "compute profile absent from SDK catalog",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "test-future-profile",
@@ -197,8 +197,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "invalid region format",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "invalid",
 					ComputeProfile: "a1a.m",
@@ -209,8 +209,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "disk too small",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -221,8 +221,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "disk too large",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -233,8 +233,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "valid GPU compute profile",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "gn-l40s.m",
@@ -248,8 +248,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "missing image",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -260,8 +260,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "stock image validation is deferred to the API catalog",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -273,8 +273,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "small disk warning",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -288,14 +288,14 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 		},
 		{
 			name: "duplicate additional disk names",
-			machine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			machine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
 					Image:          string(compute.DiskImageUbuntu2404),
 					RootDiskSize:   100,
-					AdditionalDisks: []AdditionalDiskSpec{
+					AdditionalDisks: []infrav1.AdditionalDiskSpec{
 						{Name: "data", SizeGB: 100},
 						{Name: "data", SizeGB: 200},
 					},
@@ -326,8 +326,8 @@ func TestEvrocMachineValidateCreate(t *testing.T) {
 func TestEvrocMachineValidateUpdate(t *testing.T) {
 	g := NewWithT(t)
 
-	oldMachine := &EvrocMachine{
-		Spec: EvrocMachineSpec{
+	oldMachine := &infrav1.EvrocMachine{
+		Spec: infrav1.EvrocMachineSpec{
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: "a1a.m",
@@ -338,13 +338,13 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		newMachine  *EvrocMachine
+		newMachine  *infrav1.EvrocMachine
 		expectError bool
 	}{
 		{
 			name: "no changes",
-			newMachine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			newMachine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -356,8 +356,8 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 		},
 		{
 			name: "change project (immutable)",
-			newMachine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			newMachine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "different-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -369,8 +369,8 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 		},
 		{
 			name: "change region (immutable)",
-			newMachine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			newMachine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "eu-sto",
 					ComputeProfile: "a1a.m",
@@ -382,8 +382,8 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 		},
 		{
 			name: "change image to custom disk image ref (immutable)",
-			newMachine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			newMachine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.m",
@@ -395,8 +395,8 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 		},
 		{
 			name: "change compute profile (immutable)",
-			newMachine: &EvrocMachine{
-				Spec: EvrocMachineSpec{
+			newMachine: &infrav1.EvrocMachine{
+				Spec: infrav1.EvrocMachineSpec{
 					Project:        "test-project",
 					Region:         "se-sto",
 					ComputeProfile: "a1a.l",
@@ -423,9 +423,9 @@ func TestEvrocMachineValidateUpdate(t *testing.T) {
 func TestEvrocMachineBYOIValidation(t *testing.T) {
 	g := NewWithT(t)
 
-	validBase := func(image string) *EvrocMachine {
-		return &EvrocMachine{
-			Spec: EvrocMachineSpec{
+	validBase := func(image string) *infrav1.EvrocMachine {
+		return &infrav1.EvrocMachine{
+			Spec: infrav1.EvrocMachineSpec{
 				Project:        "test-project",
 				Region:         "se-sto",
 				ComputeProfile: "a1a.m",
@@ -437,7 +437,7 @@ func TestEvrocMachineBYOIValidation(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		machine     *EvrocMachine
+		machine     *infrav1.EvrocMachine
 		expectError bool
 	}{
 		{
@@ -528,11 +528,11 @@ func TestCustomImageShorthandValidation(t *testing.T) {
 	for _, image := range []string{"custom:node-v1", "custom:", "custom:../node", "custom:node/other", "custom:node name", "custom:node?x", "custom:."} {
 		for _, additional := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/additional=%t", image, additional), func(t *testing.T) {
-				machine := &EvrocMachine{Spec: EvrocMachineSpec{Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.m", RootDiskSize: 50, Image: image}}
+				machine := &infrav1.EvrocMachine{Spec: infrav1.EvrocMachineSpec{Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.m", RootDiskSize: 50, Image: image}}
 				field := "spec.image"
 				if additional {
 					machine.Spec.Image = "ubuntu.24-04.1"
-					machine.Spec.AdditionalDisks = []AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &image}}
+					machine.Spec.AdditionalDisks = []infrav1.AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &image}}
 					field = "spec.additionalDisks[0].image"
 				}
 				_, err := machineValidator.ValidateCreate(context.Background(), machine)
@@ -561,10 +561,10 @@ func TestAdditionalDiskImageValidation(t *testing.T) {
 		{"missing name", "/compute/projects/test-project/regions/se-sto/customDiskImages/", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			machine := &EvrocMachine{Spec: EvrocMachineSpec{
+			machine := &infrav1.EvrocMachine{Spec: infrav1.EvrocMachineSpec{
 				Project: "test-project", Region: "se-sto", ComputeProfile: "a1a.m",
 				Image: "ubuntu.24-04.1", RootDiskSize: 50,
-				AdditionalDisks: []AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &tc.image}},
+				AdditionalDisks: []infrav1.AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &tc.image}},
 			}}
 			_, err := machineValidator.ValidateCreate(context.Background(), machine)
 			if tc.invalid {
@@ -576,36 +576,13 @@ func TestAdditionalDiskImageValidation(t *testing.T) {
 	}
 }
 
-func TestEvrocMachineConditions(t *testing.T) {
-	machine := &EvrocMachine{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-machine",
-			Namespace: "default",
-		},
-	}
-
-	conditions := clusterv1.Conditions{
-		{
-			Type:   clusterv1.ConditionType("Ready"),
-			Status: "True",
-		},
-	}
-
-	machine.SetConditions(conditions)
-	result := machine.GetConditions()
-
-	assert.NotNil(t, result)
-	assert.Len(t, result, 1)
-	assert.Equal(t, clusterv1.ConditionType("Ready"), result[0].Type)
-}
-
 func TestEvrocMachineValidateDelete(t *testing.T) {
-	machine := &EvrocMachine{
+	machine := &infrav1.EvrocMachine{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-machine",
 			Namespace: "default",
 		},
-		Spec: EvrocMachineSpec{
+		Spec: infrav1.EvrocMachineSpec{
 			Project:        "test-project",
 			Region:         "se-sto",
 			ComputeProfile: string(compute.VMSizeA1aXS),
@@ -616,27 +593,6 @@ func TestEvrocMachineValidateDelete(t *testing.T) {
 	warnings, err := machineValidator.ValidateDelete(context.Background(), machine)
 	assert.NoError(t, err)
 	assert.Nil(t, warnings)
-}
-
-func TestEvrocMachineDeepCopy(t *testing.T) {
-	original := &EvrocMachine{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-machine",
-			Namespace: "default",
-		},
-		Spec: EvrocMachineSpec{
-			Project: "test-project",
-			Region:  "se-sto",
-		},
-	}
-
-	copy := original.DeepCopy()
-	assert.NotNil(t, copy)
-	assert.Equal(t, original.Name, copy.Name)
-	assert.Equal(t, original.Spec.Project, copy.Spec.Project)
-
-	copy.Spec.Project = "other-project"
-	assert.NotEqual(t, original.Spec.Project, copy.Spec.Project)
 }
 
 func TestStockImageReferenceValidation(t *testing.T) {
@@ -653,11 +609,11 @@ func TestStockImageReferenceValidation(t *testing.T) {
 	} {
 		for _, additional := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/additional=%t", tc.image, additional), func(t *testing.T) {
-				machine := &EvrocMachine{Spec: EvrocMachineSpec{Project: "test-project", Region: "fr-par", ComputeProfile: "a1a.m", RootDiskSize: 50, Image: tc.image}}
+				machine := &infrav1.EvrocMachine{Spec: infrav1.EvrocMachineSpec{Project: "test-project", Region: "fr-par", ComputeProfile: "a1a.m", RootDiskSize: 50, Image: tc.image}}
 				field := "spec.image"
 				if additional {
 					machine.Spec.Image = "ubuntu.24-04.1"
-					machine.Spec.AdditionalDisks = []AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &tc.image}}
+					machine.Spec.AdditionalDisks = []infrav1.AdditionalDiskSpec{{Name: "data", SizeGB: 50, Image: &tc.image}}
 					field = "spec.additionalDisks[0].image"
 				}
 				_, err := machineValidator.ValidateCreate(context.Background(), machine)

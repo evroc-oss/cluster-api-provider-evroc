@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-26
+
+### Changed
+
+- `api/v1beta1` is now a types-only package: the admission webhook handlers moved to `internal/webhooks`, so importing the provider's api package from another module no longer pulls in the provider's webhook machinery, evroc SDK or internal packages. Helm chart, CRDs and webhook behavior are unchanged.
+
+### Added
+
+- Exported `EvrocClusterOwnershipIDAnnotation`, `EvrocMachineOwnershipIDAnnotation` and `ClusterIDLabel` constants from `api/v1beta1`; previously these values were only defined (unexported) inside the controller and cloud packages.
+
 ## [0.9.0] - 2026-11-24
 
 ### Added
@@ -350,7 +360,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.2]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.1
 
-[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/evroc-oss/cluster-api-provider-evroc/compare/v0.10.0...HEAD
 [0.1.6]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.6
 [0.1.14]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.14
 [0.1.15]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.1.15
@@ -393,3 +403,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.8.1]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.8.1
 [0.9.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.9.0
+[0.10.0]: https://github.com/evroc-oss/cluster-api-provider-evroc/releases/tag/v0.10.0
